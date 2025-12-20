@@ -12,13 +12,19 @@ export default function Home() {
   const [password, setPassword] = useState("");
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUser(data.user));
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+    supabase.auth.getUser().then(({ data }) => {
+      setUser(data.user);
     });
 
-    return () => sub.subscription.unsubscribe();
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setUser(session?.user ?? null);
+      }
+    );
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
   }, []);
 
   async function signIn() {
@@ -27,50 +33,57 @@ export default function Home() {
       return;
     }
 
-  
+    const { error } = await supabase.auth.signInWithPassword({
       email,
       password
     });
 
-    if (error) alert(error.message);
+    if (error) {
+      alert(error.message);
+    }
   }
 
   async function signOut() {
     await supabase.auth.signOut();
   }
 
+  // ---------- LOGIN ----------
   if (!user) {
     return (
       <div style={{ padding: 40, fontFamily: "system-ui" }}>
         <h1>Dashboard Stenau</h1>
 
-        <input
-          style={{ padding: 10, width: 320, marginBottom: 8 }}
-          placeholder="E-Mail"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, width: 320 }}>
+          <input
+            placeholder="E-Mail"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={{ padding: 10 }}
+          />
 
-        <input
-          style={{ padding: 10, width: 320, marginBottom: 12 }}
-          type="password"
-          placeholder="Passwort"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+          <input
+            type="password"
+            placeholder="Passwort"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={{ padding: 10 }}
+          />
 
-        <button style={{ padding: "10px 14px" }} onClick={signIn}>
-          Login
-        </button>
+          <button onClick={signIn} style={{ padding: 10 }}>
+            Login
+          </button>
+        </div>
       </div>
     );
   }
 
+  // ---------- EINGELOGGT ----------
   return (
     <div style={{ padding: 40, fontFamily: "system-ui" }}>
       <h1>Dashboard Stenau</h1>
       <p>Angemeldet als: {user.email}</p>
-      <button style={{ padding: "10px 14px" }} onClick={signOut}>
+
+      <button onClick={signOut} style={{ padding: 10 }}>
         Logout
       </button>
     </div>
