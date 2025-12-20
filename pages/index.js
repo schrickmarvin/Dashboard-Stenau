@@ -27,7 +27,11 @@ export default function Home() {
       return;
     }
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+
     if (error) alert(error.message);
   }
 
@@ -72,4 +76,3 @@ export default function Home() {
     </div>
   );
 }
-
