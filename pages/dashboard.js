@@ -54,7 +54,11 @@ export default function Dashboard() {
         </button>
       </div>
 
-      <p>Angemeldet als: {user.email}</p>
+      if (typeof window !== "undefined") {
+  window.location.href = "/dashboard";
+}
+return null;
+
 
       <hr style={{ margin: "20px 0" }} />
 
