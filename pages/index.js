@@ -12,10 +12,10 @@ export default function Home() {
   const [password, setPassword] = useState("");
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      setUser(data.user);
-    });
+    // Initialer User-Check
+    supabase.auth.getUser().then(({ data }) => setUser(data.user));
 
+    // Listener für Login/Logout
     const { data: authListener } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         setUser(session?.user ?? null);
@@ -38,9 +38,7 @@ export default function Home() {
       password
     });
 
-    if (error) {
-      alert(error.message);
-    }
+    if (error) alert(error.message);
   }
 
   async function signOut() {
@@ -53,7 +51,14 @@ export default function Home() {
       <div style={{ padding: 40, fontFamily: "system-ui" }}>
         <h1>Dashboard Stenau</h1>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, width: 320 }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            width: 320
+          }}
+        >
           <input
             placeholder="E-Mail"
             value={email}
