@@ -11,18 +11,22 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Aktuellen User laden
     supabase.auth.getUser().then(({ data }) => {
       setUser(data.user ?? null);
       setLoading(false);
     });
 
+    // Auf Login / Logout reagieren
     const { data: authListener } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         setUser(session?.user ?? null);
       }
     );
 
-    return () => authListener.subscription.unsubscribe();
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
   }, []);
 
   async function signOut() {
@@ -39,38 +43,56 @@ export default function Dashboard() {
     );
   }
 
-  // Nicht eingeloggt → zurück zur Startseite (Login)
+  // Nicht eingeloggt → zurück zur Login-Seite
   if (!user) {
-    if (typeof window !== "undefined") window.location.href = "/";
+    if (typeof window !== "undefined") {
+      window.location.href = "/";
+    }
     return null;
   }
 
   return (
     <div style={{ padding: 40, fontFamily: "system-ui" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      {/* Kopfbereich */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 20
+        }}
+      >
         <h1>Dashboard</h1>
         <button onClick={signOut} style={{ padding: 10 }}>
           Logout
         </button>
       </div>
 
-      if (typeof window !== "undefined") {
-  window.location.href = "/dashboard";
-}
-return null;
-
+      <p>Angemeldet als: {user.email}</p>
 
       <hr style={{ margin: "20px 0" }} />
 
+      {/* Übersicht */}
       <h2>Übersicht</h2>
       <ul>
-        <li>Heute fällig: 0</li>
-        <li>Diese Woche: 0</li>
-        <li>Offen: 0</li>
+        <li>Aufgaben heute: 0</li>
+        <li>Aufgaben diese Woche: 0</li>
+        <li>Offene Aufgaben: 0</li>
       </ul>
 
-      <p style={{ marginTop: 20, opacity: 0.75 }}>
-        Nächster Schritt: Bereiche, Aufgaben, Kalender, Timeline.
+      <hr style={{ margin: "20px 0" }} />
+
+      {/* Platzhalter für nächste Schritte */}
+      <h2>Nächste Bereiche</h2>
+      <ul>
+        <li>Aufgaben (Liste)</li>
+        <li>Kalender</li>
+        <li>Timeline</li>
+        <li>Anleitungen</li>
+      </ul>
+
+      <p style={{ marginTop: 20, opacity: 0.7 }}>
+        Hier bauen wir als Nächstes die Bereiche, Aufgaben und Anleitungen ein.
       </p>
     </div>
   );
