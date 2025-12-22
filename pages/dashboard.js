@@ -16,47 +16,18 @@ const TABS = [
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("board");
+  const [loadingAuth, setLoadingAuth] = useState(true);
 
-  // Demo-Daten (später aus Supabase)
-  const demoTasks = useMemo(
-    () => [
-      {
-        id: "t1",
-        title: "Tourenplanung morgen",
-        area: "Disposition",
-        due: "Heute",
-        status: "todo",
-        subtasksDone: 1,
-        subtasksTotal: 3
-      },
-      {
-        id: "t2",
-        title: "UVV Prüfliste aktualisieren",
-        area: "Fuhrpark",
-        due: "Diese Woche",
-        status: "doing",
-        subtasksDone: 2,
-        subtasksTotal: 5
-      },
-      {
-        id: "t3",
-        title: "Monatsaufgabe: Kostenübersicht",
-        area: "Verwaltung",
-        due: "Monat",
-        status: "done",
-        subtasksDone: 4,
-        subtasksTotal: 4
-      }
-    ],
-    []
-  );
+  const [tasks, setTasks] = useState([]);
+  const [loadingData, setLoadingData] = useState(true);
+  const [dataError, setDataError] = useState("");
+
+  const [activeTab, setActiveTab] = useState("board");
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       setUser(data.user ?? null);
-      setLoading(false);
+      setLoadingAuth(false);
     });
 
     const { data: authListener } = supabase.auth.onAuthStateChange(
@@ -66,12 +37,47 @@ export default function Dashboard() {
     return () => authListener.subscription.unsubscribe();
   }, []);
 
+  useEffect(() => {
+    async function loadTasks() {
+      setLoadingData(true);
+      setDataError("");
+
+      // Join auf areas, um den Namen zu bekommen
+      const { data, error } = await supabase
+        .from("tasks")
+        .select("id,title,status,due_bucket,subtasks_done,subtasks_total,created_at,areas(name)")
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        setDataError(error.message);
+        setTasks([]);
+      } else {
+        const mapped =
+          (data || []).map((t) => ({
+            id: t.id,
+            title: t.title,
+            status: t.status,
+            due: t.due_bucket,
+            area: t.areas?.name || "Ohne Bereich",
+            subtasksDone: t.subtasks_done ?? 0,
+            subtasksTotal: t.subtasks_total ?? 0
+          })) ?? [];
+        setTasks(mapped);
+      }
+
+      setLoadingData(false);
+    }
+
+    // nur laden, wenn eingeloggt (optional)
+    if (user) loadTasks();
+  }, [user]);
+
   async function signOut() {
     await supabase.auth.signOut();
     window.location.href = "/";
   }
 
-  if (loading) {
+  if (loadingAuth) {
     return (
       <div style={{ padding: 24, fontFamily: "system-ui" }}>
         <h1>Dashboard Stenau</h1>
@@ -85,15 +91,16 @@ export default function Dashboard() {
     return null;
   }
 
-  const counts = {
-    today: demoTasks.filter((t) => t.due === "Heute" && t.status !== "done").length,
-    week: demoTasks.filter((t) => t.due === "Diese Woche" && t.status !== "done").length,
-    open: demoTasks.filter((t) => t.status !== "done").length
-  };
+  const counts = useMemo(() => {
+    return {
+      today: tasks.filter((t) => t.due === "Heute" && t.status !== "done").length,
+      week: tasks.filter((t) => t.due === "Diese Woche" && t.status !== "done").length,
+      open: tasks.filter((t) => t.status !== "done").length
+    };
+  }, [tasks]);
 
   return (
     <div style={{ fontFamily: "system-ui", minHeight: "100vh", background: "#f6f7f9" }}>
-      {/* Topbar */}
       <div
         style={{
           background: "white",
@@ -115,7 +122,6 @@ export default function Dashboard() {
       </div>
 
       <div style={{ display: "flex" }}>
-        {/* Sidebar (minimal) */}
         <div
           style={{
             width: 220,
@@ -153,9 +159,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Main */}
         <div style={{ flex: 1, padding: 18 }}>
-          {/* Tabs oben (zusätzlich zur Sidebar) */}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
             {TABS.map((t) => (
               <button
@@ -174,11 +178,30 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {activeTab === "board" && <BoardView tasks={demoTasks} />}
-          {activeTab === "list" && <ListView tasks={demoTasks} />}
-          {activeTab === "calendar" && <Placeholder title="Kalender" text="Hier kommt die Wochen-/Monatsansicht rein." />}
-          {activeTab === "timeline" && <Placeholder title="Timeline" text="Hier kommt die Zeitachse für Monat/Jahr-Aufgaben rein." />}
-          {activeTab === "guides" && <Placeholder title="Anleitungen" text="Hier kommt der Wiki-/Anleitungsbereich mit Upload + Versionierung rein." />}
+          {loadingData && <Placeholder title="Lade Daten…" text="Supabase wird abgefragt." />}
+
+          {!loadingData && dataError && (
+            <Placeholder
+              title="Fehler beim Laden"
+              text={dataError + " (Tipp: RLS für tasks/areas erstmal AUS oder SELECT-Policy setzen)"}
+            />
+          )}
+
+          {!loadingData && !dataError && (
+            <>
+              {activeTab === "board" && <BoardView tasks={tasks} />}
+              {activeTab === "list" && <ListView tasks={tasks} />}
+              {activeTab === "calendar" && (
+                <Placeholder title="Kalender" text="Kommt als nächstes – erstmal Daten lesen." />
+              )}
+              {activeTab === "timeline" && (
+                <Placeholder title="Timeline" text="Kommt als nächstes – erstmal Daten lesen." />
+              )}
+              {activeTab === "guides" && (
+                <Placeholder title="Anleitungen" text="Kommt als nächstes – erstmal Daten lesen." />
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -207,9 +230,7 @@ function BoardView({ tasks }) {
         <div key={col.id} style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div style={{ fontWeight: 700 }}>{col.title}</div>
-            <div style={{ fontSize: 12, opacity: 0.7 }}>
-              {tasks.filter((t) => t.status === col.id).length}
-            </div>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>{tasks.filter((t) => t.status === col.id).length}</div>
           </div>
 
           <div style={{ display: "grid", gap: 10 }}>
@@ -235,7 +256,6 @@ function TaskCard({ task }) {
       <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
         {task.area} • {task.due}
       </div>
-
       <div style={{ fontSize: 12, opacity: 0.8 }}>
         Unteraufgaben: {task.subtasksDone}/{task.subtasksTotal} ({progress}%)
       </div>
@@ -293,4 +313,3 @@ function Placeholder({ title, text }) {
     </div>
   );
 }
-
