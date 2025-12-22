@@ -208,4 +208,100 @@ function BoardView({ tasks }) {
     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
       {cols.map((col) => (
         <div key={col.id} style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontWeight: 700 }}>{col.title}</div>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>
+              {tasks.filter((t) => t.status === col.id).length}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {tasks
+              .filter((t) => t.status === col.id)
+              .map((t) => (
+                <TaskCard key={t.id} task={t} />
+              ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TaskCard({ task }) {
+  const progress =
+    task.subtasksTotal > 0 ? Math.round((task.subtasksDone / task.subtasksTotal) * 100) : 0;
+
+  return (
+    <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fafafa" }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>{task.title}</div>
+      <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
+        {task.area} • {task.due}
+      </div>
+
+      <div style={{ fontSize: 12, opacity: 0.8 }}>
+        Unteraufgaben: {task.subtasksDone}/{task.subtasksTotal} ({progress}%)
+      </div>
+    </div>
+  );
+}
+
+function ListView({ tasks }) {
+  return (
+    <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+      <div style={{ fontWeight: 700, marginBottom: 10 }}>Aufgabenliste</div>
+
+      <div style={{ width: "100%", overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb" }}>
+              <th style={{ padding: 10 }}>Aufgabe</th>
+              <th style={{ padding: 10 }}>Bereich</th>
+              <th style={{ padding: 10 }}>Zeitraum</th>
+              <th style={{ padding: 10 }}>Status</th>
+              <th style={{ padding: 10 }}>Unteraufgaben</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tasks.map((t) => (
+              <tr key={t.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                <td style={{ padding: 10 }}>{t.title}</td>
+                <td style={{ padding: 10 }}>{t.area}</td>
+                <td style={{ padding: 10 }}>{t.due}</td>
+                <td style={{ padding: 10 }}>{statusLabel(t.status)}</td>
+                <td style={{ padding: 10 }}>
+                  {t.subtasksDone}/{t.subtasksTotal}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function statusLabel(status) {
+  if (status === "todo") return "To do";
+  if (status === "doing") return "In Arbeit";
+  if (status === "done") return "Erledigt";
+  return status;
+}
+
+function Placeholder({ title, text }) {
+  return (
+    <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 16 }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>{title}</div>
+      <div style={{ opacity: 0.8 }}>{text}</div>
+    </div>
+  );
+}
+
+function AreasView() {
+  return (
+    <div>
+      {/* Hier kannst du den Bereichs-Content anpassen */}
+      <p>Bereiche und deren Aufgaben werden hier angezeigt.</p>
+    </div>
+  );
+}
