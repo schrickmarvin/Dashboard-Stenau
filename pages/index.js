@@ -9,21 +9,36 @@ const supabase = createClient(
 export default function Home() {
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [working, setWorking] = useState(false);
 
   useEffect(() => {
     let mounted = true;
 
+    // Initialer User-Check
     supabase.auth.getUser().then(({ data }) => {
       if (!mounted) return;
-      setUser(data.user ?? null);
+      const u = data.user ?? null;
+      setUser(u);
       setLoadingAuth(false);
+
+      // Wenn bereits eingeloggt -> direkt weiter
+      if (u && typeof window !== "undefined") {
+        window.location.replace("/dashboard");
+      }
     });
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((_e, session) => {
-      if (!mounted) return;
-      setUser(session?.user ?? null);
+    // Listener für Login/Logout
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      const u = session?.user ?? null;
+      setUser(u);
+
+      // Nach Login -> weiterleiten
+      if (u && typeof window !== "undefined") {
+        window.location.replace("/dashboard");
+      }
     });
 
     return () => {
@@ -39,8 +54,13 @@ export default function Home() {
       alert("E-Mail und Passwort eingeben");
       return;
     }
+
+    setWorking(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setWorking(false);
+
     if (error) alert(error.message);
+    // Redirect passiert im Auth-Listener automatisch
   }
 
   if (loadingAuth) {
@@ -52,10 +72,8 @@ export default function Home() {
     );
   }
 
-  if (user) {
-    if (typeof window !== "undefined") window.location.href = "/dashboard";
-    return null;
-  }
+  // Wenn eingeloggt, zeigen wir hier nichts (Redirect passiert)
+  if (user) return null;
 
   return (
     <div style={{ padding: 40, fontFamily: "system-ui" }}>
@@ -68,6 +86,7 @@ export default function Home() {
           onChange={(e) => setEmail(e.target.value)}
           style={{ padding: 10 }}
         />
+
         <input
           type="password"
           placeholder="Passwort"
@@ -75,14 +94,11 @@ export default function Home() {
           onChange={(e) => setPassword(e.target.value)}
           style={{ padding: 10 }}
         />
-        <button onClick={signIn} style={{ padding: 10 }}>
-          Login
+
+        <button onClick={signIn} style={{ padding: 10 }} disabled={working}>
+          {working ? "Login…" : "Login"}
         </button>
       </div>
-
-      <p style={{ marginTop: 18, opacity: 0.7, fontSize: 12 }}>
-        Tipp: Wenn du später „Als App installieren“ willst: Chrome Menü → „App installieren“ (PWA).
-      </p>
     </div>
   );
 }
