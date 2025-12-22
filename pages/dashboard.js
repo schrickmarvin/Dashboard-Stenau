@@ -23,7 +23,7 @@ const STATUS = [
 const DUE_BUCKETS = ["Heute", "Diese Woche", "Monat", "Jahr"];
 
 export default function Dashboard() {
-  /* -------------------- STATE -------------------- */
+  // State
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
 
@@ -35,14 +35,22 @@ export default function Dashboard() {
 
   const [activeTab, setActiveTab] = useState("board");
 
-  // Create-Form
+  // Create-Form Task
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
   const [newDue, setNewDue] = useState("Heute");
   const [newStatus, setNewStatus] = useState("todo");
   const [creating, setCreating] = useState(false);
 
-  /* -------------------- COUNTS -------------------- */
+  // Detail / Subtasks
+  const [selectedTask, setSelectedTask] = useState(null);
+  const [subtasks, setSubtasks] = useState([]);
+  const [subtasksLoading, setSubtasksLoading] = useState(false);
+  const [subtasksError, setSubtasksError] = useState("");
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
+  const [savingSubtask, setSavingSubtask] = useState(false);
+
+  // Counts
   const counts = useMemo(() => {
     return {
       today: tasks.filter((t) => t.due === "Heute" && t.status !== "done").length,
@@ -51,7 +59,7 @@ export default function Dashboard() {
     };
   }, [tasks]);
 
-  /* -------------------- AUTH -------------------- */
+  // Auth
   useEffect(() => {
     let mounted = true;
 
@@ -74,7 +82,7 @@ export default function Dashboard() {
     };
   }, []);
 
-  /* -------------------- LOAD AREAS -------------------- */
+  // Load Areas
   async function reloadAreas() {
     const { data, error } = await supabase
       .from("areas")
@@ -87,26 +95,24 @@ export default function Dashboard() {
       return;
     }
 
-    setAreas(data || []);
-    // falls noch nichts ausgewählt ist: erstes Area automatisch setzen
-    if (!newAreaId && data?.length) setNewAreaId(data[0].id);
+    const list = data || [];
+    setAreas(list);
+    if (!newAreaId && list.length) setNewAreaId(list[0].id);
   }
 
-  /* -------------------- LOAD TASKS -------------------- */
+  // Load Tasks
   async function reloadTasks() {
     if (!user) return;
 
     setLoadingData(true);
     setDataError("");
 
-    // Versuch mit Join
     const { data, error } = await supabase
       .from("tasks")
       .select("id,title,status,due_bucket,subtasks_done,subtasks_total,created_at,area_id,areas(name)")
       .order("created_at", { ascending: false });
 
     if (error) {
-      // Fallback ohne Join
       const fb = await supabase
         .from("tasks")
         .select("id,title,status,due_bucket,subtasks_done,subtasks_total,created_at,area_id")
@@ -128,9 +134,7 @@ export default function Dashboard() {
             subtasksTotal: t.subtasks_total ?? 0
           }))
         );
-        setDataError(
-          "Hinweis: Bereiche konnten nicht per Join geladen werden (FK/RLS). Aufgaben werden ohne Bereich angezeigt (—)."
-        );
+        setDataError("Hinweis: Bereiche konnten nicht per Join geladen werden (FK/RLS).");
       }
     } else {
       setTasks(
@@ -150,7 +154,7 @@ export default function Dashboard() {
     setLoadingData(false);
   }
 
-  /* -------------------- INITIAL LOAD -------------------- */
+  // Initial load
   useEffect(() => {
     if (!user) return;
     (async () => {
@@ -160,7 +164,7 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
-  /* -------------------- CREATE TASK -------------------- */
+  // Create Task
   async function createTask() {
     if (!newTitle.trim()) {
       alert("Bitte Titel eingeben.");
@@ -189,23 +193,161 @@ export default function Dashboard() {
       return;
     }
 
-    // Reset
     setNewTitle("");
     setNewDue("Heute");
     setNewStatus("todo");
-
-    // Reload
     await reloadTasks();
     setCreating(false);
   }
 
-  /* -------------------- UPDATE STATUS (CLICK) -------------------- */
+  // Update Task Status
   async function setTaskStatus(taskId, status) {
     const { error } = await supabase.from("tasks").update({ status }).eq("id", taskId);
     if (error) {
       alert(error.message);
       return;
     }
+    await reloadTasks();
+
+    if (selectedTask?.id === taskId) {
+      setSelectedTask((prev) => (prev ? { ...prev, status } : prev));
+    }
+  }
+
+  // Subtasks helpers
+  async function recalcAndStoreTaskProgress(taskId) {
+    const { data, error } = await supabase
+      .from("subtasks")
+      .select("id,is_done")
+      .eq("task_id", taskId);
+
+    if (error) return;
+
+    const total = (data || []).length;
+    const done = (data || []).filter((s) => !!s.is_done).length;
+
+    await supabase
+      .from("tasks")
+      .update({ subtasks_total: total, subtasks_done: done })
+      .eq("id", taskId);
+
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId ? { ...t, subtasksTotal: total, subtasksDone: done } : t
+      )
+    );
+
+    if (selectedTask?.id === taskId) {
+      setSelectedTask((prev) =>
+        prev ? { ...prev, subtasksTotal: total, subtasksDone: done } : prev
+      );
+    }
+  }
+
+  async function openTask(task) {
+    setSelectedTask(task);
+    setSubtasks([]);
+    setSubtasksError("");
+    setNewSubtaskTitle("");
+    await loadSubtasks(task.id);
+  }
+
+  function closeTask() {
+    setSelectedTask(null);
+    setSubtasks([]);
+    setSubtasksError("");
+    setNewSubtaskTitle("");
+  }
+
+  async function loadSubtasks(taskId) {
+    setSubtasksLoading(true);
+    setSubtasksError("");
+
+    const { data, error } = await supabase
+      .from("subtasks")
+      .select("id,title,is_done,created_at")
+      .eq("task_id", taskId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      setSubtasksError(error.message);
+      setSubtasks([]);
+      setSubtasksLoading(false);
+      return;
+    }
+
+    setSubtasks(data || []);
+    setSubtasksLoading(false);
+
+    // Optional: Sync Progress (falls Werte in tasks noch 0 sind)
+    await recalcAndStoreTaskProgress(taskId);
+  }
+
+  async function addSubtask() {
+    if (!selectedTask) return;
+    const title = newSubtaskTitle.trim();
+    if (!title) {
+      alert("Bitte Unteraufgabe eingeben.");
+      return;
+    }
+
+    setSavingSubtask(true);
+    setSubtasksError("");
+
+    const { error } = await supabase.from("subtasks").insert({
+      task_id: selectedTask.id,
+      title,
+      is_done: false
+    });
+
+    if (error) {
+      setSubtasksError(error.message);
+      setSavingSubtask(false);
+      return;
+    }
+
+    setNewSubtaskTitle("");
+    await loadSubtasks(selectedTask.id);
+    await reloadTasks();
+    setSavingSubtask(false);
+  }
+
+  async function toggleSubtaskDone(subtaskId, isDone) {
+    if (!selectedTask) return;
+
+    const { error } = await supabase
+      .from("subtasks")
+      .update({ is_done: isDone })
+      .eq("id", subtaskId);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setSubtasks((prev) =>
+      prev.map((s) => (s.id === subtaskId ? { ...s, is_done: isDone } : s))
+    );
+
+    await recalcAndStoreTaskProgress(selectedTask.id);
+    await reloadTasks();
+  }
+
+  async function deleteSubtask(subtaskId) {
+    if (!selectedTask) return;
+
+    const ok = window.confirm("Unteraufgabe wirklich löschen?");
+    if (!ok) return;
+
+    const { error } = await supabase.from("subtasks").delete().eq("id", subtaskId);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setSubtasks((prev) => prev.filter((s) => s.id !== subtaskId));
+    await recalcAndStoreTaskProgress(selectedTask.id);
     await reloadTasks();
   }
 
@@ -216,7 +358,7 @@ export default function Dashboard() {
     window.location.href = "/";
   }
 
-  /* -------------------- RENDER -------------------- */
+  // Render
   if (loadingAuth) {
     return (
       <div style={{ padding: 30, fontFamily: "system-ui" }}>
@@ -295,7 +437,7 @@ export default function Dashboard() {
 
         {/* Main */}
         <div style={{ flex: 1, padding: 18 }}>
-          {/* Tabs oben */}
+          {/* Tabs */}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
             {TABS.map((t) => (
               <button
@@ -314,7 +456,7 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* Actions Row */}
+          {/* Actions */}
           <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
             <button
               onClick={reloadTasks}
@@ -328,13 +470,13 @@ export default function Dashboard() {
                 opacity: loadingData ? 0.6 : 1
               }}
             >
-              Neu laden
+              {loadingData ? "Lade…" : "Neu laden"}
             </button>
 
             {loadingData && <span style={{ fontSize: 12, opacity: 0.7 }}>Lade…</span>}
           </div>
 
-          {/* Create Task (Stufe 2 light) */}
+          {/* Create Task */}
           <div
             style={{
               background: "white",
@@ -350,7 +492,7 @@ export default function Dashboard() {
               <input
                 value={newTitle}
                 onChange={(e) => setNewTitle(e.target.value)}
-                placeholder="Titel (z. B. Tourenplanung morgen)"
+                placeholder="Titel"
                 style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
               />
 
@@ -414,25 +556,47 @@ export default function Dashboard() {
           </div>
 
           {/* Views */}
-          {activeTab === "board" && <BoardView tasks={tasks} onSetStatus={setTaskStatus} />}
-          {activeTab === "list" && <ListView tasks={tasks} onSetStatus={setTaskStatus} />}
+          {activeTab === "board" && (
+            <BoardView tasks={tasks} onSetStatus={setTaskStatus} onOpenTask={openTask} />
+          )}
+          {activeTab === "list" && (
+            <ListView tasks={tasks} onSetStatus={setTaskStatus} onOpenTask={openTask} />
+          )}
 
           {activeTab === "calendar" && (
-            <Placeholder title="Kalender" text="Kommt als nächstes – aktuell Stufe 2 light (Anlegen/Status ändern)." />
+            <Placeholder title="Kalender" text="Kommt als nächstes." />
           )}
           {activeTab === "timeline" && (
-            <Placeholder title="Timeline" text="Kommt als nächstes – aktuell Stufe 2 light (Anlegen/Status ändern)." />
+            <Placeholder title="Timeline" text="Kommt als nächstes." />
           )}
           {activeTab === "guides" && (
-            <Placeholder title="Anleitungen" text="Kommt als nächstes – Upload/Editor bauen wir als eigenen Schritt." />
+            <Placeholder title="Anleitungen" text="Kommt als nächstes (Upload/Editor)." />
           )}
         </div>
       </div>
+
+      {/* Detail Modal */}
+      {selectedTask && (
+        <TaskModal
+          task={selectedTask}
+          onClose={closeTask}
+          onSetStatus={setTaskStatus}
+          subtasks={subtasks}
+          subtasksLoading={subtasksLoading}
+          subtasksError={subtasksError}
+          newSubtaskTitle={newSubtaskTitle}
+          setNewSubtaskTitle={setNewSubtaskTitle}
+          addSubtask={addSubtask}
+          savingSubtask={savingSubtask}
+          toggleSubtaskDone={toggleSubtaskDone}
+          deleteSubtask={deleteSubtask}
+        />
+      )}
     </div>
   );
 }
 
-/* -------------------- COMPONENTS -------------------- */
+/* Components */
 
 function StatCard({ label, value }) {
   return (
@@ -443,7 +607,7 @@ function StatCard({ label, value }) {
   );
 }
 
-function BoardView({ tasks, onSetStatus }) {
+function BoardView({ tasks, onSetStatus, onOpenTask }) {
   const cols = [
     { id: "todo", title: "To do" },
     { id: "doing", title: "In Arbeit" },
@@ -471,7 +635,7 @@ function BoardView({ tasks, onSetStatus }) {
             {tasks
               .filter((t) => t.status === col.id)
               .map((t) => (
-                <TaskCard key={t.id} task={t} onSetStatus={onSetStatus} />
+                <TaskCard key={t.id} task={t} onSetStatus={onSetStatus} onOpenTask={onOpenTask} />
               ))}
 
             {tasks.filter((t) => t.status === col.id).length === 0 && (
@@ -484,12 +648,29 @@ function BoardView({ tasks, onSetStatus }) {
   );
 }
 
-function TaskCard({ task, onSetStatus }) {
+function TaskCard({ task, onSetStatus, onOpenTask }) {
   const progress = task.subtasksTotal > 0 ? Math.round((task.subtasksDone / task.subtasksTotal) * 100) : 0;
 
   return (
     <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fafafa" }}>
-      <div style={{ fontWeight: 700, marginBottom: 6 }}>{task.title}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>{task.title}</div>
+        <button
+          onClick={() => onOpenTask(task)}
+          style={{
+            padding: "6px 8px",
+            borderRadius: 8,
+            border: "1px solid #e5e7eb",
+            background: "white",
+            cursor: "pointer",
+            fontSize: 12,
+            height: 30
+          }}
+        >
+          Details
+        </button>
+      </div>
+
       <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
         {task.area} • {task.due}
       </div>
@@ -524,7 +705,7 @@ function smallBtn(active) {
   };
 }
 
-function ListView({ tasks, onSetStatus }) {
+function ListView({ tasks, onSetStatus, onOpenTask }) {
   return (
     <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
       <div style={{ fontWeight: 700, marginBottom: 10 }}>Aufgabenliste</div>
@@ -543,7 +724,21 @@ function ListView({ tasks, onSetStatus }) {
           <tbody>
             {tasks.map((t) => (
               <tr key={t.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                <td style={{ padding: 10 }}>{t.title}</td>
+                <td style={{ padding: 10 }}>
+                  <button
+                    onClick={() => onOpenTask(t)}
+                    style={{
+                      border: "1px solid #e5e7eb",
+                      background: "white",
+                      borderRadius: 8,
+                      padding: "6px 8px",
+                      cursor: "pointer"
+                    }}
+                  >
+                    Details
+                  </button>{" "}
+                  {t.title}
+                </td>
                 <td style={{ padding: 10 }}>{t.area}</td>
                 <td style={{ padding: 10 }}>{t.due}</td>
                 <td style={{ padding: 10 }}>{statusLabel(t.status)}</td>
@@ -587,6 +782,181 @@ function Placeholder({ title, text }) {
     <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 16 }}>
       <div style={{ fontWeight: 700, marginBottom: 8 }}>{title}</div>
       <div style={{ opacity: 0.8 }}>{text}</div>
+    </div>
+  );
+}
+
+function TaskModal({
+  task,
+  onClose,
+  onSetStatus,
+  subtasks,
+  subtasksLoading,
+  subtasksError,
+  newSubtaskTitle,
+  setNewSubtaskTitle,
+  addSubtask,
+  savingSubtask,
+  toggleSubtaskDone,
+  deleteSubtask
+}) {
+  const progress = task.subtasksTotal > 0 ? Math.round((task.subtasksDone / task.subtasksTotal) * 100) : 0;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.35)",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        padding: 16,
+        zIndex: 50
+      }}
+    >
+      <div
+        style={{
+          width: "min(860px, 96vw)",
+          background: "white",
+          borderRadius: 14,
+          border: "1px solid #e5e7eb",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
+          padding: 14
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>{task.title}</div>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>
+              {task.area} • {task.due} • Status: {statusLabel(task.status)}
+            </div>
+            <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
+              Unteraufgaben: {task.subtasksDone}/{task.subtasksTotal} ({progress}%)
+            </div>
+          </div>
+
+          <button
+            onClick={onClose}
+            style={{
+              padding: "8px 10px",
+              borderRadius: 10,
+              border: "1px solid #e5e7eb",
+              background: "white",
+              cursor: "pointer"
+            }}
+          >
+            Schließen
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+          <button onClick={() => onSetStatus(task.id, "todo")} style={smallBtn(task.status === "todo")}>
+            To do
+          </button>
+          <button onClick={() => onSetStatus(task.id, "doing")} style={smallBtn(task.status === "doing")}>
+            In Arbeit
+          </button>
+          <button onClick={() => onSetStatus(task.id, "done")} style={smallBtn(task.status === "done")}>
+            Erledigt
+          </button>
+        </div>
+
+        <hr style={{ margin: "14px 0" }} />
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+          <div style={{ fontWeight: 700 }}>Unteraufgaben</div>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={newSubtaskTitle}
+              onChange={(e) => setNewSubtaskTitle(e.target.value)}
+              placeholder="Neue Unteraufgabe"
+              style={{
+                flex: 1,
+                padding: 10,
+                border: "1px solid #e5e7eb",
+                borderRadius: 10
+              }}
+            />
+            <button
+              onClick={addSubtask}
+              disabled={savingSubtask}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid #e5e7eb",
+                background: savingSubtask ? "#f3f4f6" : "white",
+                cursor: savingSubtask ? "not-allowed" : "pointer"
+              }}
+            >
+              {savingSubtask ? "Speichere…" : "Hinzufügen"}
+            </button>
+          </div>
+
+          {subtasksError && <div style={{ color: "darkred", fontSize: 12 }}>{subtasksError}</div>}
+
+          {subtasksLoading ? (
+            <div style={{ fontSize: 12, opacity: 0.7 }}>Lade Unteraufgaben…</div>
+          ) : (
+            <div style={{ display: "grid", gap: 8 }}>
+              {subtasks.length === 0 && (
+                <div style={{ fontSize: 12, opacity: 0.7 }}>Keine Unteraufgaben vorhanden.</div>
+              )}
+
+              {subtasks.map((s) => (
+                <div
+                  key={s.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 12,
+                    padding: 10,
+                    background: "#fafafa"
+                  }}
+                >
+                  <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={!!s.is_done}
+                      onChange={(e) => toggleSubtaskDone(s.id, e.target.checked)}
+                    />
+                    <span style={{ textDecoration: s.is_done ? "line-through" : "none", opacity: s.is_done ? 0.7 : 1 }}>
+                      {s.title}
+                    </span>
+                  </label>
+
+                  <button
+                    onClick={() => deleteSubtask(s.id)}
+                    style={{
+                      padding: "6px 8px",
+                      borderRadius: 10,
+                      border: "1px solid #e5e7eb",
+                      background: "white",
+                      cursor: "pointer",
+                      fontSize: 12
+                    }}
+                  >
+                    Löschen
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>
+          Tipp: Diese Ansicht ist ideal für neue Mitarbeiter (Ablauf als Checkliste).
+        </div>
+      </div>
     </div>
   );
 }
