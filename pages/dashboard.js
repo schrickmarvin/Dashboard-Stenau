@@ -15,6 +15,7 @@ const TABS = [
 ];
 
 export default function Dashboard() {
+  // --- Hooks IMMER oben, keine frühen returns davor ---
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
 
@@ -24,59 +25,120 @@ export default function Dashboard() {
 
   const [activeTab, setActiveTab] = useState("board");
 
+  // Zählwerte (Hook-sicher: useMemo steht oben, vor allen returns)
+  const counts = useMemo(() => {
+    return {
+      today: tasks.filter((t) => t.due === "Heute" && t.status !== "done").length,
+      week: tasks.filter((t) => t.due === "Diese Woche" && t.status !== "done").length,
+      open: tasks.filter((t) => t.status !== "done").length
+    };
+  }, [tasks]);
+
+  // --- Auth laden ---
   useEffect(() => {
+    let mounted = true;
+
     supabase.auth.getUser().then(({ data }) => {
+      if (!mounted) return;
       setUser(data.user ?? null);
       setLoadingAuth(false);
     });
 
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      (_event, session) => setUser(session?.user ?? null)
-    );
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+      setUser(session?.user ?? null);
+    });
 
-    return () => authListener.subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      try {
+        authListener?.subscription?.unsubscribe?.();
+      } catch (e) {}
+    };
   }, []);
 
+  // --- Tasks laden (Read-Only / Stufe 1) ---
   useEffect(() => {
+    let cancelled = false;
+
     async function loadTasks() {
+      if (!user) {
+        setTasks([]);
+        setLoadingData(false);
+        return;
+      }
+
       setLoadingData(true);
       setDataError("");
 
-      // Join auf areas, um den Namen zu bekommen
+      // Hinweis: Join funktioniert nur, wenn FK tasks.area_id -> areas.id existiert.
+      // Wenn das bei dir noch nicht passt, funktioniert der Fallback ohne Join.
       const { data, error } = await supabase
         .from("tasks")
         .select("id,title,status,due_bucket,subtasks_done,subtasks_total,created_at,areas(name)")
         .order("created_at", { ascending: false });
 
+      if (cancelled) return;
+
       if (error) {
-        setDataError(error.message);
-        setTasks([]);
-      } else {
-        const mapped =
-          (data || []).map((t) => ({
+        // Fallback: ohne Join laden (damit es nicht crasht)
+        const fb = await supabase
+          .from("tasks")
+          .select("id,title,status,due_bucket,subtasks_done,subtasks_total,created_at")
+          .order("created_at", { ascending: false });
+
+        if (cancelled) return;
+
+        if (fb.error) {
+          setDataError(fb.error.message);
+          setTasks([]);
+        } else {
+          const mapped = (fb.data || []).map((t) => ({
             id: t.id,
             title: t.title,
             status: t.status,
             due: t.due_bucket,
-            area: t.areas?.name || "Ohne Bereich",
+            area: "—",
             subtasksDone: t.subtasks_done ?? 0,
             subtasksTotal: t.subtasks_total ?? 0
-          })) ?? [];
+          }));
+          setTasks(mapped);
+          setDataError(
+            "Hinweis: Join auf areas hat nicht funktioniert. Aufgaben werden ohne Bereich geladen (—). " +
+              "Prüfe FK tasks.area_id → areas.id und/oder RLS."
+          );
+        }
+      } else {
+        const mapped = (data || []).map((t) => ({
+          id: t.id,
+          title: t.title,
+          status: t.status,
+          due: t.due_bucket,
+          area: t.areas?.name || "Ohne Bereich",
+          subtasksDone: t.subtasks_done ?? 0,
+          subtasksTotal: t.subtasks_total ?? 0
+        }));
         setTasks(mapped);
       }
 
       setLoadingData(false);
     }
 
-    // nur laden, wenn eingeloggt (optional)
-    if (user) loadTasks();
+    loadTasks();
+
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
 
   async function signOut() {
-    await supabase.auth.signOut();
-    window.location.href = "/";
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {}
+    if (typeof window !== "undefined") window.location.href = "/";
   }
 
+  // --- Erst ab hier returns (Hook-Reihenfolge bleibt stabil) ---
   if (loadingAuth) {
     return (
       <div style={{ padding: 24, fontFamily: "system-ui" }}>
@@ -91,16 +153,9 @@ export default function Dashboard() {
     return null;
   }
 
-  const counts = useMemo(() => {
-    return {
-      today: tasks.filter((t) => t.due === "Heute" && t.status !== "done").length,
-      week: tasks.filter((t) => t.due === "Diese Woche" && t.status !== "done").length,
-      open: tasks.filter((t) => t.status !== "done").length
-    };
-  }, [tasks]);
-
   return (
     <div style={{ fontFamily: "system-ui", minHeight: "100vh", background: "#f6f7f9" }}>
+      {/* Topbar */}
       <div
         style={{
           background: "white",
@@ -122,6 +177,7 @@ export default function Dashboard() {
       </div>
 
       <div style={{ display: "flex" }}>
+        {/* Sidebar */}
         <div
           style={{
             width: 220,
@@ -159,7 +215,9 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* Main */}
         <div style={{ flex: 1, padding: 18 }}>
+          {/* Tabs oben */}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
             {TABS.map((t) => (
               <button
@@ -181,24 +239,23 @@ export default function Dashboard() {
           {loadingData && <Placeholder title="Lade Daten…" text="Supabase wird abgefragt." />}
 
           {!loadingData && dataError && (
-            <Placeholder
-              title="Fehler beim Laden"
-              text={dataError + " (Tipp: RLS für tasks/areas erstmal AUS oder SELECT-Policy setzen)"}
-            />
+            <div style={{ marginBottom: 12 }}>
+              <Placeholder title="Hinweis / Fehler" text={dataError} />
+            </div>
           )}
 
-          {!loadingData && !dataError && (
+          {!loadingData && (
             <>
               {activeTab === "board" && <BoardView tasks={tasks} />}
               {activeTab === "list" && <ListView tasks={tasks} />}
               {activeTab === "calendar" && (
-                <Placeholder title="Kalender" text="Kommt als nächstes – erstmal Daten lesen." />
+                <Placeholder title="Kalender" text="Kommt als nächstes – aktuell Stufe 1 (lesen)." />
               )}
               {activeTab === "timeline" && (
-                <Placeholder title="Timeline" text="Kommt als nächstes – erstmal Daten lesen." />
+                <Placeholder title="Timeline" text="Kommt als nächstes – aktuell Stufe 1 (lesen)." />
               )}
               {activeTab === "guides" && (
-                <Placeholder title="Anleitungen" text="Kommt als nächstes – erstmal Daten lesen." />
+                <Placeholder title="Anleitungen" text="Kommt als nächstes – aktuell Stufe 1 (lesen)." />
               )}
             </>
           )}
@@ -239,6 +296,10 @@ function BoardView({ tasks }) {
               .map((t) => (
                 <TaskCard key={t.id} task={t} />
               ))}
+
+            {tasks.filter((t) => t.status === col.id).length === 0 && (
+              <div style={{ fontSize: 12, opacity: 0.6, padding: 8 }}>Keine Aufgaben</div>
+            )}
           </div>
         </div>
       ))}
@@ -291,6 +352,14 @@ function ListView({ tasks }) {
                 </td>
               </tr>
             ))}
+
+            {tasks.length === 0 && (
+              <tr>
+                <td colSpan="5" style={{ padding: 10, opacity: 0.7 }}>
+                  Keine Aufgaben gefunden.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
