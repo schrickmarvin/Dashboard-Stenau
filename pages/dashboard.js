@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -11,7 +11,8 @@ const TABS = [
   { id: "list", label: "Liste" },
   { id: "calendar", label: "Kalender" },
   { id: "timeline", label: "Timeline" },
-  { id: "guides", label: "Anleitungen" }
+  { id: "guides", label: "Anleitungen" },
+  { id: "admin", label: "Chef Cockpit" } // nicht offensichtlich, aber vorhanden
 ];
 
 const STATUS = [
@@ -22,27 +23,44 @@ const STATUS = [
 
 const DUE_BUCKETS = ["Heute", "Diese Woche", "Monat", "Jahr"];
 
+function isAdminEmail(email) {
+  const adminList = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return adminList.includes((email || "").toLowerCase());
+}
+
 export default function Dashboard() {
-  // State
+  // Auth
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
 
-  const [tasks, setTasks] = useState([]);
+  // UI
+  const [activeTab, setActiveTab] = useState("board");
+  const [toast, setToast] = useState("");
+
+  // Data
   const [areas, setAreas] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [guides, setGuides] = useState([]);
 
   const [loadingData, setLoadingData] = useState(false);
   const [dataError, setDataError] = useState("");
 
-  const [activeTab, setActiveTab] = useState("board");
+  // Filters
+  const [filterAreaId, setFilterAreaId] = useState("all");
+  const [filterDue, setFilterDue] = useState("all");
+  const [search, setSearch] = useState("");
 
-  // Create-Form Task
+  // Create task
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
   const [newDue, setNewDue] = useState("Heute");
   const [newStatus, setNewStatus] = useState("todo");
-  const [creating, setCreating] = useState(false);
+  const [creatingTask, setCreatingTask] = useState(false);
 
-  // Detail / Subtasks
+  // Task detail & subtasks
   const [selectedTask, setSelectedTask] = useState(null);
   const [subtasks, setSubtasks] = useState([]);
   const [subtasksLoading, setSubtasksLoading] = useState(false);
@@ -50,16 +68,31 @@ export default function Dashboard() {
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [savingSubtask, setSavingSubtask] = useState(false);
 
+  // Areas CRUD (admin+bereichspflege)
+  const [newAreaName, setNewAreaName] = useState("");
+  const [savingArea, setSavingArea] = useState(false);
+
+  // Guides (Anleitungen) + Upload
+  const [newGuideTitle, setNewGuideTitle] = useState("");
+  const [newGuideText, setNewGuideText] = useState("");
+  const [newGuideAreaId, setNewGuideAreaId] = useState("");
+  const [uploadingGuide, setUploadingGuide] = useState(false);
+  const fileRef = useRef(null);
+
+  const isAdmin = useMemo(() => isAdminEmail(user?.email), [user?.email]);
+
   // Counts
   const counts = useMemo(() => {
+    const list = tasks;
     return {
-      today: tasks.filter((t) => t.due === "Heute" && t.status !== "done").length,
-      week: tasks.filter((t) => t.due === "Diese Woche" && t.status !== "done").length,
-      open: tasks.filter((t) => t.status !== "done").length
+      today: list.filter((t) => t.due === "Heute" && t.status !== "done").length,
+      week: list.filter((t) => t.due === "Diese Woche" && t.status !== "done").length,
+      open: list.filter((t) => t.status !== "done").length,
+      overdue: list.filter((t) => t.status !== "done" && (t.is_overdue || false)).length
     };
   }, [tasks]);
 
-  // Auth
+  // Auth bootstrap
   useEffect(() => {
     let mounted = true;
 
@@ -82,11 +115,62 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Load Areas
+  // Desktop Notifications (Chrome)
+  async function ensureDesktopNotifications() {
+    try {
+      if (!("Notification" in window)) return false;
+      if (Notification.permission === "granted") return true;
+      if (Notification.permission === "denied") return false;
+      const p = await Notification.requestPermission();
+      return p === "granted";
+    } catch {
+      return false;
+    }
+  }
+
+  function notifyDesktop(title, body) {
+    try {
+      if (!("Notification" in window)) return;
+      if (Notification.permission !== "granted") return;
+      new Notification(title, { body });
+    } catch {}
+  }
+
+  // Helpers
+  function showToast(msg) {
+    setToast(msg);
+    window.setTimeout(() => setToast(""), 2200);
+  }
+
+  function normalize(str) {
+    return (str || "").toLowerCase();
+  }
+
+  const filteredTasks = useMemo(() => {
+    let list = [...tasks];
+
+    if (filterAreaId !== "all") list = list.filter((t) => t.area_id === filterAreaId);
+    if (filterDue !== "all") list = list.filter((t) => t.due === filterDue);
+
+    if (search.trim()) {
+      const q = normalize(search.trim());
+      list = list.filter((t) => {
+        return (
+          normalize(t.title).includes(q) ||
+          normalize(t.area).includes(q) ||
+          normalize(t.due).includes(q)
+        );
+      });
+    }
+
+    return list;
+  }, [tasks, filterAreaId, filterDue, search]);
+
+  // Load areas
   async function reloadAreas() {
     const { data, error } = await supabase
       .from("areas")
-      .select("id,name")
+      .select("id,name,created_at")
       .order("name", { ascending: true });
 
     if (error) {
@@ -97,10 +181,12 @@ export default function Dashboard() {
 
     const list = data || [];
     setAreas(list);
+
     if (!newAreaId && list.length) setNewAreaId(list[0].id);
+    if (!newGuideAreaId && list.length) setNewGuideAreaId(list[0].id);
   }
 
-  // Load Tasks
+  // Load tasks (read)
   async function reloadTasks() {
     if (!user) return;
 
@@ -113,45 +199,52 @@ export default function Dashboard() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      const fb = await supabase
-        .from("tasks")
-        .select("id,title,status,due_bucket,subtasks_done,subtasks_total,created_at,area_id")
-        .order("created_at", { ascending: false });
-
-      if (fb.error) {
-        setDataError(fb.error.message);
-        setTasks([]);
-      } else {
-        setTasks(
-          (fb.data || []).map((t) => ({
-            id: t.id,
-            title: t.title,
-            status: t.status,
-            due: t.due_bucket,
-            area: "—",
-            area_id: t.area_id || null,
-            subtasksDone: t.subtasks_done ?? 0,
-            subtasksTotal: t.subtasks_total ?? 0
-          }))
-        );
-        setDataError("Hinweis: Bereiche konnten nicht per Join geladen werden (FK/RLS).");
-      }
-    } else {
-      setTasks(
-        (data || []).map((t) => ({
-          id: t.id,
-          title: t.title,
-          status: t.status,
-          due: t.due_bucket,
-          area: t.areas?.name || "Ohne Bereich",
-          area_id: t.area_id || null,
-          subtasksDone: t.subtasks_done ?? 0,
-          subtasksTotal: t.subtasks_total ?? 0
-        }))
-      );
+      setDataError(error.message);
+      setTasks([]);
+      setLoadingData(false);
+      return;
     }
 
+    const mapped = (data || []).map((t) => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      due: t.due_bucket,
+      area: t.areas?.name || "Ohne Bereich",
+      area_id: t.area_id || null,
+      subtasksDone: t.subtasks_done ?? 0,
+      subtasksTotal: t.subtasks_total ?? 0,
+      created_at: t.created_at
+    }));
+
+    setTasks(mapped);
     setLoadingData(false);
+  }
+
+  // Guides read
+  async function reloadGuides() {
+    const { data, error } = await supabase
+      .from("guides")
+      .select("id,title,content,area_id,file_path,created_at,areas(name)")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setGuides([]);
+      setDataError(error.message);
+      return;
+    }
+
+    setGuides(
+      (data || []).map((g) => ({
+        id: g.id,
+        title: g.title,
+        content: g.content || "",
+        area_id: g.area_id || null,
+        area: g.areas?.name || "Ohne Bereich",
+        file_path: g.file_path || "",
+        created_at: g.created_at
+      }))
+    );
   }
 
   // Initial load
@@ -160,90 +253,81 @@ export default function Dashboard() {
     (async () => {
       await reloadAreas();
       await reloadTasks();
+      await reloadGuides();
+      await ensureDesktopNotifications();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
-  // Create Task
-  async function createTask() {
-    if (!newTitle.trim()) {
-      alert("Bitte Titel eingeben.");
-      return;
-    }
-    if (!newAreaId) {
-      alert("Bitte Bereich auswählen.");
-      return;
-    }
+  // Actions
+  async function signOut() {
+    try {
+      await supabase.auth.signOut();
+    } catch {}
+    window.location.href = "/";
+  }
 
-    setCreating(true);
+  // Create task + notify
+  async function createTask() {
+    if (!newTitle.trim()) return alert("Bitte Titel eingeben.");
+    if (!newAreaId) return alert("Bitte Bereich auswählen.");
+
+    setCreatingTask(true);
     setDataError("");
 
-    const { error } = await supabase.from("tasks").insert({
+    const payload = {
       title: newTitle.trim(),
       area_id: newAreaId,
       status: newStatus,
       due_bucket: newDue,
       subtasks_done: 0,
       subtasks_total: 0
-    });
+    };
+
+    const { error } = await supabase.from("tasks").insert(payload);
 
     if (error) {
       setDataError(error.message);
-      setCreating(false);
+      setCreatingTask(false);
       return;
     }
 
     setNewTitle("");
     setNewDue("Heute");
     setNewStatus("todo");
+
     await reloadTasks();
-    setCreating(false);
+    showToast("Aufgabe angelegt");
+    notifyDesktop("Neue Aufgabe", payload.title);
+
+    // Optional: Mail via API (nur wenn eingerichtet)
+    try {
+      await fetch("/api/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "task_created",
+          title: payload.title,
+          due: payload.due_bucket
+        })
+      });
+    } catch {}
+
+    setCreatingTask(false);
   }
 
-  // Update Task Status
+  // Update status
   async function setTaskStatus(taskId, status) {
     const { error } = await supabase.from("tasks").update({ status }).eq("id", taskId);
-    if (error) {
-      alert(error.message);
-      return;
-    }
+    if (error) return alert(error.message);
+
     await reloadTasks();
-
-    if (selectedTask?.id === taskId) {
-      setSelectedTask((prev) => (prev ? { ...prev, status } : prev));
-    }
+    showToast("Status geändert");
+    notifyDesktop("Status geändert", `Aufgabe wurde auf "${statusLabel(status)}" gesetzt`);
+    if (selectedTask?.id === taskId) setSelectedTask((p) => (p ? { ...p, status } : p));
   }
 
-  // Subtasks helpers
-  async function recalcAndStoreTaskProgress(taskId) {
-    const { data, error } = await supabase
-      .from("subtasks")
-      .select("id,is_done")
-      .eq("task_id", taskId);
-
-    if (error) return;
-
-    const total = (data || []).length;
-    const done = (data || []).filter((s) => !!s.is_done).length;
-
-    await supabase
-      .from("tasks")
-      .update({ subtasks_total: total, subtasks_done: done })
-      .eq("id", taskId);
-
-    setTasks((prev) =>
-      prev.map((t) =>
-        t.id === taskId ? { ...t, subtasksTotal: total, subtasksDone: done } : t
-      )
-    );
-
-    if (selectedTask?.id === taskId) {
-      setSelectedTask((prev) =>
-        prev ? { ...prev, subtasksTotal: total, subtasksDone: done } : prev
-      );
-    }
-  }
-
+  // Task details
   async function openTask(task) {
     setSelectedTask(task);
     setSubtasks([]);
@@ -251,7 +335,6 @@ export default function Dashboard() {
     setNewSubtaskTitle("");
     await loadSubtasks(task.id);
   }
-
   function closeTask() {
     setSelectedTask(null);
     setSubtasks([]);
@@ -278,18 +361,35 @@ export default function Dashboard() {
 
     setSubtasks(data || []);
     setSubtasksLoading(false);
-
-    // Optional: Sync Progress (falls Werte in tasks noch 0 sind)
     await recalcAndStoreTaskProgress(taskId);
+  }
+
+  async function recalcAndStoreTaskProgress(taskId) {
+    const { data, error } = await supabase
+      .from("subtasks")
+      .select("id,is_done")
+      .eq("task_id", taskId);
+
+    if (error) return;
+
+    const total = (data || []).length;
+    const done = (data || []).filter((s) => !!s.is_done).length;
+
+    await supabase.from("tasks").update({ subtasks_total: total, subtasks_done: done }).eq("id", taskId);
+
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, subtasksTotal: total, subtasksDone: done } : t))
+    );
+
+    if (selectedTask?.id === taskId) {
+      setSelectedTask((prev) => (prev ? { ...prev, subtasksTotal: total, subtasksDone: done } : prev));
+    }
   }
 
   async function addSubtask() {
     if (!selectedTask) return;
     const title = newSubtaskTitle.trim();
-    if (!title) {
-      alert("Bitte Unteraufgabe eingeben.");
-      return;
-    }
+    if (!title) return alert("Bitte Unteraufgabe eingeben.");
 
     setSavingSubtask(true);
     setSubtasksError("");
@@ -309,56 +409,111 @@ export default function Dashboard() {
     setNewSubtaskTitle("");
     await loadSubtasks(selectedTask.id);
     await reloadTasks();
+    showToast("Unteraufgabe hinzugefügt");
     setSavingSubtask(false);
   }
 
   async function toggleSubtaskDone(subtaskId, isDone) {
     if (!selectedTask) return;
 
-    const { error } = await supabase
-      .from("subtasks")
-      .update({ is_done: isDone })
-      .eq("id", subtaskId);
+    const { error } = await supabase.from("subtasks").update({ is_done: isDone }).eq("id", subtaskId);
+    if (error) return alert(error.message);
 
-    if (error) {
-      alert(error.message);
-      return;
-    }
-
-    setSubtasks((prev) =>
-      prev.map((s) => (s.id === subtaskId ? { ...s, is_done: isDone } : s))
-    );
-
+    setSubtasks((prev) => prev.map((s) => (s.id === subtaskId ? { ...s, is_done: isDone } : s)));
     await recalcAndStoreTaskProgress(selectedTask.id);
     await reloadTasks();
+    showToast("Unteraufgabe aktualisiert");
   }
 
   async function deleteSubtask(subtaskId) {
     if (!selectedTask) return;
-
-    const ok = window.confirm("Unteraufgabe wirklich löschen?");
-    if (!ok) return;
+    if (!window.confirm("Unteraufgabe wirklich löschen?")) return;
 
     const { error } = await supabase.from("subtasks").delete().eq("id", subtaskId);
-
-    if (error) {
-      alert(error.message);
-      return;
-    }
+    if (error) return alert(error.message);
 
     setSubtasks((prev) => prev.filter((s) => s.id !== subtaskId));
     await recalcAndStoreTaskProgress(selectedTask.id);
     await reloadTasks();
+    showToast("Unteraufgabe gelöscht");
   }
 
-  async function signOut() {
-    try {
-      await supabase.auth.signOut();
-    } catch {}
-    window.location.href = "/";
+  // Areas CRUD
+  async function addArea() {
+    const name = newAreaName.trim();
+    if (!name) return alert("Bitte Bereichsname eingeben.");
+
+    setSavingArea(true);
+    const { error } = await supabase.from("areas").insert({ name });
+    if (error) {
+      alert(error.message);
+      setSavingArea(false);
+      return;
+    }
+    setNewAreaName("");
+    await reloadAreas();
+    showToast("Bereich angelegt");
+    setSavingArea(false);
   }
 
-  // Render
+  // Guides CRUD + Upload (Supabase Storage Bucket: "guides")
+  async function createGuide() {
+    const title = newGuideTitle.trim();
+    if (!title) return alert("Bitte Titel eingeben.");
+
+    setUploadingGuide(true);
+    setDataError("");
+
+    let file_path = "";
+    const file = fileRef.current?.files?.[0];
+
+    // Upload (optional)
+    if (file) {
+      const safeName = `${Date.now()}_${file.name}`.replace(/\s+/g, "_");
+      const path = `${newGuideAreaId || "general"}/${safeName}`;
+
+      const up = await supabase.storage.from("guides").upload(path, file, {
+        upsert: true
+      });
+
+      if (up.error) {
+        setDataError(up.error.message);
+        setUploadingGuide(false);
+        return;
+      }
+      file_path = path;
+    }
+
+    const { error } = await supabase.from("guides").insert({
+      title,
+      content: newGuideText || "",
+      area_id: newGuideAreaId || null,
+      file_path
+    });
+
+    if (error) {
+      setDataError(error.message);
+      setUploadingGuide(false);
+      return;
+    }
+
+    setNewGuideTitle("");
+    setNewGuideText("");
+    if (fileRef.current) fileRef.current.value = "";
+    await reloadGuides();
+    showToast("Anleitung gespeichert");
+    notifyDesktop("Anleitung aktualisiert", title);
+
+    setUploadingGuide(false);
+  }
+
+  function getGuideFileUrl(file_path) {
+    if (!file_path) return "";
+    const { data } = supabase.storage.from("guides").getPublicUrl(file_path);
+    return data?.publicUrl || "";
+  }
+
+  // Render guards
   if (loadingAuth) {
     return (
       <div style={{ padding: 30, fontFamily: "system-ui" }}>
@@ -372,6 +527,9 @@ export default function Dashboard() {
     window.location.href = "/";
     return null;
   }
+
+  // admin tab only visible if admin
+  const visibleTabs = isAdmin ? TABS : TABS.filter((t) => t.id !== "admin");
 
   return (
     <div style={{ fontFamily: "system-ui", minHeight: "100vh", background: "#f6f7f9" }}>
@@ -388,19 +546,42 @@ export default function Dashboard() {
       >
         <div>
           <div style={{ fontSize: 18, fontWeight: 600 }}>Dashboard</div>
-          <div style={{ fontSize: 12, opacity: 0.7 }}>Angemeldet als: {user.email}</div>
+          <div style={{ fontSize: 12, opacity: 0.7 }}>
+            Angemeldet als: {user.email}
+            {isAdmin ? " • Chef" : ""}
+          </div>
         </div>
 
-        <button onClick={signOut} style={{ padding: "8px 12px", cursor: "pointer" }}>
-          Logout
-        </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button
+            onClick={async () => {
+              const ok = await ensureDesktopNotifications();
+              showToast(ok ? "Desktop-Benachrichtigungen aktiv" : "Benachrichtigungen nicht erlaubt");
+            }}
+            style={{
+              padding: "8px 10px",
+              borderRadius: 10,
+              border: "1px solid #e5e7eb",
+              background: "white",
+              cursor: "pointer",
+              fontSize: 12
+            }}
+            title="Desktop-Benachrichtigungen"
+          >
+            Benachrichtigungen
+          </button>
+
+          <button onClick={signOut} style={{ padding: "8px 12px", cursor: "pointer" }}>
+            Logout
+          </button>
+        </div>
       </div>
 
       <div style={{ display: "flex" }}>
         {/* Sidebar */}
         <div
           style={{
-            width: 240,
+            width: 260,
             background: "white",
             padding: 14,
             borderRight: "1px solid #e5e7eb"
@@ -415,7 +596,7 @@ export default function Dashboard() {
 
           <div style={{ marginTop: 18, fontSize: 12, opacity: 0.7 }}>Navigation</div>
           <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-            {TABS.map((t) => (
+            {visibleTabs.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setActiveTab(t.id)}
@@ -433,13 +614,75 @@ export default function Dashboard() {
               </button>
             ))}
           </div>
+
+          <div style={{ marginTop: 18, fontSize: 12, opacity: 0.7 }}>Filter</div>
+          <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+            <select
+              value={filterAreaId}
+              onChange={(e) => setFilterAreaId(e.target.value)}
+              style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
+            >
+              <option value="all">Alle Bereiche</option>
+              {areas.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={filterDue}
+              onChange={(e) => setFilterDue(e.target.value)}
+              style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
+            >
+              <option value="all">Alle Zeiträume</option>
+              {DUE_BUCKETS.map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Suche…"
+              style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
+            />
+          </div>
+
+          <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+            <button
+              onClick={async () => {
+                setLoadingData(true);
+                await reloadTasks();
+                await reloadGuides();
+                setLoadingData(false);
+                showToast("Neu geladen");
+              }}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid #e5e7eb",
+                background: "white",
+                cursor: "pointer",
+                flex: 1
+              }}
+            >
+              Neu laden
+            </button>
+          </div>
+
+          {dataError ? (
+            <div style={{ marginTop: 10, color: "darkred", fontSize: 12 }}>{dataError}</div>
+          ) : null}
         </div>
 
         {/* Main */}
         <div style={{ flex: 1, padding: 18 }}>
-          {/* Tabs */}
+          {/* Tabs oben */}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-            {TABS.map((t) => (
+            {visibleTabs.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setActiveTab(t.id)}
@@ -456,126 +699,126 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* Actions */}
-          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
-            <button
-              onClick={reloadTasks}
-              disabled={loadingData}
+          {/* Create Task */}
+          {(activeTab === "board" || activeTab === "list") && (
+            <div
               style={{
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #e5e7eb",
                 background: "white",
-                cursor: loadingData ? "not-allowed" : "pointer",
-                opacity: loadingData ? 0.6 : 1
+                border: "1px solid #e5e7eb",
+                borderRadius: 14,
+                padding: 12,
+                marginBottom: 14
               }}
             >
-              {loadingData ? "Lade…" : "Neu laden"}
-            </button>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>Aufgabe anlegen</div>
 
-            {loadingData && <span style={{ fontSize: 12, opacity: 0.7 }}>Lade…</span>}
-          </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 160px 160px 140px", gap: 8 }}>
+                <input
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="Titel"
+                  style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
+                />
 
-          {/* Create Task */}
-          <div
-            style={{
-              background: "white",
-              border: "1px solid #e5e7eb",
-              borderRadius: 14,
-              padding: 12,
-              marginBottom: 14
-            }}
-          >
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>Aufgabe anlegen</div>
+                <select
+                  value={newAreaId}
+                  onChange={(e) => setNewAreaId(e.target.value)}
+                  style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
+                >
+                  {areas.length === 0 && <option value="">(keine Bereiche)</option>}
+                  {areas.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 160px 160px 140px", gap: 8 }}>
-              <input
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-                placeholder="Titel"
-                style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
-              />
+                <select
+                  value={newDue}
+                  onChange={(e) => setNewDue(e.target.value)}
+                  style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
+                >
+                  {DUE_BUCKETS.map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
 
-              <select
-                value={newAreaId}
-                onChange={(e) => setNewAreaId(e.target.value)}
-                style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
-              >
-                {areas.length === 0 && <option value="">(keine Bereiche)</option>}
-                {areas.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
+                <select
+                  value={newStatus}
+                  onChange={(e) => setNewStatus(e.target.value)}
+                  style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
+                >
+                  {STATUS.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
 
-              <select
-                value={newDue}
-                onChange={(e) => setNewDue(e.target.value)}
-                style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
-              >
-                {DUE_BUCKETS.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={newStatus}
-                onChange={(e) => setNewStatus(e.target.value)}
-                style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
-              >
-                {STATUS.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-
-              <button
-                onClick={createTask}
-                disabled={creating}
-                style={{
-                  padding: 10,
-                  borderRadius: 10,
-                  border: "1px solid #e5e7eb",
-                  background: creating ? "#f3f4f6" : "white",
-                  cursor: creating ? "not-allowed" : "pointer"
-                }}
-              >
-                {creating ? "Speichere…" : "Anlegen"}
-              </button>
-            </div>
-
-            {dataError && (
-              <div style={{ marginTop: 10, color: "darkred", fontSize: 12 }}>
-                {dataError}
+                <button
+                  onClick={createTask}
+                  disabled={creatingTask}
+                  style={{
+                    padding: 10,
+                    borderRadius: 10,
+                    border: "1px solid #e5e7eb",
+                    background: creatingTask ? "#f3f4f6" : "white",
+                    cursor: creatingTask ? "not-allowed" : "pointer"
+                  }}
+                >
+                  {creatingTask ? "Speichere…" : "Anlegen"}
+                </button>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Views */}
           {activeTab === "board" && (
-            <BoardView tasks={tasks} onSetStatus={setTaskStatus} onOpenTask={openTask} />
+            <BoardView tasks={filteredTasks} onSetStatus={setTaskStatus} onOpenTask={openTask} />
           )}
           {activeTab === "list" && (
-            <ListView tasks={tasks} onSetStatus={setTaskStatus} onOpenTask={openTask} />
+            <ListView tasks={filteredTasks} onSetStatus={setTaskStatus} onOpenTask={openTask} />
+          )}
+          {activeTab === "calendar" && <CalendarPlaceholder tasks={filteredTasks} />}
+          {activeTab === "timeline" && <TimelinePlaceholder tasks={filteredTasks} />}
+          {activeTab === "guides" && (
+            <GuidesView
+              areas={areas}
+              guides={guides}
+              isAdmin={isAdmin}
+              newGuideTitle={newGuideTitle}
+              setNewGuideTitle={setNewGuideTitle}
+              newGuideText={newGuideText}
+              setNewGuideText={setNewGuideText}
+              newGuideAreaId={newGuideAreaId}
+              setNewGuideAreaId={setNewGuideAreaId}
+              fileRef={fileRef}
+              uploadingGuide={uploadingGuide}
+              createGuide={createGuide}
+              getGuideFileUrl={getGuideFileUrl}
+              dataError={dataError}
+            />
+          )}
+          {activeTab === "admin" && isAdmin && (
+            <AdminView
+              areas={areas}
+              tasks={tasks}
+              newAreaName={newAreaName}
+              setNewAreaName={setNewAreaName}
+              addArea={addArea}
+              savingArea={savingArea}
+            />
           )}
 
-          {activeTab === "calendar" && (
-            <Placeholder title="Kalender" text="Kommt als nächstes." />
-          )}
-          {activeTab === "timeline" && (
-            <Placeholder title="Timeline" text="Kommt als nächstes." />
-          )}
-          {activeTab === "guides" && (
-            <Placeholder title="Anleitungen" text="Kommt als nächstes (Upload/Editor)." />
+          {activeTab === "admin" && !isAdmin && (
+            <Placeholder title="Kein Zugriff" text="Dieser Bereich ist nur für den Chef/Admin sichtbar." />
           )}
         </div>
       </div>
 
-      {/* Detail Modal */}
+      {/* Task Detail Modal */}
       {selectedTask && (
         <TaskModal
           task={selectedTask}
@@ -592,11 +835,30 @@ export default function Dashboard() {
           deleteSubtask={deleteSubtask}
         />
       )}
+
+      {/* Toast */}
+      {toast ? (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 16,
+            right: 16,
+            background: "black",
+            color: "white",
+            padding: "10px 12px",
+            borderRadius: 12,
+            opacity: 0.9,
+            zIndex: 999
+          }}
+        >
+          {toast}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-/* Components */
+/* ---------- Components ---------- */
 
 function StatCard({ label, value }) {
   return (
@@ -619,12 +881,7 @@ function BoardView({ tasks, onSetStatus, onOpenTask }) {
       {cols.map((col) => (
         <div
           key={col.id}
-          style={{
-            background: "white",
-            border: "1px solid #e5e7eb",
-            borderRadius: 14,
-            padding: 12
-          }}
+          style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div style={{ fontWeight: 700 }}>{col.title}</div>
@@ -732,11 +989,12 @@ function ListView({ tasks, onSetStatus, onOpenTask }) {
                       background: "white",
                       borderRadius: 8,
                       padding: "6px 8px",
-                      cursor: "pointer"
+                      cursor: "pointer",
+                      marginRight: 8
                     }}
                   >
                     Details
-                  </button>{" "}
+                  </button>
                   {t.title}
                 </td>
                 <td style={{ padding: 10 }}>{t.area}</td>
@@ -782,6 +1040,242 @@ function Placeholder({ title, text }) {
     <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 16 }}>
       <div style={{ fontWeight: 700, marginBottom: 8 }}>{title}</div>
       <div style={{ opacity: 0.8 }}>{text}</div>
+    </div>
+  );
+}
+
+function CalendarPlaceholder({ tasks }) {
+  const grouped = useMemo(() => {
+    const map = {};
+    for (const t of tasks) {
+      map[t.due] = map[t.due] || [];
+      map[t.due].push(t);
+    }
+    return map;
+  }, [tasks]);
+
+  return (
+    <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 16 }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>Kalender (vereinfachte Übersicht)</div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {Object.keys(grouped).length === 0 ? (
+          <div style={{ opacity: 0.7 }}>Keine Aufgaben</div>
+        ) : (
+          Object.entries(grouped).map(([bucket, list]) => (
+            <div key={bucket} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>{bucket}</div>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {list.map((t) => (
+                  <li key={t.id}>
+                    {t.title} ({t.area})
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TimelinePlaceholder({ tasks }) {
+  // sehr einfache Timeline: nach Due-Bucket sortiert
+  const order = ["Heute", "Diese Woche", "Monat", "Jahr"];
+  const sorted = [...tasks].sort((a, b) => order.indexOf(a.due) - order.indexOf(b.due));
+
+  return (
+    <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 16 }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>Timeline (vereinfacht)</div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {sorted.length === 0 ? (
+          <div style={{ opacity: 0.7 }}>Keine Aufgaben</div>
+        ) : (
+          sorted.map((t) => (
+            <div key={t.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12 }}>
+              <div style={{ fontWeight: 700 }}>{t.title}</div>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>
+                {t.due} • {t.area} • {statusLabel(t.status)}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GuidesView({
+  areas,
+  guides,
+  isAdmin,
+  newGuideTitle,
+  setNewGuideTitle,
+  newGuideText,
+  setNewGuideText,
+  newGuideAreaId,
+  setNewGuideAreaId,
+  fileRef,
+  uploadingGuide,
+  createGuide,
+  getGuideFileUrl,
+  dataError
+}) {
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 14 }}>
+        <div style={{ fontWeight: 700, marginBottom: 10 }}>Anleitung erstellen</div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 10, marginBottom: 10 }}>
+          <input
+            value={newGuideTitle}
+            onChange={(e) => setNewGuideTitle(e.target.value)}
+            placeholder="Titel (z. B. Tourenplanung – Ablauf)"
+            style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
+          />
+
+          <select
+            value={newGuideAreaId}
+            onChange={(e) => setNewGuideAreaId(e.target.value)}
+            style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
+          >
+            {areas.length === 0 && <option value="">(keine Bereiche)</option>}
+            {areas.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <textarea
+          value={newGuideText}
+          onChange={(e) => setNewGuideText(e.target.value)}
+          placeholder="Text / Anleitung…"
+          rows={6}
+          style={{ width: "100%", padding: 10, border: "1px solid #e5e7eb", borderRadius: 10, marginBottom: 10 }}
+        />
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <input ref={fileRef} type="file" />
+          <button
+            onClick={createGuide}
+            disabled={uploadingGuide}
+            style={{
+              padding: "10px 12px",
+              borderRadius: 10,
+              border: "1px solid #e5e7eb",
+              background: uploadingGuide ? "#f3f4f6" : "white",
+              cursor: uploadingGuide ? "not-allowed" : "pointer"
+            }}
+          >
+            {uploadingGuide ? "Speichere…" : "Speichern"}
+          </button>
+
+          <span style={{ fontSize: 12, opacity: 0.7 }}>
+            Upload: alle gängigen Formate (PDF/DOCX/XLSX/JPG/PNG/ZIP etc.)
+          </span>
+        </div>
+
+        {dataError ? (
+          <div style={{ marginTop: 10, color: "darkred", fontSize: 12 }}>{dataError}</div>
+        ) : null}
+
+        {!isAdmin ? (
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
+            Hinweis: Bearbeitung ist aktuell offen. Später wird das über Rollen/RLS sauber begrenzt.
+          </div>
+        ) : null}
+      </div>
+
+      <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 14 }}>
+        <div style={{ fontWeight: 700, marginBottom: 10 }}>Anleitungen</div>
+
+        {guides.length === 0 ? (
+          <div style={{ opacity: 0.7 }}>Noch keine Anleitungen vorhanden.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {guides.map((g) => {
+              const url = getGuideFileUrl(g.file_path);
+              return (
+                <div key={g.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12 }}>
+                  <div style={{ fontWeight: 700 }}>{g.title}</div>
+                  <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>
+                    {g.area} • {new Date(g.created_at).toLocaleString()}
+                  </div>
+
+                  {g.content ? <div style={{ whiteSpace: "pre-wrap", marginBottom: 8 }}>{g.content}</div> : null}
+
+                  {url ? (
+                    <a href={url} target="_blank" rel="noreferrer">
+                      Datei öffnen
+                    </a>
+                  ) : (
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>Keine Datei</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AdminView({ areas, tasks, newAreaName, setNewAreaName, addArea, savingArea }) {
+  const perArea = useMemo(() => {
+    const map = {};
+    for (const a of areas) map[a.id] = 0;
+    for (const t of tasks) if (t.area_id) map[t.area_id] = (map[t.area_id] || 0) + 1;
+    return map;
+  }, [areas, tasks]);
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 14 }}>
+        <div style={{ fontWeight: 700, marginBottom: 10 }}>Bereiche verwalten</div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            value={newAreaName}
+            onChange={(e) => setNewAreaName(e.target.value)}
+            placeholder="Neuer Bereich"
+            style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10, minWidth: 260 }}
+          />
+          <button
+            onClick={addArea}
+            disabled={savingArea}
+            style={{
+              padding: "10px 12px",
+              borderRadius: 10,
+              border: "1px solid #e5e7eb",
+              background: savingArea ? "#f3f4f6" : "white",
+              cursor: savingArea ? "not-allowed" : "pointer"
+            }}
+          >
+            {savingArea ? "Speichere…" : "Anlegen"}
+          </button>
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+          {areas.map((a) => (
+            <div key={a.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12 }}>
+              <div style={{ fontWeight: 700 }}>{a.name}</div>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>
+                Aufgaben in diesem Bereich: {perArea[a.id] || 0}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 14 }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>Chef Cockpit</div>
+        <div style={{ fontSize: 12, opacity: 0.75 }}>
+          Dieses Cockpit ist absichtlich „unauffällig“. Später können hier KPIs rein (überfällig, Auslastung, Trends).
+        </div>
+      </div>
     </div>
   );
 }
@@ -877,12 +1371,7 @@ function TaskModal({
               value={newSubtaskTitle}
               onChange={(e) => setNewSubtaskTitle(e.target.value)}
               placeholder="Neue Unteraufgabe"
-              style={{
-                flex: 1,
-                padding: 10,
-                border: "1px solid #e5e7eb",
-                borderRadius: 10
-              }}
+              style={{ flex: 1, padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}
             />
             <button
               onClick={addSubtask}
@@ -905,9 +1394,7 @@ function TaskModal({
             <div style={{ fontSize: 12, opacity: 0.7 }}>Lade Unteraufgaben…</div>
           ) : (
             <div style={{ display: "grid", gap: 8 }}>
-              {subtasks.length === 0 && (
-                <div style={{ fontSize: 12, opacity: 0.7 }}>Keine Unteraufgaben vorhanden.</div>
-              )}
+              {subtasks.length === 0 && <div style={{ fontSize: 12, opacity: 0.7 }}>Keine Unteraufgaben vorhanden.</div>}
 
               {subtasks.map((s) => (
                 <div
@@ -954,7 +1441,7 @@ function TaskModal({
         </div>
 
         <div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>
-          Tipp: Diese Ansicht ist ideal für neue Mitarbeiter (Ablauf als Checkliste).
+          Tipp: Perfekt für neue Mitarbeiter (Ablauf als Checkliste).
         </div>
       </div>
     </div>
