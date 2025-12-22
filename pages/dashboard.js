@@ -13,7 +13,8 @@ const TABS = [
   { id: "list", label: "Liste" },
   { id: "calendar", label: "Kalender" },
   { id: "timeline", label: "Zeitleiste" },
-  { id: "guides", label: "Anleitungen" }
+  { id: "guides", label: "Anleitungen" },
+  { id: "areas", label: "Bereiche" }
 ];
 
 const STATUS = [
@@ -45,7 +46,13 @@ export default function Dashboard() {
   const [newAreaId, setNewAreaId] = useState("");
   const [newPeriod, setNewPeriod] = useState("Heute");
   const [newStatus, setNewStatus] = useState("todo");
-  const [saving, setSaving] = useState(false);
+  const [savingTask, setSavingTask] = useState(false);
+
+  // Bereiche UI
+  const [newAreaName, setNewAreaName] = useState("");
+  const [savingArea, setSavingArea] = useState(false);
+  const [editingAreaId, setEditingAreaId] = useState(null);
+  const [editingAreaName, setEditingAreaName] = useState("");
 
   useEffect(() => {
     let mounted = true;
@@ -81,10 +88,9 @@ export default function Dashboard() {
   async function reloadAll() {
     setLoadingData(true);
 
-    // Areas (RLS filtert automatisch auf die, die der User sehen darf)
     const { data: areasData, error: areasErr } = await supabase
       .from("areas")
-      .select("id,name")
+      .select("id,name,created_at")
       .order("name", { ascending: true });
 
     if (areasErr) {
@@ -96,7 +102,6 @@ export default function Dashboard() {
 
     setAreas(areasData ?? []);
 
-    // Tasks (RLS filtert automatisch auf die, die der User sehen darf)
     const { data: tasksData, error: tasksErr } = await supabase
       .from("tasks")
       .select("id,title,area_id,period,status,created_at")
@@ -115,7 +120,6 @@ export default function Dashboard() {
 
     setTasks(tasksData ?? []);
 
-    // Default: ersten Bereich vorauswählen (nur fürs Anlegen)
     if ((areasData ?? []).length > 0 && !newAreaId) setNewAreaId(areasData[0].id);
 
     setLoadingData(false);
@@ -136,7 +140,7 @@ export default function Dashboard() {
       return;
     }
 
-    setSaving(true);
+    setSavingTask(true);
     const payload = {
       title: newTitle.trim(),
       area_id: newAreaId,
@@ -145,7 +149,7 @@ export default function Dashboard() {
     };
 
     const { error } = await supabase.from("tasks").insert(payload);
-    setSaving(false);
+    setSavingTask(false);
 
     if (error) {
       alert("Konnte Aufgabe nicht anlegen: " + error.message);
@@ -173,6 +177,77 @@ export default function Dashboard() {
       return;
     }
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
+  }
+
+  // ==========================
+  // BEREICHE CRUD
+  // ==========================
+  async function createArea() {
+    const name = newAreaName.trim();
+    if (!name) {
+      alert("Bitte Bereichsname eingeben");
+      return;
+    }
+    setSavingArea(true);
+    const { error } = await supabase.from("areas").insert({ name });
+    setSavingArea(false);
+
+    if (error) {
+      alert("Bereich konnte nicht angelegt werden: " + error.message);
+      return;
+    }
+
+    setNewAreaName("");
+    await reloadAll();
+  }
+
+  function startEditArea(area) {
+    setEditingAreaId(area.id);
+    setEditingAreaName(area.name ?? "");
+  }
+
+  function cancelEditArea() {
+    setEditingAreaId(null);
+    setEditingAreaName("");
+  }
+
+  async function saveEditArea() {
+    const name = editingAreaName.trim();
+    if (!editingAreaId) return;
+    if (!name) {
+      alert("Name darf nicht leer sein");
+      return;
+    }
+
+    setSavingArea(true);
+    const { error } = await supabase.from("areas").update({ name }).eq("id", editingAreaId);
+    setSavingArea(false);
+
+    if (error) {
+      alert("Bereich konnte nicht gespeichert werden: " + error.message);
+      return;
+    }
+
+    cancelEditArea();
+    await reloadAll();
+  }
+
+  async function deleteArea(area) {
+    const ok = confirm(
+      `Bereich wirklich löschen?\n\n"${area.name}"\n\nAchtung: Aufgaben in diesem Bereich müssen vorher gelöscht oder umgezogen werden.`
+    );
+    if (!ok) return;
+
+    setSavingArea(true);
+    const { error } = await supabase.from("areas").delete().eq("id", area.id);
+    setSavingArea(false);
+
+    if (error) {
+      alert("Bereich konnte nicht gelöscht werden: " + error.message);
+      return;
+    }
+
+    await reloadAll();
   }
 
   const areaNameById = useMemo(() => {
@@ -284,42 +359,46 @@ export default function Dashboard() {
             ))}
           </div>
 
-          <div style={{ marginTop: 18, fontSize: 12, opacity: 0.7 }}>Filter</div>
+          {activeTab !== "areas" && (
+            <>
+              <div style={{ marginTop: 18, fontSize: 12, opacity: 0.7 }}>Filter</div>
 
-          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-            <select
-              value={filterArea}
-              onChange={(e) => setFilterArea(e.target.value)}
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
-            >
-              <option value="all">Alle Bereiche</option>
-              {areas.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
+              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                <select
+                  value={filterArea}
+                  onChange={(e) => setFilterArea(e.target.value)}
+                  style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
+                >
+                  <option value="all">Alle Bereiche</option>
+                  {areas.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
 
-            <select
-              value={filterPeriod}
-              onChange={(e) => setFilterPeriod(e.target.value)}
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
-            >
-              <option value="all">Alle Zeiträume</option>
-              {PERIODS.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
+                <select
+                  value={filterPeriod}
+                  onChange={(e) => setFilterPeriod(e.target.value)}
+                  style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
+                >
+                  <option value="all">Alle Zeiträume</option>
+                  {PERIODS.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
 
-            <input
-              placeholder="Suche…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
-            />
-          </div>
+                <input
+                  placeholder="Suche…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
+                />
+              </div>
+            </>
+          )}
         </div>
 
         {/* Main */}
@@ -343,88 +422,28 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* Task Creator (nur Board/List sinnvoll) */}
-          {(activeTab === "board" || activeTab === "list") && (
-            <div
-              style={{
-                background: "white",
-                border: "1px solid #e5e7eb",
-                borderRadius: 14,
-                padding: 12,
-                marginBottom: 12
-              }}
-            >
-              <div style={{ fontWeight: 700, marginBottom: 10 }}>Aufgabe anlegen</div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 160px 180px 120px", gap: 10 }}>
-                <input
-                  placeholder="Titel"
-                  value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
-                />
-
-                <select
-                  value={newAreaId}
-                  onChange={(e) => setNewAreaId(e.target.value)}
-                  style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
-                >
-                  {areas.length === 0 && <option value="">(keine Bereiche)</option>}
-                  {areas.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-
-                <select
-                  value={newPeriod}
-                  onChange={(e) => setNewPeriod(e.target.value)}
-                  style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
-                >
-                  {PERIODS.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-
-                <select
-                  value={newStatus}
-                  onChange={(e) => setNewStatus(e.target.value)}
-                  style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
-                >
-                  {STATUS.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
-
-                <button
-                  onClick={createTask}
-                  disabled={saving || areas.length === 0}
-                  style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", cursor: "pointer" }}
-                >
-                  {saving ? "…" : "Anlegen"}
-                </button>
-              </div>
-
-              {areas.length === 0 && (
-                <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
-                  Hinweis: Du hast noch keine Bereiche. Lege zuerst in Supabase (areas) mindestens einen Bereich an und/oder
-                  ordne dich über profile_areas zu.
-                </div>
-              )}
-            </div>
-          )}
-
           {loadingData ? (
             <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 16 }}>
               Lade Daten…
             </div>
           ) : (
             <>
+              {(activeTab === "board" || activeTab === "list") && (
+                <TaskCreator
+                  areas={areas}
+                  title={newTitle}
+                  setTitle={setNewTitle}
+                  areaId={newAreaId}
+                  setAreaId={setNewAreaId}
+                  period={newPeriod}
+                  setPeriod={setNewPeriod}
+                  status={newStatus}
+                  setStatus={setNewStatus}
+                  saving={savingTask}
+                  onCreate={createTask}
+                />
+              )}
+
               {activeTab === "board" && (
                 <BoardView
                   tasks={filteredTasks}
@@ -444,8 +463,220 @@ export default function Dashboard() {
               {activeTab === "calendar" && <Placeholder title="Kalender" text="Kommt als nächstes." />}
               {activeTab === "timeline" && <Placeholder title="Zeitleiste" text="Kommt als nächstes." />}
               {activeTab === "guides" && <Placeholder title="Anleitungen" text="Kommt als nächstes." />}
+
+              {activeTab === "areas" && (
+                <AreasView
+                  areas={areas}
+                  newAreaName={newAreaName}
+                  setNewAreaName={setNewAreaName}
+                  savingArea={savingArea}
+                  onCreateArea={createArea}
+                  editingAreaId={editingAreaId}
+                  editingAreaName={editingAreaName}
+                  setEditingAreaName={setEditingAreaName}
+                  onStartEdit={startEditArea}
+                  onCancelEdit={cancelEditArea}
+                  onSaveEdit={saveEditArea}
+                  onDeleteArea={deleteArea}
+                />
+              )}
             </>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaskCreator({
+  areas,
+  title,
+  setTitle,
+  areaId,
+  setAreaId,
+  period,
+  setPeriod,
+  status,
+  setStatus,
+  saving,
+  onCreate
+}) {
+  return (
+    <div
+      style={{
+        background: "white",
+        border: "1px solid #e5e7eb",
+        borderRadius: 14,
+        padding: 12,
+        marginBottom: 12
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 10 }}>Aufgabe anlegen</div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 160px 180px 120px", gap: 10 }}>
+        <input
+          placeholder="Titel"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
+        />
+
+        <select
+          value={areaId}
+          onChange={(e) => setAreaId(e.target.value)}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
+        >
+          {areas.length === 0 && <option value="">(keine Bereiche)</option>}
+          {areas.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={period}
+          onChange={(e) => setPeriod(e.target.value)}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
+        >
+          {PERIODS.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}
+        >
+          {STATUS.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+
+        <button
+          onClick={onCreate}
+          disabled={saving || areas.length === 0}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", cursor: "pointer" }}
+        >
+          {saving ? "…" : "Anlegen"}
+        </button>
+      </div>
+
+      {areas.length === 0 && (
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
+          Hinweis: Du hast noch keine Bereiche. Lege zuerst mindestens einen Bereich an (Tab "Bereiche").
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AreasView({
+  areas,
+  newAreaName,
+  setNewAreaName,
+  savingArea,
+  onCreateArea,
+  editingAreaId,
+  editingAreaName,
+  setEditingAreaName,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onDeleteArea
+}) {
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+        <div style={{ fontWeight: 700, marginBottom: 10 }}>Bereich anlegen</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            placeholder="z. B. Disposition"
+            value={newAreaName}
+            onChange={(e) => setNewAreaName(e.target.value)}
+            style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", flex: 1 }}
+          />
+          <button
+            onClick={onCreateArea}
+            disabled={savingArea}
+            style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", cursor: "pointer" }}
+          >
+            {savingArea ? "…" : "Anlegen"}
+          </button>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+          Hinweis: Anlegen/Ändern/Löschen klappt nur, wenn dein User in profiles die Rolle "admin" hat.
+        </div>
+      </div>
+
+      <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+        <div style={{ fontWeight: 700, marginBottom: 10 }}>Bereiche</div>
+
+        <div style={{ display: "grid", gap: 8 }}>
+          {areas.map((a) => (
+            <div
+              key={a.id}
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "center",
+                border: "1px solid #e5e7eb",
+                borderRadius: 12,
+                padding: 10,
+                background: "#fafafa"
+              }}
+            >
+              <div style={{ width: 280, fontSize: 12, opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis" }}>
+                {a.id}
+              </div>
+
+              {editingAreaId === a.id ? (
+                <>
+                  <input
+                    value={editingAreaName}
+                    onChange={(e) => setEditingAreaName(e.target.value)}
+                    style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", flex: 1 }}
+                  />
+                  <button
+                    onClick={onSaveEdit}
+                    disabled={savingArea}
+                    style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", cursor: "pointer" }}
+                  >
+                    Speichern
+                  </button>
+                  <button
+                    onClick={onCancelEdit}
+                    style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", cursor: "pointer" }}
+                  >
+                    Abbrechen
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div style={{ flex: 1, fontWeight: 700 }}>{a.name}</div>
+                  <button
+                    onClick={() => onStartEdit(a)}
+                    style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", cursor: "pointer" }}
+                  >
+                    Umbenennen
+                  </button>
+                  <button
+                    onClick={() => onDeleteArea(a)}
+                    style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", cursor: "pointer" }}
+                  >
+                    Löschen
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+
+          {areas.length === 0 && <div style={{ fontSize: 12, opacity: 0.7 }}>Noch keine Bereiche vorhanden.</div>}
         </div>
       </div>
     </div>
