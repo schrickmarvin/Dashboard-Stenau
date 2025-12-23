@@ -1,3 +1,4 @@
+// pages/index.js
 import { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -6,99 +7,223 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
-export default function Home() {
-  const [user, setUser] = useState(null);
-  const [loadingAuth, setLoadingAuth] = useState(true);
-
+export default function LoginPage() {
+  const [checking, setChecking] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [working, setWorking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
     let mounted = true;
 
-    // Initialer User-Check
-    supabase.auth.getUser().then(({ data }) => {
+    // 1) Beim Laden prüfen, ob bereits eingeloggt
+    supabase.auth.getUser().then(({ data, error }) => {
       if (!mounted) return;
-      const u = data.user ?? null;
-      setUser(u);
-      setLoadingAuth(false);
-
-      // Wenn bereits eingeloggt -> direkt weiter
-      if (u && typeof window !== "undefined") {
-        window.location.replace("/dashboard");
+      if (!error && data?.user) {
+        window.location.href = "/dashboard";
+        return;
       }
+      setChecking(false);
     });
 
-    // Listener für Login/Logout
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      const u = session?.user ?? null;
-      setUser(u);
-
-      // Nach Login -> weiterleiten
-      if (u && typeof window !== "undefined") {
-        window.location.replace("/dashboard");
-      }
+    // 2) Bei Login-Änderung automatisch weiterleiten
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) window.location.href = "/dashboard";
     });
 
     return () => {
       mounted = false;
-      try {
-        authListener?.subscription?.unsubscribe?.();
-      } catch {}
+      sub?.subscription?.unsubscribe();
     };
   }, []);
 
-  async function signIn() {
+  async function signIn(e) {
+    e?.preventDefault?.();
+    setErrorMsg("");
+
     if (!email || !password) {
-      alert("E-Mail und Passwort eingeben");
+      setErrorMsg("Bitte E-Mail und Passwort eingeben.");
       return;
     }
 
-    setWorking(true);
+    setBusy(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setWorking(false);
+    setBusy(false);
 
-    if (error) alert(error.message);
-    // Redirect passiert im Auth-Listener automatisch
+    if (error) setErrorMsg(error.message);
+    // Bei Erfolg übernimmt onAuthStateChange die Weiterleitung
   }
 
-  if (loadingAuth) {
+  if (checking) {
     return (
-      <div style={{ padding: 40, fontFamily: "system-ui" }}>
-        <h1>Dashboard Stenau</h1>
-        <p>Lade…</p>
+      <div style={styles.page}>
+        <div style={styles.centerWrap}>
+          <div style={styles.card}>
+            <div style={{ opacity: 0.8 }}>Lade…</div>
+          </div>
+        </div>
       </div>
     );
   }
 
-  // Wenn eingeloggt, zeigen wir hier nichts (Redirect passiert)
-  if (user) return null;
-
   return (
-    <div style={{ padding: 40, fontFamily: "system-ui" }}>
-      <h1>Dashboard Stenau</h1>
+    <div style={styles.page}>
+      <div style={styles.bgGlow1} />
+      <div style={styles.bgGlow2} />
+      <div style={styles.gridOverlay} />
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, width: 320 }}>
-        <input
-          placeholder="E-Mail"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          style={{ padding: 10 }}
-        />
+      <div style={styles.centerWrap}>
+        <div style={styles.card}>
+          <div style={styles.header}>
+            <div style={styles.logoMark} aria-hidden="true" />
+            <div style={styles.titleBlock}>
+              <div style={styles.title}>Armaturenbrett</div>
+              <div style={styles.subtitle}>Bitte anmelden, um fortzufahren.</div>
+            </div>
+          </div>
 
-        <input
-          type="password"
-          placeholder="Passwort"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          style={{ padding: 10 }}
-        />
+          <form onSubmit={signIn} style={{ display: "grid", gap: 12 }}>
+            <label style={styles.label}>
+              E-Mail
+              <input
+                style={styles.input}
+                placeholder="name@firma.de"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+              />
+            </label>
 
-        <button onClick={signIn} style={{ padding: 10 }} disabled={working}>
-          {working ? "Login…" : "Login"}
-        </button>
+            <label style={styles.label}>
+              Passwort
+              <input
+                style={styles.input}
+                type="password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+
+            {errorMsg ? <div style={styles.error}>{errorMsg}</div> : null}
+
+            <button type="submit" style={styles.button} disabled={busy}>
+              {busy ? "Anmelden…" : "Anmelden"}
+            </button>
+
+            <div style={styles.footerHint}>
+              Wenn du dein Passwort nicht kennst, nutze die Supabase-Konsole zum Zurücksetzen.
+            </div>
+          </form>
+        </div>
       </div>
     </div>
   );
 }
+
+const styles = {
+  page: {
+    minHeight: "100vh",
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+    background: "linear-gradient(180deg, #0b1220 0%, #0a0f1a 45%, #070a12 100%)",
+    color: "#e8eefc",
+    position: "relative",
+    overflow: "hidden"
+  },
+  centerWrap: {
+    minHeight: "100vh",
+    display: "grid",
+    placeItems: "center",
+    padding: 20,
+    position: "relative",
+    zIndex: 2
+  },
+  card: {
+    width: "min(520px, 92vw)",
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 18,
+    padding: 22,
+    boxShadow: "0 20px 70px rgba(0,0,0,0.45)",
+    backdropFilter: "blur(10px)"
+  },
+  header: {
+    display: "flex",
+    gap: 14,
+    alignItems: "center",
+    marginBottom: 16
+  },
+  logoMark: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    background:
+      "linear-gradient(135deg, rgba(130,170,255,0.95), rgba(120,255,214,0.75))",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.35)"
+  },
+  titleBlock: { display: "grid", gap: 2 },
+  title: { fontSize: 20, fontWeight: 650, letterSpacing: 0.2 },
+  subtitle: { fontSize: 13, opacity: 0.8, lineHeight: 1.35 },
+
+  label: { display: "grid", gap: 6, fontSize: 13, opacity: 0.95 },
+  input: {
+    width: "100%",
+    padding: "11px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(10,15,26,0.55)",
+    color: "#e8eefc",
+    outline: "none"
+  },
+  button: {
+    width: "100%",
+    padding: "12px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background:
+      "linear-gradient(135deg, rgba(130,170,255,0.95), rgba(120,255,214,0.75))",
+    color: "#06101a",
+    cursor: "pointer",
+    fontWeight: 650
+  },
+  error: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(255,120,120,0.35)",
+    background: "rgba(255,120,120,0.12)",
+    color: "#ffd7d7",
+    fontSize: 13
+  },
+  footerHint: { fontSize: 12, opacity: 0.65, marginTop: 2 },
+
+  // Background decor
+  bgGlow1: {
+    position: "absolute",
+    inset: "-20% auto auto -20%",
+    width: 520,
+    height: 520,
+    borderRadius: 999,
+    background: "radial-gradient(circle, rgba(130,170,255,0.35), transparent 65%)",
+    filter: "blur(2px)"
+  },
+  bgGlow2: {
+    position: "absolute",
+    inset: "auto -20% -25% auto",
+    width: 620,
+    height: 620,
+    borderRadius: 999,
+    background: "radial-gradient(circle, rgba(120,255,214,0.20), transparent 65%)",
+    filter: "blur(2px)"
+  },
+  gridOverlay: {
+    position: "absolute",
+    inset: 0,
+    backgroundImage:
+      "linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)",
+    backgroundSize: "48px 48px",
+    opacity: 0.12,
+    zIndex: 1
+  }
+};
