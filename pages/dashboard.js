@@ -8,18 +8,20 @@ const supabase = createClient(
 );
 
 const TABS = [
-  { id: "board", label: "Planke" },
+  { id: "board", label: "Board" },
   { id: "list", label: "Liste" },
   { id: "calendar", label: "Kalender" },
-  { id: "timeline", label: "Zeitleiste" },
+  { id: "timeline", label: "Timeline" },
   { id: "guides", label: "Anleitungen" },
-  { id: "areas", label: "Bereiche" }
+  { id: "areas", label: "Bereiche" },
+  { id: "settings", label: "Einstellungen" }
 ];
 
 const DUE_BUCKETS = [
   { value: "Heute", label: "Heute" },
   { value: "Diese Woche", label: "Diese Woche" },
-  { value: "Monat", label: "Monat" }
+  { value: "Monat", label: "Monat" },
+  { value: "Jahr", label: "Jahr" }
 ];
 
 const STATUS = [
@@ -30,7 +32,7 @@ const STATUS = [
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loadingAuth, setLoadingAuth] = useState(true);
 
   const [activeTab, setActiveTab] = useState("board");
 
@@ -40,38 +42,43 @@ export default function Dashboard() {
   const [subtasks, setSubtasks] = useState([]);
   const [guides, setGuides] = useState([]);
 
-  // UI state
+  // Filters
   const [filterAreaId, setFilterAreaId] = useState("all");
   const [filterDue, setFilterDue] = useState("all");
   const [search, setSearch] = useState("");
 
-  // Create Task
+  // Create task
   const [newTitle, setNewTitle] = useState("");
-  const [newAreaId, setNewAreaId] = use rightAreaDefault(areas);
+  const [newAreaId, setNewAreaId] = useState("");
   const [newDueBucket, setNewDueBucket] = useState("Heute");
   const [newStatus, setNewStatus] = useState("todo");
   const [busyCreateTask, setBusyCreateTask] = useState(false);
 
-  // Create Subtask
+  // Subtasks
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [busyCreateSubtask, setBusyCreateSubtask] = useState(false);
 
-  // Create Guide (metadata + optional file upload)
+  // Guides create
   const [guideTitle, setGuideTitle] = useState("");
-  const [guideAreaId, setGuideAreaId] = use rightAreaDefault(areas);
+  const [guideAreaId, setGuideAreaId] = useState("");
   const [guideContent, setGuideContent] = useState("");
   const [guideFile, setGuideFile] = useState(null);
   const [busyCreateGuide, setBusyCreateGuide] = useState(false);
 
-  // Login check
+  // Settings
+  const [settings, setSettings] = useState(null);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+
+  // Auth check
   useEffect(() => {
     let mounted = true;
 
     supabase.auth.getUser().then(({ data }) => {
       if (!mounted) return;
       setUser(data.user ?? null);
-      setLoading(false);
+      setLoadingAuth(false);
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
@@ -84,12 +91,26 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Load all data (when user exists)
+  // Load data after login
   useEffect(() => {
     if (!user) return;
     reloadAll();
+    loadSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
+
+  // Set defaults when areas/tasks arrive
+  useEffect(() => {
+    if (!newAreaId && areas.length) setNewAreaId(areas[0].id);
+    if (!guideAreaId && areas.length) setGuideAreaId(areas[0].id);
+    if (!selectedTaskId && tasks.length) setSelectedTaskId(tasks[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [areas, tasks]);
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    window.location.href = "/";
+  }
 
   async function reloadAll() {
     // Areas
@@ -143,24 +164,74 @@ export default function Dashboard() {
     setGuides(gData ?? []);
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    window.location.href = "/";
+  async function loadSettings() {
+    if (!user?.id) return;
+    setSettingsLoading(true);
+
+    const { data, error } = await supabase
+      .from("user_settings")
+      .select(
+        "user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop"
+      )
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    // If not exists -> create defaults
+    if (!data && !error) {
+      const { data: insData, error: insErr } = await supabase
+        .from("user_settings")
+        .insert({ user_id: user.id })
+        .select(
+          "user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop"
+        )
+        .single();
+
+      if (insErr) alert("Fehler beim Anlegen der Einstellungen: " + insErr.message);
+      setSettings(insErr ? null : insData);
+      setSettingsLoading(false);
+      return;
+    }
+
+    if (error) alert("Fehler beim Laden der Einstellungen: " + error.message);
+    setSettings(data ?? null);
+    setSettingsLoading(false);
   }
 
-  // Default area helpers (avoid hooks bug when areas load later)
-  useEffect(() => {
-    if (!newAreaId && areas?.length) setNewAreaId(areas[0].id);
-    if (!guideAreaId && areas?.length) setGuideAreaId(areas[0].id);
-    if (!selectedTaskId && tasks?.length) setSelectedTaskId(tasks[0].id);
-  }, [areas, tasks]); // eslint-disable-line react-hooks/exhaustive-deps
+  async function saveSettings(patch) {
+    if (!user?.id) return;
+    if (!settings) return;
 
-  // Build maps
+    setSettingsSaving(true);
+    const next = { ...settings, ...patch };
+    setSettings(next);
+
+    const { error } = await supabase.from("user_settings").update(patch).eq("user_id", user.id);
+
+    setSettingsSaving(false);
+
+    if (error) {
+      alert("Fehler beim Speichern: " + error.message);
+      await loadSettings();
+    }
+  }
+
+  const ui = useMemo(() => getUiTheme(settings), [settings]);
+
   const areaNameById = useMemo(() => {
     const m = new Map();
     (areas ?? []).forEach((a) => m.set(a.id, a.name));
     return m;
   }, [areas]);
+
+  const guidesByAreaId = useMemo(() => {
+    const m = new Map();
+    (guides ?? []).forEach((g) => {
+      const list = m.get(g.area_id) ?? [];
+      list.push(g);
+      m.set(g.area_id, list);
+    });
+    return m;
+  }, [guides]);
 
   const subtasksByTaskId = useMemo(() => {
     const m = new Map();
@@ -172,10 +243,8 @@ export default function Dashboard() {
     return m;
   }, [subtasks]);
 
-  // Filtered tasks
   const filteredTasks = useMemo(() => {
     const q = (search ?? "").trim().toLowerCase();
-
     return (tasks ?? []).filter((t) => {
       if (filterAreaId !== "all" && t.area_id !== filterAreaId) return false;
       if (filterDue !== "all" && t.due_bucket !== filterDue) return false;
@@ -188,7 +257,6 @@ export default function Dashboard() {
     });
   }, [tasks, filterAreaId, filterDue, search, areaNameById]);
 
-  // Counts
   const counts = useMemo(() => {
     const open = filteredTasks.filter((t) => t.status !== "done").length;
     const today = filteredTasks.filter((t) => t.due_bucket === "Heute" && t.status !== "done").length;
@@ -196,16 +264,9 @@ export default function Dashboard() {
     return { open, today, week };
   }, [filteredTasks]);
 
-  // Create task
   async function createTask() {
-    if (!newTitle.trim()) {
-      alert("Bitte einen Titel eingeben.");
-      return;
-    }
-    if (!newAreaId) {
-      alert("Bitte einen Bereich auswählen.");
-      return;
-    }
+    if (!newTitle.trim()) return alert("Bitte einen Titel eingeben.");
+    if (!newAreaId) return alert("Bitte einen Bereich auswählen.");
 
     setBusyCreateTask(true);
 
@@ -214,7 +275,7 @@ export default function Dashboard() {
       area_id: newAreaId,
       status: newStatus,
       due_bucket: newDueBucket,
-      period: newDueBucket, // Minimal: period = due_bucket
+      period: newDueBucket,
       subtasks_done: 0,
       subtasks_total: 0,
       created_by: user?.id ?? null,
@@ -225,46 +286,28 @@ export default function Dashboard() {
     const { error } = await supabase.from("tasks").insert(payload);
     setBusyCreateTask(false);
 
-    if (error) {
-      alert("Fehler beim Anlegen: " + error.message);
-      return;
-    }
+    if (error) return alert("Fehler beim Anlegen: " + error.message);
 
     setNewTitle("");
     await reloadAll();
   }
 
-  // Update task status
   async function setTaskStatus(taskId, status) {
     const { error } = await supabase.from("tasks").update({ status }).eq("id", taskId);
-    if (error) {
-      alert("Fehler beim Update: " + error.message);
-      return;
-    }
+    if (error) return alert("Fehler beim Update: " + error.message);
     await reloadAll();
   }
 
-  // Delete task
   async function deleteTask(taskId) {
     if (!confirm("Aufgabe wirklich löschen?")) return;
     const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-    if (error) {
-      alert("Fehler beim Löschen: " + error.message);
-      return;
-    }
+    if (error) return alert("Fehler beim Löschen: " + error.message);
     await reloadAll();
   }
 
-  // Create subtask
   async function createSubtask() {
-    if (!selectedTaskId) {
-      alert("Bitte zuerst eine Aufgabe auswählen.");
-      return;
-    }
-    if (!newSubtaskTitle.trim()) {
-      alert("Bitte einen Unteraufgaben-Titel eingeben.");
-      return;
-    }
+    if (!selectedTaskId) return alert("Bitte zuerst eine Aufgabe auswählen.");
+    if (!newSubtaskTitle.trim()) return alert("Bitte einen Unteraufgaben-Titel eingeben.");
 
     setBusyCreateSubtask(true);
 
@@ -278,14 +321,9 @@ export default function Dashboard() {
     const { error } = await supabase.from("subtasks").insert(payload);
     setBusyCreateSubtask(false);
 
-    if (error) {
-      alert("Fehler beim Anlegen: " + error.message);
-      return;
-    }
+    if (error) return alert("Fehler beim Anlegen: " + error.message);
 
     setNewSubtaskTitle("");
-
-    // Recalc subtasks counters on task (simple)
     await recomputeTaskSubtasks(selectedTaskId);
     await reloadAll();
   }
@@ -299,17 +337,13 @@ export default function Dashboard() {
       .update({ is_done: newDone, status: newStatus, updated_at: new Date().toISOString() })
       .eq("id", subtask.id);
 
-    if (error) {
-      alert("Fehler beim Update: " + error.message);
-      return;
-    }
+    if (error) return alert("Fehler beim Update: " + error.message);
 
     await recomputeTaskSubtasks(subtask.task_id);
     await reloadAll();
   }
 
   async function recomputeTaskSubtasks(taskId) {
-    // Pull subtasks for this task
     const { data, error } = await supabase
       .from("subtasks")
       .select("id,is_done,status")
@@ -320,28 +354,17 @@ export default function Dashboard() {
     const total = (data ?? []).length;
     const done = (data ?? []).filter((s) => (s.is_done ?? false) || s.status === "done").length;
 
-    await supabase
-      .from("tasks")
-      .update({ subtasks_total: total, subtasks_done: done })
-      .eq("id", taskId);
+    await supabase.from("tasks").update({ subtasks_total: total, subtasks_done: done }).eq("id", taskId);
   }
 
-  // Create guide (with optional upload to bucket "guides")
   async function createGuide() {
-    if (!guideTitle.trim()) {
-      alert("Bitte einen Titel eingeben.");
-      return;
-    }
-    if (!guideAreaId) {
-      alert("Bitte einen Bereich auswählen.");
-      return;
-    }
+    if (!guideTitle.trim()) return alert("Bitte einen Titel eingeben.");
+    if (!guideAreaId) return alert("Bitte einen Bereich auswählen.");
 
     setBusyCreateGuide(true);
 
     let file_path = null;
 
-    // Optional file upload
     if (guideFile) {
       const safeName = guideFile.name.replace(/\s+/g, "_").replace(/[^\w.\-]/g, "");
       const path = `${user?.id ?? "user"}/${Date.now()}_${safeName}`;
@@ -352,8 +375,7 @@ export default function Dashboard() {
 
       if (upErr) {
         setBusyCreateGuide(false);
-        alert("Upload-Fehler: " + upErr.message);
-        return;
+        return alert("Upload-Fehler: " + upErr.message);
       }
 
       file_path = path;
@@ -367,13 +389,9 @@ export default function Dashboard() {
     };
 
     const { error } = await supabase.from("guides").insert(payload);
-
     setBusyCreateGuide(false);
 
-    if (error) {
-      alert("Fehler beim Speichern: " + error.message);
-      return;
-    }
+    if (error) return alert("Fehler beim Speichern: " + error.message);
 
     setGuideTitle("");
     setGuideContent("");
@@ -385,14 +403,12 @@ export default function Dashboard() {
     if (!file_path) return;
 
     const { data, error } = await supabase.storage.from("guides").createSignedUrl(file_path, 60 * 10);
-    if (error) {
-      alert("Fehler beim Öffnen: " + error.message);
-      return;
-    }
+    if (error) return alert("Fehler beim Öffnen: " + error.message);
+
     window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   }
 
-  if (loading) {
+  if (loadingAuth) {
     return (
       <div style={{ padding: 24, fontFamily: "system-ui" }}>
         <h1>Armaturenbrett</h1>
@@ -407,32 +423,37 @@ export default function Dashboard() {
   }
 
   return (
-    <div style={styles.page}>
+    <div style={{ ...styles.page, background: ui.pageBg, color: ui.text }}>
       {/* Topbar */}
-      <div style={styles.topbar}>
+      <div style={{ ...styles.topbar, background: ui.topbarBg, borderBottom: ui.border }}>
         <div>
-          <div style={styles.topTitle}>Armaturenbrett</div>
-          <div style={styles.topSub}>Angemeldet als: {user.email}</div>
+          <div style={{ ...styles.topTitle, color: ui.text }}>Armaturenbrett</div>
+          <div style={{ ...styles.topSub, color: ui.subText }}>Angemeldet als: {user.email}</div>
         </div>
 
         <div style={{ display: "flex", gap: 8 }}>
-          <button style={styles.btnGhost} onClick={reloadAll}>Neu laden</button>
-          <button style={styles.btn} onClick={signOut}>Abmelden</button>
+          <button style={styles.btnGhost} onClick={reloadAll}>
+            Neu laden
+          </button>
+          <button style={styles.btn} onClick={signOut}>
+            Abmelden
+          </button>
         </div>
       </div>
 
       <div style={styles.body}>
         {/* Sidebar */}
-        <div style={styles.sidebar}>
-          <div style={styles.sidebarSectionTitle}>Übersicht</div>
+        <div style={{ ...styles.sidebar, background: ui.panelBg, borderRight: ui.border }}>
+          <div style={{ ...styles.sidebarSectionTitle, color: ui.subText }}>Übersicht</div>
+
           <div style={{ display: "grid", gap: 10 }}>
-            <StatCard label="Aufgaben heute" value={counts.today} />
-            <StatCard label="Diese Woche" value={counts.week} />
-            <StatCard label="Offen" value={counts.open} />
+            <StatCard label="Aufgaben heute" value={counts.today} ui={ui} />
+            <StatCard label="Diese Woche" value={counts.week} ui={ui} />
+            <StatCard label="Offen" value={counts.open} ui={ui} />
           </div>
 
           <div style={{ marginTop: 16 }}>
-            <div style={styles.sidebarSectionTitle}>Navigation</div>
+            <div style={{ ...styles.sidebarSectionTitle, color: ui.subText }}>Navigation</div>
             <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
               {TABS.map((t) => (
                 <button
@@ -440,7 +461,9 @@ export default function Dashboard() {
                   onClick={() => setActiveTab(t.id)}
                   style={{
                     ...styles.navBtn,
-                    background: activeTab === t.id ? "#eef2ff" : "white"
+                    border: ui.border,
+                    background: activeTab === t.id ? ui.navActiveBg : ui.panelBg,
+                    color: ui.text
                   }}
                 >
                   {t.label}
@@ -450,27 +473,31 @@ export default function Dashboard() {
           </div>
 
           <div style={{ marginTop: 18 }}>
-            <div style={styles.sidebarSectionTitle}>Filter</div>
+            <div style={{ ...styles.sidebarSectionTitle, color: ui.subText }}>Filter</div>
 
             <select
               value={filterAreaId}
               onChange={(e) => setFilterAreaId(e.target.value)}
-              style={styles.select}
+              style={{ ...styles.select, border: ui.border, background: ui.inputBg, color: ui.text }}
             >
               <option value="all">Alle Bereiche</option>
               {areas.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
               ))}
             </select>
 
             <select
               value={filterDue}
               onChange={(e) => setFilterDue(e.target.value)}
-              style={styles.select}
+              style={{ ...styles.select, border: ui.border, background: ui.inputBg, color: ui.text }}
             >
               <option value="all">Alle Zeiträume</option>
               {DUE_BUCKETS.map((d) => (
-                <option key={d.value} value={d.value}>{d.label}</option>
+                <option key={d.value} value={d.value}>
+                  {d.label}
+                </option>
               ))}
             </select>
 
@@ -478,14 +505,14 @@ export default function Dashboard() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Suche…"
-              style={styles.input}
+              style={{ ...styles.input, border: ui.border, background: ui.inputBg, color: ui.text, width: "100%", marginTop: 8 }}
             />
           </div>
         </div>
 
         {/* Main */}
         <div style={styles.main}>
-          {/* Tabs Row */}
+          {/* Tab pills */}
           <div style={styles.tabRow}>
             {TABS.map((t) => (
               <button
@@ -493,7 +520,9 @@ export default function Dashboard() {
                 onClick={() => setActiveTab(t.id)}
                 style={{
                   ...styles.pill,
-                  background: activeTab === t.id ? "white" : "transparent"
+                  border: ui.border,
+                  color: ui.text,
+                  background: activeTab === t.id ? ui.panelBg : "transparent"
                 }}
               >
                 {t.label}
@@ -501,10 +530,10 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* Views */}
           {activeTab === "board" && (
             <div style={{ display: "grid", gap: 12 }}>
               <CreateTaskBar
+                ui={ui}
                 areas={areas}
                 newTitle={newTitle}
                 setNewTitle={setNewTitle}
@@ -519,15 +548,19 @@ export default function Dashboard() {
               />
 
               <BoardView
+                ui={ui}
                 tasks={filteredTasks}
                 areaNameById={areaNameById}
                 onStatus={setTaskStatus}
                 onDelete={deleteTask}
                 subtasksByTaskId={subtasksByTaskId}
                 onToggleSubtask={toggleSubtaskDone}
+                guidesByAreaId={guidesByAreaId}
+                onOpenGuideFile={openGuideFile}
               />
 
               <SubtaskBar
+                ui={ui}
                 tasks={tasks}
                 selectedTaskId={selectedTaskId}
                 setSelectedTaskId={setSelectedTaskId}
@@ -540,27 +573,18 @@ export default function Dashboard() {
           )}
 
           {activeTab === "list" && (
-            <ListView
-              tasks={filteredTasks}
-              areaNameById={areaNameById}
-              onStatus={setTaskStatus}
-              onDelete={deleteTask}
-            />
+            <ListView ui={ui} tasks={filteredTasks} areaNameById={areaNameById} onStatus={setTaskStatus} onDelete={deleteTask} />
           )}
 
           {activeTab === "calendar" && (
-            <Placeholder
-              title="Kalender"
-              text="Minimaler Platzhalter. Später können wir due_date nutzen und eine echte Monats-/Wochenansicht bauen."
-            />
+            <Placeholder ui={ui} title="Kalender" text="Minimaler Platzhalter. Später nutzen wir due_date für eine echte Monats-/Wochenansicht." />
           )}
 
-          {activeTab === "timeline" && (
-            <TimelineView tasks={filteredTasks} areaNameById={areaNameById} />
-          )}
+          {activeTab === "timeline" && <TimelineView ui={ui} tasks={filteredTasks} areaNameById={areaNameById} />}
 
           {activeTab === "guides" && (
             <GuidesView
+              ui={ui}
               areas={areas}
               guides={guides}
               areaNameById={areaNameById}
@@ -577,7 +601,17 @@ export default function Dashboard() {
             />
           )}
 
-          {activeTab === "areas" && <AreasView areas={areas} />}
+          {activeTab === "areas" && <AreasView ui={ui} areas={areas} />}
+
+          {activeTab === "settings" && (
+            <SettingsView
+              ui={ui}
+              settings={settings}
+              loading={settingsLoading}
+              saving={settingsSaving}
+              onChange={saveSettings}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -586,16 +620,17 @@ export default function Dashboard() {
 
 /* ---------------- Components ---------------- */
 
-function StatCard({ label, value }) {
+function StatCard({ label, value, ui }) {
   return (
-    <div style={styles.statCard}>
-      <div style={styles.statLabel}>{label}</div>
+    <div style={{ ...styles.statCard, background: ui.cardBg, border: ui.border, color: ui.text }}>
+      <div style={{ ...styles.statLabel, color: ui.subText }}>{label}</div>
       <div style={styles.statValue}>{value}</div>
     </div>
   );
 }
 
 function CreateTaskBar({
+  ui,
   areas,
   newTitle,
   setNewTitle,
@@ -609,33 +644,51 @@ function CreateTaskBar({
   onCreate
 }) {
   return (
-    <div style={styles.card}>
-      <div style={styles.cardTitle}>Aufgabe anlegen</div>
+    <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
+      <div style={{ ...styles.cardTitle, color: ui.text }}>Aufgabe anlegen</div>
 
-      <div style={styles.row}>
+      <div style={styles.rowWrap}>
         <input
-          style={{ ...styles.input, flex: 1 }}
+          style={{ ...styles.input, border: ui.border, background: ui.inputBg, color: ui.text, flex: 2 }}
           placeholder="Titel"
           value={newTitle}
           onChange={(e) => setNewTitle(e.target.value)}
         />
 
-        <select style={styles.selectInline} value={newAreaId} onChange={(e) => setNewAreaId(e.target.value)}>
+        <select
+          style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
+          value={newAreaId}
+          onChange={(e) => setNewAreaId(e.target.value)}
+        >
           <option value="">Bereich auswählen</option>
           {areas.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
           ))}
         </select>
 
-        <select style={styles.selectInline} value={newDueBucket} onChange={(e) => setNewDueBucket(e.target.value)}>
+        <select
+          style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
+          value={newDueBucket}
+          onChange={(e) => setNewDueBucket(e.target.value)}
+        >
           {DUE_BUCKETS.map((d) => (
-            <option key={d.value} value={d.value}>{d.label}</option>
+            <option key={d.value} value={d.value}>
+              {d.label}
+            </option>
           ))}
         </select>
 
-        <select style={styles.selectInline} value={newStatus} onChange={(e) => setNewStatus(e.target.value)}>
+        <select
+          style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
+          value={newStatus}
+          onChange={(e) => setNewStatus(e.target.value)}
+        >
           {STATUS.map((s) => (
-            <option key={s.value} value={s.value}>{s.label}</option>
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
           ))}
         </select>
 
@@ -647,7 +700,17 @@ function CreateTaskBar({
   );
 }
 
-function BoardView({ tasks, areaNameById, onStatus, onDelete, subtasksByTaskId, onToggleSubtask }) {
+function BoardView({
+  ui,
+  tasks,
+  areaNameById,
+  onStatus,
+  onDelete,
+  subtasksByTaskId,
+  onToggleSubtask,
+  guidesByAreaId,
+  onOpenGuideFile
+}) {
   const cols = [
     { id: "todo", title: "Zu erledigen" },
     { id: "doing", title: "In Arbeit" },
@@ -659,25 +722,28 @@ function BoardView({ tasks, areaNameById, onStatus, onDelete, subtasksByTaskId, 
       {cols.map((col) => {
         const colTasks = tasks.filter((t) => t.status === col.id);
         return (
-          <div key={col.id} style={styles.col}>
+          <div key={col.id} style={{ ...styles.col, background: ui.panelBg, border: ui.border }}>
             <div style={styles.colHeader}>
-              <div style={styles.colTitle}>{col.title}</div>
-              <div style={styles.colCount}>{colTasks.length}</div>
+              <div style={{ ...styles.colTitle, color: ui.text }}>{col.title}</div>
+              <div style={{ ...styles.colCount, color: ui.subText }}>{colTasks.length}</div>
             </div>
 
             <div style={{ display: "grid", gap: 10 }}>
               {colTasks.length === 0 ? (
-                <div style={styles.empty}>Keine Aufgaben</div>
+                <div style={{ ...styles.empty, color: ui.subText }}>Keine Aufgaben</div>
               ) : (
                 colTasks.map((t) => (
                   <TaskCard
                     key={t.id}
+                    ui={ui}
                     task={t}
                     areaName={areaNameById.get(t.area_id) ?? "—"}
                     onStatus={onStatus}
                     onDelete={onDelete}
                     subtasks={(subtasksByTaskId.get(t.id) ?? []).slice(0, 6)}
                     onToggleSubtask={onToggleSubtask}
+                    guides={(guidesByAreaId.get(t.area_id) ?? []).slice(0, 3)}
+                    onOpenGuideFile={onOpenGuideFile}
                   />
                 ))
               )}
@@ -689,500 +755,19 @@ function BoardView({ tasks, areaNameById, onStatus, onDelete, subtasksByTaskId, 
   );
 }
 
-function TaskCard({ task, areaName, onStatus, onDelete, subtasks, onToggleSubtask }) {
+function TaskCard({ ui, task, areaName, onStatus, onDelete, subtasks, onToggleSubtask, guides, onOpenGuideFile }) {
   const total = Number(task.subtasks_total ?? 0);
   const done = Number(task.subtasks_done ?? 0);
   const progress = total > 0 ? Math.round((done / total) * 100) : 0;
 
   return (
-    <div style={styles.taskCard}>
+    <div style={{ ...styles.taskCard, background: ui.cardBg, border: ui.border }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-        <div style={{ fontWeight: 650 }}>{task.title}</div>
+        <div style={{ fontWeight: 650, color: ui.text }}>{task.title}</div>
 
         <div style={{ display: "flex", gap: 6 }}>
           <select
-            style={styles.miniSelect}
+            style={{ ...styles.miniSelect, border: ui.border, background: ui.inputBg, color: ui.text }}
             value={task.status}
             onChange={(e) => onStatus(task.id, e.target.value)}
-          >
-            <option value="todo">Zu erledigen</option>
-            <option value="doing">In Arbeit</option>
-            <option value="done">Erledigt</option>
-          </select>
-
-          <button style={styles.miniBtnDanger} onClick={() => onDelete(task.id)}>✕</button>
-        </div>
-      </div>
-
-      <div style={styles.meta}>
-        {areaName} • {task.due_bucket ?? "—"}
-      </div>
-
-      <div style={styles.progressText}>
-        Unteraufgaben: {done}/{total} {total > 0 ? `(${progress}%)` : ""}
-      </div>
-
-      {subtasks.length > 0 ? (
-        <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-          {subtasks.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => onToggleSubtask(s)}
-              style={{
-                ...styles.subtaskRow,
-                textDecoration: (s.is_done ?? false) ? "line-through" : "none",
-                opacity: (s.is_done ?? false) ? 0.7 : 1
-              }}
-              title="Klicken = erledigt/unerledigt"
-            >
-              <span>{(s.is_done ?? false) ? "✓" : "•"}</span>
-              <span style={{ flex: 1, textAlign: "left" }}>{s.title}</span>
-            </button>
-          ))}
-          {(Number(task.subtasks_total ?? 0) > subtasks.length) ? (
-            <div style={{ fontSize: 12, opacity: 0.7 }}>
-              Weitere Unteraufgaben in der Liste/Details (später).
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function SubtaskBar({ tasks, selectedTaskId, setSelectedTaskId, newSubtaskTitle, setNewSubtaskTitle, busy, onCreate }) {
-  return (
-    <div style={styles.card}>
-      <div style={styles.cardTitle}>Unteraufgabe anlegen</div>
-
-      <div style={styles.row}>
-        <select
-          style={{ ...styles.selectInline, flex: 1 }}
-          value={selectedTaskId}
-          onChange={(e) => setSelectedTaskId(e.target.value)}
-        >
-          <option value="">Aufgabe auswählen</option>
-          {tasks.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.title}
-            </option>
-          ))}
-        </select>
-
-        <input
-          style={{ ...styles.input, flex: 2 }}
-          placeholder="Unteraufgabe…"
-          value={newSubtaskTitle}
-          onChange={(e) => setNewSubtaskTitle(e.target.value)}
-        />
-
-        <button style={styles.btnWide} onClick={onCreate} disabled={busy}>
-          {busy ? "…" : "Anlegen"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ListView({ tasks, areaNameById, onStatus, onDelete }) {
-  return (
-    <div style={styles.card}>
-      <div style={styles.cardTitle}>Liste</div>
-
-      <div style={{ width: "100%", overflowX: "auto" }}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Aufgabe</th>
-              <th style={styles.th}>Bereich</th>
-              <th style={styles.th}>Zeitraum</th>
-              <th style={styles.th}>Status</th>
-              <th style={styles.th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {tasks.map((t) => (
-              <tr key={t.id} style={styles.tr}>
-                <td style={styles.td}>{t.title}</td>
-                <td style={styles.td}>{areaNameById.get(t.area_id) ?? "—"}</td>
-                <td style={styles.td}>{t.due_bucket ?? "—"}</td>
-                <td style={styles.td}>
-                  <select
-                    style={styles.miniSelect}
-                    value={t.status}
-                    onChange={(e) => onStatus(t.id, e.target.value)}
-                  >
-                    <option value="todo">Zu erledigen</option>
-                    <option value="doing">In Arbeit</option>
-                    <option value="done">Erledigt</option>
-                  </select>
-                </td>
-                <td style={{ ...styles.td, width: 50 }}>
-                  <button style={styles.miniBtnDanger} onClick={() => onDelete(t.id)}>✕</button>
-                </td>
-              </tr>
-            ))}
-            {tasks.length === 0 ? (
-              <tr>
-                <td style={styles.td} colSpan={5}>
-                  <div style={styles.empty}>Keine Aufgaben</div>
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function TimelineView({ tasks, areaNameById }) {
-  // Simple grouping by period (text)
-  const groups = useMemo(() => {
-    const m = new Map();
-    tasks.forEach((t) => {
-      const key = t.period ?? t.due_bucket ?? "—";
-      const list = m.get(key) ?? [];
-      list.push(t);
-      m.set(key, list);
-    });
-    return Array.from(m.entries());
-  }, [tasks]);
-
-  return (
-    <div style={styles.card}>
-      <div style={styles.cardTitle}>Zeitleiste (minimal)</div>
-
-      <div style={{ display: "grid", gap: 14 }}>
-        {groups.map(([k, list]) => (
-          <div key={k} style={styles.timelineBlock}>
-            <div style={styles.timelineTitle}>{k}</div>
-            <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
-              {list.map((t) => (
-                <div key={t.id} style={styles.timelineItem}>
-                  <div style={{ fontWeight: 650 }}>{t.title}</div>
-                  <div style={styles.meta}>{areaNameById.get(t.area_id) ?? "—"} • {labelStatus(t.status)}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-        {groups.length === 0 ? <div style={styles.empty}>Keine Einträge</div> : null}
-      </div>
-    </div>
-  );
-}
-
-function GuidesView({
-  areas,
-  guides,
-  areaNameById,
-  guideTitle,
-  setGuideTitle,
-  guideAreaId,
-  setGuideAreaId,
-  guideContent,
-  setGuideContent,
-  setGuideFile,
-  busy,
-  onCreate,
-  onOpenFile
-}) {
-  return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={styles.card}>
-        <div style={styles.cardTitle}>Anleitung anlegen</div>
-
-        <div style={styles.rowWrap}>
-          <input
-            style={{ ...styles.input, flex: 2 }}
-            placeholder="Titel"
-            value={guideTitle}
-            onChange={(e) => setGuideTitle(e.target.value)}
-          />
-
-          <select
-            style={{ ...styles.selectInline, flex: 1 }}
-            value={guideAreaId}
-            onChange={(e) => setGuideAreaId(e.target.value)}
-          >
-            <option value="">Bereich auswählen</option>
-            {areas.map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
-            ))}
-          </select>
-
-          <input
-            type="file"
-            onChange={(e) => setGuideFile(e.target.files?.[0] ?? null)}
-            style={{ ...styles.file, flex: 1 }}
-          />
-
-          <button style={styles.btnWide} onClick={onCreate} disabled={busy}>
-            {busy ? "…" : "Speichern"}
-          </button>
-        </div>
-
-        <textarea
-          style={styles.textarea}
-          placeholder="Kurzbeschreibung / Inhalt (optional)…"
-          value={guideContent}
-          onChange={(e) => setGuideContent(e.target.value)}
-        />
-      </div>
-
-      <div style={styles.card}>
-        <div style={styles.cardTitle}>Anleitungen</div>
-
-        <div style={{ display: "grid", gap: 10 }}>
-          {guides.length === 0 ? (
-            <div style={styles.empty}>Noch keine Anleitungen.</div>
-          ) : (
-            guides.map((g) => (
-              <div key={g.id} style={styles.guideRow}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 650 }}>{g.title}</div>
-                  <div style={styles.meta}>
-                    {areaNameById.get(g.area_id) ?? "—"} • {new Date(g.created_at).toLocaleString()}
-                  </div>
-                  {g.content ? <div style={{ marginTop: 6, opacity: 0.9 }}>{g.content}</div> : null}
-                </div>
-
-                {g.file_path ? (
-                  <button style={styles.btnGhost} onClick={() => onOpenFile(g.file_path)}>
-                    Datei öffnen
-                  </button>
-                ) : null}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AreasView({ areas }) {
-  return (
-    <div style={styles.card}>
-      <div style={styles.cardTitle}>Bereiche</div>
-
-      {areas.length === 0 ? (
-        <div style={styles.empty}>Keine Bereiche vorhanden.</div>
-      ) : (
-        <div style={{ display: "grid", gap: 8 }}>
-          {areas.map((a) => (
-            <div key={a.id} style={styles.areaRow}>
-              <div style={{ fontWeight: 650 }}>{a.name}</div>
-              <div style={styles.meta}>{a.id}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Placeholder({ title, text }) {
-  return (
-    <div style={styles.card}>
-      <div style={styles.cardTitle}>{title}</div>
-      <div style={{ opacity: 0.85 }}>{text}</div>
-    </div>
-  );
-}
-
-/* ---------------- Helpers ---------------- */
-
-// NOTE: small helper to avoid "hooks in loops" mistakes from earlier versions
-function rightAreaDefault(areas) {
-  // placeholder for initialization in state (cannot depend on areas directly here)
-  // will be set via useEffect when areas load
-  return "";
-}
-
-function labelStatus(s) {
-  if (s === "todo") return "Zu erledigen";
-  if (s === "doing") return "In Arbeit";
-  if (s === "done") return "Erledigt";
-  return s ?? "—";
-}
-
-/* ---------------- Styles ---------------- */
-
-const styles = {
-  page: {
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-    minHeight: "100vh",
-    background: "#f6f7f9"
-  },
-  topbar: {
-    background: "white",
-    borderBottom: "1px solid #e5e7eb",
-    padding: "14px 18px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between"
-  },
-  topTitle: { fontSize: 18, fontWeight: 650 },
-  topSub: { fontSize: 12, opacity: 0.7 },
-
-  body: { display: "flex" },
-  sidebar: {
-    width: 260,
-    padding: 14,
-    borderRight: "1px solid #e5e7eb",
-    background: "white",
-    minHeight: "calc(100vh - 60px)"
-  },
-  main: { flex: 1, padding: 18 },
-
-  sidebarSectionTitle: { fontSize: 12, opacity: 0.7, marginBottom: 10 },
-
-  navBtn: {
-    textAlign: "left",
-    padding: "10px 10px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    cursor: "pointer"
-  },
-
-  tabRow: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 },
-  pill: {
-    padding: "10px 12px",
-    borderRadius: 999,
-    border: "1px solid #e5e7eb",
-    cursor: "pointer"
-  },
-
-  statCard: { border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fafafa" },
-  statLabel: { fontSize: 12, opacity: 0.7 },
-  statValue: { fontSize: 22, fontWeight: 750 },
-
-  card: {
-    background: "white",
-    border: "1px solid #e5e7eb",
-    borderRadius: 14,
-    padding: 12
-  },
-  cardTitle: { fontWeight: 750, marginBottom: 10 },
-
-  row: { display: "flex", gap: 10, alignItems: "center" },
-  rowWrap: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
-
-  input: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    outline: "none"
-  },
-  select: {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    marginTop: 8
-  },
-  selectInline: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    outline: "none"
-  },
-  textarea: {
-    width: "100%",
-    minHeight: 120,
-    marginTop: 10,
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    outline: "none"
-  },
-  file: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "#fafafa"
-  },
-
-  btn: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "white",
-    cursor: "pointer"
-  },
-  btnGhost: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "#fafafa",
-    cursor: "pointer"
-  },
-  btnWide: {
-    padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "white",
-    cursor: "pointer",
-    minWidth: 110
-  },
-
-  board: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 },
-  col: { background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 },
-  colHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
-  colTitle: { fontWeight: 750 },
-  colCount: { fontSize: 12, opacity: 0.7 },
-
-  taskCard: { border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fafafa" },
-  meta: { fontSize: 12, opacity: 0.75, marginTop: 6 },
-  progressText: { fontSize: 12, opacity: 0.85, marginTop: 8 },
-
-  miniSelect: { padding: "6px 8px", borderRadius: 10, border: "1px solid #e5e7eb", background: "white" },
-  miniBtnDanger: {
-    padding: "6px 10px",
-    borderRadius: 10,
-    border: "1px solid #e5e7eb",
-    background: "white",
-    cursor: "pointer"
-  },
-
-  subtaskRow: {
-    display: "flex",
-    gap: 8,
-    alignItems: "center",
-    padding: "8px 10px",
-    borderRadius: 10,
-    border: "1px solid #e5e7eb",
-    background: "white",
-    cursor: "pointer"
-  },
-
-  table: { width: "100%", borderCollapse: "collapse" },
-  th: { textAlign: "left", padding: 10, borderBottom: "1px solid #e5e7eb", fontSize: 12, opacity: 0.8 },
-  td: { padding: 10, borderBottom: "1px solid #f1f5f9", verticalAlign: "top" },
-  tr: {},
-
-  empty: { padding: 10, opacity: 0.7, fontSize: 13 },
-
-  timelineBlock: { border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#fafafa" },
-  timelineTitle: { fontWeight: 750 },
-  timelineItem: { border: "1px solid #e5e7eb", borderRadius: 12, padding: 10, background: "white" },
-
-  guideRow: {
-    display: "flex",
-    gap: 12,
-    alignItems: "flex-start",
-    border: "1px solid #e5e7eb",
-    borderRadius: 14,
-    padding: 12,
-    background: "#fafafa"
-  },
-
-  areaRow: {
-    border: "1px solid #e5e7eb",
-    borderRadius: 14,
-    padding: 12,
-    background: "#fafafa"
-  }
-};
+         
