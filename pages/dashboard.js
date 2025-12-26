@@ -4,8 +4,14 @@ import { createClient } from "@supabase/supabase-js";
 
 /* ---------------- Supabase ---------------- */
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseAnon);
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  // eslint-disable-next-line no-console
+  console.error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
+}
+
+const supabase = createClient(supabaseUrl || "", supabaseAnonKey || "");
 
 /* ---------------- Constants ---------------- */
 
@@ -32,51 +38,94 @@ const STATUS = [
   { value: "done", label: "Erledigt" }
 ];
 
+/* ---------------- Helpers ---------------- */
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function toDatetimeLocalValue(date) {
+  // returns YYYY-MM-DDTHH:mm in local time
+  const d = new Date(date);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(
+    d.getHours()
+  )}:${pad2(d.getMinutes())}`;
+}
+
+function parseDatetimeLocalToISO(value) {
+  // value: YYYY-MM-DDTHH:mm (local)
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function labelStatus(s) {
+  if (s === "todo") return "Zu erledigen";
+  if (s === "doing") return "In Arbeit";
+  if (s === "done") return "Erledigt";
+  return s ?? "—";
+}
+
+function formatDueLocal(dueAt) {
+  if (!dueAt) return "—";
+  const d = new Date(dueAt);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("de-DE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
 /* ---------------- Theme (minimal) ---------------- */
 
 function getUiTheme(settings) {
   const theme = settings?.theme ?? "light";
-  const isDark = theme === "dark";
-
   const accent = settings?.accent ?? "#4f46e5";
-  const bg = settings?.background ?? (isDark ? "#0b1220" : "#f6f7f9");
+  const background = settings?.background ?? "soft";
+
+  const dark = theme === "dark";
+  const bg =
+    background === "plain"
+      ? dark
+        ? "#0b1020"
+        : "#ffffff"
+      : dark
+      ? "#0b1020"
+      : "#f6f7f9";
 
   return {
-    isDark,
+    dark,
     accent,
-
     pageBg: bg,
-    text: isDark ? "#e5e7eb" : "#0f172a",
-    subText: isDark ? "rgba(229,231,235,0.7)" : "rgba(15,23,42,0.65)",
-
-    topbarBg: isDark ? "rgba(15,23,42,0.8)" : "white",
-    panelBg: isDark ? "rgba(15,23,42,0.55)" : "white",
-    cardBg: isDark ? "rgba(2,6,23,0.35)" : "#fafafa",
-
-    inputBg: isDark ? "rgba(2,6,23,0.4)" : "white",
-    border: isDark ? "1px solid rgba(148,163,184,0.22)" : "1px solid #e5e7eb",
-
-    navActiveBg: isDark ? "rgba(79,70,229,0.20)" : "#eef2ff",
-    dropActiveBg: isDark ? "rgba(79,70,229,0.25)" : "rgba(79,70,229,0.10)"
+    text: dark ? "#eef2ff" : "#0f172a",
+    subText: dark ? "rgba(238,242,255,0.7)" : "rgba(15,23,42,0.65)",
+    border: dark ? "1px solid rgba(148,163,184,0.25)" : "1px solid #e5e7eb",
+    panelBg: dark ? "rgba(30,41,59,0.35)" : "#ffffff",
+    cardBg: dark ? "rgba(30,41,59,0.55)" : "#fafafa",
+    inputBg: dark ? "rgba(2,6,23,0.4)" : "#ffffff",
+    navActiveBg: dark ? "rgba(79,70,229,0.25)" : "#eef2ff",
+    topbarBg: dark ? "rgba(2,6,23,0.5)" : "#ffffff"
   };
 }
 
-/* ---------------- Page ---------------- */
+/* ---------------- Main ---------------- */
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
 
-  const [now, setNow] = useState(new Date());
+  const [activeTab, setActiveTab] = useState("board");
 
-  // Data
   const [areas, setAreas] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [subtasks, setSubtasks] = useState([]);
   const [guides, setGuides] = useState([]);
 
-  // UI
-  const [activeTab, setActiveTab] = useState("board");
+  // Filters
   const [filterAreaId, setFilterAreaId] = useState("all");
   const [filterDue, setFilterDue] = useState("all");
   const [search, setSearch] = useState("");
@@ -85,32 +134,31 @@ export default function Dashboard() {
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
   const [newDueBucket, setNewDueBucket] = useState("Heute");
+  const [newDueAtLocal, setNewDueAtLocal] = useState(toDatetimeLocalValue(new Date()));
   const [newStatus, setNewStatus] = useState("todo");
   const [busyCreateTask, setBusyCreateTask] = useState(false);
 
-  // Subtasks
+  // Create Subtask
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [busyCreateSubtask, setBusyCreateSubtask] = useState(false);
 
-  // Guides
+  // Create Guide
   const [guideTitle, setGuideTitle] = useState("");
   const [guideAreaId, setGuideAreaId] = useState("");
   const [guideContent, setGuideContent] = useState("");
   const [guideFile, setGuideFile] = useState(null);
   const [busyCreateGuide, setBusyCreateGuide] = useState(false);
 
-  // Settings (design + notifications placeholders)
+  // Settings
   const [settings, setSettings] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
 
-  // Drag & Drop
-  const [draggingTaskId, setDraggingTaskId] = useState(null);
-
   // Clock
+  const [nowTick, setNowTick] = useState(new Date());
   useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000);
+    const t = setInterval(() => setNowTick(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
@@ -118,14 +166,14 @@ export default function Dashboard() {
   useEffect(() => {
     let mounted = true;
 
-    supabase.auth.getUser().then(({ data, error }) => {
+    supabase.auth.getUser().then(({ data }) => {
       if (!mounted) return;
-      if (error) console.warn(error);
-      setUser(data?.user ?? null);
+      setUser(data.user ?? null);
       setLoadingAuth(false);
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      if (!mounted) return;
       setUser(session?.user ?? null);
       setLoadingAuth(false);
     });
@@ -136,7 +184,7 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Load data after login
+  // Load after login
   useEffect(() => {
     if (!user) return;
     reloadAll();
@@ -144,7 +192,7 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // Defaults when areas/tasks arrive
+  // Defaults after data loads
   useEffect(() => {
     if (!newAreaId && areas.length) setNewAreaId(areas[0].id);
     if (!guideAreaId && areas.length) setGuideAreaId(areas[0].id);
@@ -158,7 +206,7 @@ export default function Dashboard() {
   }
 
   async function reloadAll() {
-    // Areas
+    // AREAS (no joins)
     const { data: aData, error: aErr } = await supabase
       .from("areas")
       .select("id,name")
@@ -166,25 +214,25 @@ export default function Dashboard() {
 
     if (aErr) {
       alert("Fehler beim Laden der Bereiche: " + aErr.message);
-      setAreas([]);
-    } else {
-      setAreas(aData ?? []);
+      return;
     }
+    setAreas(aData ?? []);
 
-    // Tasks
+    // TASKS (IMPORTANT: no areas(name) join, prevents stack depth / 500)
     const { data: tData, error: tErr } = await supabase
       .from("tasks")
-      .select("id,title,status,period,area_id,due_date,due_bucket,created_at,subtasks_done,subtasks_total")
+      .select(
+        "id,title,status,period,area_id,due_at,due_bucket,created_at,subtasks_done,subtasks_total,created_by,user_id"
+      )
       .order("created_at", { ascending: false });
 
     if (tErr) {
       alert("Fehler beim Laden der Aufgaben: " + tErr.message);
-      setTasks([]);
-    } else {
-      setTasks(tData ?? []);
+      return;
     }
+    setTasks(tData ?? []);
 
-    // Subtasks
+    // SUBTASKS (no joins)
     const { data: sData, error: sErr } = await supabase
       .from("subtasks")
       .select("id,task_id,title,is_done,status,created_at,updated_at")
@@ -192,12 +240,11 @@ export default function Dashboard() {
 
     if (sErr) {
       alert("Fehler beim Laden der Unteraufgaben: " + sErr.message);
-      setSubtasks([]);
-    } else {
-      setSubtasks(sData ?? []);
+      return;
     }
+    setSubtasks(sData ?? []);
 
-    // Guides
+    // GUIDES (no joins)
     const { data: gData, error: gErr } = await supabase
       .from("guides")
       .select("id,title,content,area_id,file_path,created_at")
@@ -205,10 +252,9 @@ export default function Dashboard() {
 
     if (gErr) {
       alert("Fehler beim Laden der Anleitungen: " + gErr.message);
-      setGuides([]);
-    } else {
-      setGuides(gData ?? []);
+      return;
     }
+    setGuides(gData ?? []);
   }
 
   async function loadSettings() {
@@ -217,7 +263,9 @@ export default function Dashboard() {
 
     const { data, error } = await supabase
       .from("user_settings")
-      .select("user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop")
+      .select(
+        "user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop"
+      )
       .eq("user_id", user.id)
       .maybeSingle();
 
@@ -225,7 +273,9 @@ export default function Dashboard() {
       const { data: insData, error: insErr } = await supabase
         .from("user_settings")
         .insert({ user_id: user.id })
-        .select("user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop")
+        .select(
+          "user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop"
+        )
         .single();
 
       if (insErr) alert("Fehler beim Anlegen der Einstellungen: " + insErr.message);
@@ -240,7 +290,8 @@ export default function Dashboard() {
   }
 
   async function saveSettings(patch) {
-    if (!user?.id || !settings) return;
+    if (!user?.id) return;
+    if (!settings) return;
 
     setSettingsSaving(true);
     const next = { ...settings, ...patch };
@@ -264,16 +315,6 @@ export default function Dashboard() {
     return m;
   }, [areas]);
 
-  const subtasksByTaskId = useMemo(() => {
-    const m = new Map();
-    (subtasks ?? []).forEach((s) => {
-      const list = m.get(s.task_id) ?? [];
-      list.push(s);
-      m.set(s.task_id, list);
-    });
-    return m;
-  }, [subtasks]);
-
   const guidesByAreaId = useMemo(() => {
     const m = new Map();
     (guides ?? []).forEach((g) => {
@@ -284,16 +325,25 @@ export default function Dashboard() {
     return m;
   }, [guides]);
 
+  const subtasksByTaskId = useMemo(() => {
+    const m = new Map();
+    (subtasks ?? []).forEach((s) => {
+      const list = m.get(s.task_id) ?? [];
+      list.push(s);
+      m.set(s.task_id, list);
+    });
+    return m;
+  }, [subtasks]);
+
   const filteredTasks = useMemo(() => {
     const q = (search ?? "").trim().toLowerCase();
-
     return (tasks ?? []).filter((t) => {
       if (filterAreaId !== "all" && t.area_id !== filterAreaId) return false;
-      if (filterDue !== "all" && t.due_bucket !== filterDue) return false;
+      if (filterDue !== "all" && (t.due_bucket ?? "") !== filterDue) return false;
       if (q) {
-        const title = (t.title ?? "").toLowerCase();
-        const area = (areaNameById.get(t.area_id) ?? "").toLowerCase();
-        if (!title.includes(q) && !area.includes(q)) return false;
+        const inTitle = (t.title ?? "").toLowerCase().includes(q);
+        const inArea = (areaNameById.get(t.area_id) ?? "").toLowerCase().includes(q);
+        if (!inTitle && !inArea) return false;
       }
       return true;
     });
@@ -312,15 +362,19 @@ export default function Dashboard() {
 
     setBusyCreateTask(true);
 
+    const dueAtISO = parseDatetimeLocalToISO(newDueAtLocal);
+
     const payload = {
       title: newTitle.trim(),
       area_id: newAreaId,
       status: newStatus,
       due_bucket: newDueBucket,
       period: newDueBucket,
+      due_at: dueAtISO,
       subtasks_done: 0,
       subtasks_total: 0,
-      created_by: user?.id ?? null
+      created_by: user?.id ?? null,
+      user_id: user?.id ?? null
     };
 
     const { error } = await supabase.from("tasks").insert(payload);
@@ -355,8 +409,7 @@ export default function Dashboard() {
       task_id: selectedTaskId,
       title: newSubtaskTitle.trim(),
       is_done: false,
-      status: "todo",
-      updated_at: new Date().toISOString()
+      status: "todo"
     };
 
     const { error } = await supabase.from("subtasks").insert(payload);
@@ -407,7 +460,6 @@ export default function Dashboard() {
       const path = `${user?.id ?? "user"}/${Date.now()}_${safeName}`;
 
       const { error: upErr } = await supabase.storage.from("guides").upload(path, guideFile, {
-        cacheControl: "3600",
         upsert: false
       });
 
@@ -427,6 +479,7 @@ export default function Dashboard() {
     };
 
     const { error } = await supabase.from("guides").insert(payload);
+
     setBusyCreateGuide(false);
 
     if (error) return alert("Fehler beim Speichern: " + error.message);
@@ -434,6 +487,7 @@ export default function Dashboard() {
     setGuideTitle("");
     setGuideContent("");
     setGuideFile(null);
+
     await reloadAll();
   }
 
@@ -444,27 +498,41 @@ export default function Dashboard() {
     window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   }
 
-  const dateTimeText = useMemo(() => {
-    try {
-      return now.toLocaleString("de-DE", {
-        weekday: "short",
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      });
-    } catch {
-      return String(now);
-    }
-  }, [now]);
+  const calendarGroups = useMemo(() => {
+    // group by local day string YYYY-MM-DD for tasks with due_at
+    const m = new Map();
+    (filteredTasks ?? []).forEach((t) => {
+      if (!t.due_at) return;
+      const d = new Date(t.due_at);
+      if (Number.isNaN(d.getTime())) return;
+      const key = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      const list = m.get(key) ?? [];
+      list.push(t);
+      m.set(key, list);
+    });
+
+    // sort keys ascending
+    const keys = Array.from(m.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return keys.map((k) => [k, (m.get(k) ?? []).slice().sort((a, b) => (a.due_at < b.due_at ? -1 : 1))]);
+  }, [filteredTasks]);
+
+  const nowLabel = useMemo(() => {
+    return nowTick.toLocaleString("de-DE", {
+      weekday: "short",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+  }, [nowTick]);
 
   if (loadingAuth) {
     return (
       <div style={{ padding: 24, fontFamily: "system-ui" }}>
         <h1>Dashboard</h1>
-        <div>Lade…</div>
+        <div>Prüfe Login…</div>
       </div>
     );
   }
@@ -473,7 +541,7 @@ export default function Dashboard() {
     return (
       <div style={{ padding: 24, fontFamily: "system-ui" }}>
         <h1>Dashboard</h1>
-        <div>Du bist nicht eingeloggt. Bitte über die Startseite anmelden.</div>
+        <div>Du bist nicht eingeloggt. Bitte gehe zurück zur Login-Seite.</div>
       </div>
     );
   }
@@ -485,14 +553,14 @@ export default function Dashboard() {
         <div>
           <div style={{ ...styles.topTitle, color: ui.text }}>Armaturenbrett</div>
           <div style={{ ...styles.topSub, color: ui.subText }}>Angemeldet als: {user.email}</div>
-          <div style={{ ...styles.topSub, color: ui.subText, marginTop: 4 }}>{dateTimeText}</div>
+          <div style={{ ...styles.topSub, color: ui.subText }}>Aktuell: {nowLabel}</div>
         </div>
 
         <div style={{ display: "flex", gap: 8 }}>
-          <button style={styles.btnGhost} onClick={reloadAll}>
+          <button style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text }} onClick={reloadAll}>
             Neu laden
           </button>
-          <button style={styles.btn} onClick={signOut}>
+          <button style={{ ...styles.btn, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={signOut}>
             Abmelden
           </button>
         </div>
@@ -562,21 +630,13 @@ export default function Dashboard() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Suche…"
-              style={{
-                ...styles.input,
-                border: ui.border,
-                background: ui.inputBg,
-                color: ui.text,
-                width: "100%",
-                marginTop: 8
-              }}
+              style={{ ...styles.input, border: ui.border, background: ui.inputBg, color: ui.text, width: "100%", marginTop: 8 }}
             />
           </div>
         </div>
 
         {/* Main */}
         <div style={styles.main}>
-          {/* Tab pills */}
           <div style={styles.tabRow}>
             {TABS.map((t) => (
               <button
@@ -594,7 +654,6 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* Views */}
           {activeTab === "board" && (
             <div style={{ display: "grid", gap: 12 }}>
               <CreateTaskBar
@@ -606,6 +665,8 @@ export default function Dashboard() {
                 setNewAreaId={setNewAreaId}
                 newDueBucket={newDueBucket}
                 setNewDueBucket={setNewDueBucket}
+                newDueAtLocal={newDueAtLocal}
+                setNewDueAtLocal={setNewDueAtLocal}
                 newStatus={newStatus}
                 setNewStatus={setNewStatus}
                 busy={busyCreateTask}
@@ -622,8 +683,6 @@ export default function Dashboard() {
                 onToggleSubtask={toggleSubtaskDone}
                 guidesByAreaId={guidesByAreaId}
                 onOpenGuideFile={openGuideFile}
-                draggingTaskId={draggingTaskId}
-                setDraggingTaskId={setDraggingTaskId}
               />
 
               <SubtaskBar
@@ -644,7 +703,7 @@ export default function Dashboard() {
           )}
 
           {activeTab === "calendar" && (
-            <Placeholder ui={ui} title="Kalender" text="Minimaler Platzhalter. Später nutzen wir due_date für eine echte Monats-/Wochenansicht." />
+            <CalendarView ui={ui} groups={calendarGroups} areaNameById={areaNameById} onStatus={setTaskStatus} onDelete={deleteTask} />
           )}
 
           {activeTab === "timeline" && <TimelineView ui={ui} tasks={filteredTasks} areaNameById={areaNameById} />}
@@ -699,6 +758,8 @@ function CreateTaskBar({
   setNewAreaId,
   newDueBucket,
   setNewDueBucket,
+  newDueAtLocal,
+  setNewDueAtLocal,
   newStatus,
   setNewStatus,
   busy,
@@ -729,6 +790,14 @@ function CreateTaskBar({
           ))}
         </select>
 
+        <input
+          type="datetime-local"
+          value={newDueAtLocal}
+          onChange={(e) => setNewDueAtLocal(e.target.value)}
+          style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
+          title="Datum & Uhrzeit"
+        />
+
         <select
           style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
           value={newDueBucket}
@@ -753,84 +822,31 @@ function CreateTaskBar({
           ))}
         </select>
 
-        <button style={styles.btnWide} onClick={onCreate} disabled={busy}>
+        <button style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={onCreate} disabled={busy}>
           {busy ? "…" : "Anlegen"}
         </button>
       </div>
 
-      <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-        Tipp: Aufgaben kannst du per Drag & Drop zwischen den Spalten verschieben.
+      <div style={{ marginTop: 8, fontSize: 12, color: ui.subText }}>
+        Hinweis: Kalender nutzt due_at. due_bucket bleibt für schnelle Filter.
       </div>
     </div>
   );
 }
 
-/* -------- Board (Drag & Drop + Highlight) -------- */
-
-function BoardView({
-  ui,
-  tasks,
-  areaNameById,
-  onStatus,
-  onDelete,
-  subtasksByTaskId,
-  onToggleSubtask,
-  guidesByAreaId,
-  onOpenGuideFile,
-  draggingTaskId,
-  setDraggingTaskId
-}) {
-  const [hoverCol, setHoverCol] = useState(null);
-
+function BoardView({ ui, tasks, areaNameById, onStatus, onDelete, subtasksByTaskId, onToggleSubtask, guidesByAreaId, onOpenGuideFile }) {
   const cols = [
     { id: "todo", title: "Zu erledigen" },
     { id: "doing", title: "In Arbeit" },
     { id: "done", title: "Erledigt" }
   ];
 
-  function allowDrop(e) {
-    e.preventDefault();
-  }
-
-  async function handleDrop(e, newStatus) {
-    e.preventDefault();
-    const id = e.dataTransfer.getData("text/taskId") || draggingTaskId;
-    setDraggingTaskId(null);
-    setHoverCol(null);
-    if (!id) return;
-
-    const task = (tasks ?? []).find((t) => String(t.id) === String(id));
-    if (!task) return;
-    if (task.status === newStatus) return;
-
-    await onStatus(id, newStatus);
-  }
-
   return (
     <div style={styles.board}>
       {cols.map((col) => {
         const colTasks = (tasks ?? []).filter((t) => t.status === col.id);
-        const isHot = hoverCol === col.id;
-
         return (
-          <div
-            key={col.id}
-            style={{
-              ...styles.col,
-              background: isHot ? ui.dropActiveBg : ui.panelBg,
-              border: ui.border,
-              outline: isHot ? `2px solid ${ui.accent}` : "none",
-              transition: "background 120ms ease, outline 120ms ease"
-            }}
-            onDragOver={allowDrop}
-            onDragEnter={() => setHoverCol(col.id)}
-            onDragLeave={(e) => {
-              // Nur resetten, wenn wir wirklich die Spalte verlassen (und nicht nur über ein Child gehen)
-              const related = e.relatedTarget;
-              if (!related || !e.currentTarget.contains(related)) setHoverCol(null);
-            }}
-            onDrop={(e) => handleDrop(e, col.id)}
-          >
+          <div key={col.id} style={{ ...styles.col, background: ui.panelBg, border: ui.border }}>
             <div style={styles.colHeader}>
               <div style={{ ...styles.colTitle, color: ui.text }}>{col.title}</div>
               <div style={{ ...styles.colCount, color: ui.subText }}>{colTasks.length}</div>
@@ -845,7 +861,6 @@ function BoardView({
                     key={t.id}
                     ui={ui}
                     task={t}
-                    isDragging={String(draggingTaskId) === String(t.id)}
                     areaName={areaNameById.get(t.area_id) ?? "—"}
                     onStatus={onStatus}
                     onDelete={onDelete}
@@ -853,7 +868,6 @@ function BoardView({
                     onToggleSubtask={onToggleSubtask}
                     guides={(guidesByAreaId.get(t.area_id) ?? []).slice(0, 3)}
                     onOpenGuideFile={onOpenGuideFile}
-                    setDraggingTaskId={setDraggingTaskId}
                   />
                 ))
               )}
@@ -865,32 +879,15 @@ function BoardView({
   );
 }
 
-function TaskCard({ ui, task, isDragging, areaName, onStatus, onDelete, subtasks, onToggleSubtask, guides, onOpenGuideFile, setDraggingTaskId }) {
+function TaskCard({ ui, task, areaName, onStatus, onDelete, subtasks, onToggleSubtask, guides, onOpenGuideFile }) {
   const total = Number(task.subtasks_total ?? 0);
   const done = Number(task.subtasks_done ?? 0);
   const progress = total > 0 ? Math.round((done / total) * 100) : 0;
 
   return (
-    <div
-      style={{
-        ...styles.taskCard,
-        background: ui.cardBg,
-        border: ui.border,
-        opacity: isDragging ? 0.55 : 1,
-        transform: isDragging ? "scale(0.995)" : "none",
-        transition: "opacity 120ms ease, transform 120ms ease"
-      }}
-      draggable
-      onDragStart={(e) => {
-        setDraggingTaskId?.(task.id);
-        e.dataTransfer.setData("text/taskId", String(task.id));
-        e.dataTransfer.effectAllowed = "move";
-      }}
-      onDragEnd={() => setDraggingTaskId?.(null)}
-      title="Ziehen zum Verschieben"
-    >
+    <div style={{ ...styles.taskCard, background: ui.cardBg, border: ui.border }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-        <div style={{ fontWeight: 650, color: ui.text }}>{task.title}</div>
+        <div style={{ color: ui.text }}>{task.title}</div>
 
         <div style={{ display: "flex", gap: 6 }}>
           <select
@@ -903,14 +900,14 @@ function TaskCard({ ui, task, isDragging, areaName, onStatus, onDelete, subtasks
             <option value="done">Erledigt</option>
           </select>
 
-          <button style={styles.miniBtnDanger} onClick={() => onDelete(task.id)}>
+          <button style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={() => onDelete(task.id)}>
             ✕
           </button>
         </div>
       </div>
 
       <div style={{ ...styles.meta, color: ui.subText }}>
-        {areaName} • {task.due_bucket ?? "—"}
+        {areaName} • {task.due_bucket ?? "—"} • {formatDueLocal(task.due_at)}
       </div>
 
       <div style={{ ...styles.progressText, color: ui.subText }}>
@@ -928,12 +925,12 @@ function TaskCard({ ui, task, isDragging, areaName, onStatus, onDelete, subtasks
                 border: ui.border,
                 background: ui.inputBg,
                 color: ui.text,
-                textDecoration: (s.is_done ?? false) ? "line-through" : "none",
-                opacity: (s.is_done ?? false) ? 0.7 : 1
+                textDecoration: s.is_done ? "line-through" : "none",
+                opacity: s.is_done ? 0.7 : 1
               }}
               title="Klicken = erledigt/unerledigt"
             >
-              <span>{(s.is_done ?? false) ? "✓" : "•"}</span>
+              <span>{s.is_done ? "✓" : "•"}</span>
               <span style={{ flex: 1, textAlign: "left" }}>{s.title}</span>
             </button>
           ))}
@@ -942,13 +939,16 @@ function TaskCard({ ui, task, isDragging, areaName, onStatus, onDelete, subtasks
 
       {guides?.length ? (
         <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-          <div style={{ fontSize: 12, opacity: 0.85 }}>Anleitungen zum Bereich:</div>
+          <div style={{ fontSize: 12, color: ui.subText }}>Anleitungen</div>
           {guides.map((g) => (
-            <div key={g.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <div style={{ fontSize: 12, opacity: 0.9, flex: 1 }}>{g.title}</div>
+            <div key={g.id} style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ fontSize: 13, color: ui.text, opacity: 0.95 }}>{g.title}</div>
               {g.file_path ? (
-                <button style={styles.btnGhost} onClick={() => onOpenGuideFile(g.file_path)}>
-                  Öffnen
+                <button
+                  style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text, padding: "6px 10px", borderRadius: 10 }}
+                  onClick={() => onOpenGuideFile(g.file_path)}
+                >
+                  Datei
                 </button>
               ) : null}
             </div>
@@ -985,7 +985,7 @@ function SubtaskBar({ ui, tasks, selectedTaskId, setSelectedTaskId, newSubtaskTi
           onChange={(e) => setNewSubtaskTitle(e.target.value)}
         />
 
-        <button style={styles.btnWide} onClick={onCreate} disabled={busy}>
+        <button style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={onCreate} disabled={busy}>
           {busy ? "…" : "Anlegen"}
         </button>
       </div>
@@ -1002,20 +1002,22 @@ function ListView({ ui, tasks, areaNameById, onStatus, onDelete }) {
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={{ ...styles.th, borderBottom: ui.border, color: ui.subText }}>Aufgabe</th>
-              <th style={{ ...styles.th, borderBottom: ui.border, color: ui.subText }}>Bereich</th>
-              <th style={{ ...styles.th, borderBottom: ui.border, color: ui.subText }}>Zeitraum</th>
-              <th style={{ ...styles.th, borderBottom: ui.border, color: ui.subText }}>Status</th>
-              <th style={{ ...styles.th, borderBottom: ui.border }}></th>
+              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}>Aufgabe</th>
+              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}>Bereich</th>
+              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}>Datum/Uhrzeit</th>
+              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}>Zeitraum</th>
+              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}>Status</th>
+              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}></th>
             </tr>
           </thead>
           <tbody>
             {tasks.map((t) => (
               <tr key={t.id} style={styles.tr}>
-                <td style={{ ...styles.td, borderBottom: ui.border, color: ui.text }}>{t.title}</td>
-                <td style={{ ...styles.td, borderBottom: ui.border, color: ui.text }}>{areaNameById.get(t.area_id) ?? "—"}</td>
-                <td style={{ ...styles.td, borderBottom: ui.border, color: ui.text }}>{t.due_bucket ?? "—"}</td>
-                <td style={{ ...styles.td, borderBottom: ui.border }}>
+                <td style={{ ...styles.td, color: ui.text }}>{t.title}</td>
+                <td style={{ ...styles.td, color: ui.text }}>{areaNameById.get(t.area_id) ?? "—"}</td>
+                <td style={{ ...styles.td, color: ui.text }}>{formatDueLocal(t.due_at)}</td>
+                <td style={{ ...styles.td, color: ui.text }}>{t.due_bucket ?? "—"}</td>
+                <td style={{ ...styles.td, color: ui.text }}>
                   <select
                     style={{ ...styles.miniSelect, border: ui.border, background: ui.inputBg, color: ui.text }}
                     value={t.status}
@@ -1026,8 +1028,8 @@ function ListView({ ui, tasks, areaNameById, onStatus, onDelete }) {
                     <option value="done">Erledigt</option>
                   </select>
                 </td>
-                <td style={{ ...styles.td, borderBottom: ui.border, width: 50 }}>
-                  <button style={styles.miniBtnDanger} onClick={() => onDelete(t.id)}>
+                <td style={{ ...styles.td, width: 60 }}>
+                  <button style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={() => onDelete(t.id)}>
                     ✕
                   </button>
                 </td>
@@ -1035,8 +1037,8 @@ function ListView({ ui, tasks, areaNameById, onStatus, onDelete }) {
             ))}
             {tasks.length === 0 ? (
               <tr>
-                <td style={{ ...styles.td, borderBottom: ui.border }} colSpan={5}>
-                  <div style={{ ...styles.empty, color: ui.subText }}>Keine Aufgaben</div>
+                <td style={{ ...styles.td, color: ui.subText }} colSpan={6}>
+                  <div style={{ ...styles.empty, color: ui.subText }}>Keine Einträge</div>
                 </td>
               </tr>
             ) : null}
@@ -1047,10 +1049,66 @@ function ListView({ ui, tasks, areaNameById, onStatus, onDelete }) {
   );
 }
 
+function CalendarView({ ui, groups, areaNameById, onStatus, onDelete }) {
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
+        <div style={{ ...styles.cardTitle, color: ui.text }}>Kalender (minimal)</div>
+        <div style={{ fontSize: 12, color: ui.subText }}>
+          Gruppiert nach Datum (aus due_at). Später können wir eine echte Monatsansicht mit Grid/Drag&Drop bauen.
+        </div>
+      </div>
+
+      {groups.length === 0 ? (
+        <div style={{ ...styles.card, background: ui.panelBg, border: ui.border, color: ui.subText }}>Keine Aufgaben mit Datum/Uhrzeit (due_at).</div>
+      ) : (
+        groups.map(([day, list]) => (
+          <div key={day} style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ color: ui.text }}>{day}</div>
+              <div style={{ color: ui.subText, fontSize: 12 }}>{list.length} Aufgabe(n)</div>
+            </div>
+
+            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+              {list.map((t) => (
+                <div key={t.id} style={{ ...styles.timelineItem, border: ui.border, background: ui.cardBg }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ color: ui.text }}>{t.title}</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <select
+                        style={{ ...styles.miniSelect, border: ui.border, background: ui.inputBg, color: ui.text }}
+                        value={t.status}
+                        onChange={(e) => onStatus(t.id, e.target.value)}
+                      >
+                        <option value="todo">Zu erledigen</option>
+                        <option value="doing">In Arbeit</option>
+                        <option value="done">Erledigt</option>
+                      </select>
+                      <button
+                        style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }}
+                        onClick={() => onDelete(t.id)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ ...styles.meta, color: ui.subText }}>
+                    {areaNameById.get(t.area_id) ?? "—"} • {formatDueLocal(t.due_at)} • {labelStatus(t.status)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 function TimelineView({ ui, tasks, areaNameById }) {
   const groups = useMemo(() => {
     const m = new Map();
-    tasks.forEach((t) => {
+    (tasks ?? []).forEach((t) => {
       const key = t.period ?? t.due_bucket ?? "—";
       const list = m.get(key) ?? [];
       list.push(t);
@@ -1069,10 +1127,10 @@ function TimelineView({ ui, tasks, areaNameById }) {
             <div style={{ ...styles.timelineTitle, color: ui.text }}>{k}</div>
             <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
               {list.map((t) => (
-                <div key={t.id} style={{ ...styles.timelineItem, border: ui.border, background: ui.inputBg, color: ui.text }}>
-                  <div style={{ fontWeight: 650 }}>{t.title}</div>
+                <div key={t.id} style={{ ...styles.timelineItem, border: ui.border, background: ui.panelBg }}>
+                  <div style={{ color: ui.text }}>{t.title}</div>
                   <div style={{ ...styles.meta, color: ui.subText }}>
-                    {areaNameById.get(t.area_id) ?? "—"} • {labelStatus(t.status)}
+                    {areaNameById.get(t.area_id) ?? "—"} • {labelStatus(t.status)} • {formatDueLocal(t.due_at)}
                   </div>
                 </div>
               ))}
@@ -1127,9 +1185,13 @@ function GuidesView({
             ))}
           </select>
 
-          <input type="file" onChange={(e) => setGuideFile(e.target.files?.[0] ?? null)} style={{ ...styles.file, border: ui.border, flex: 1 }} />
+          <input
+            type="file"
+            onChange={(e) => setGuideFile(e.target.files?.[0] ?? null)}
+            style={{ ...styles.file, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
+          />
 
-          <button style={styles.btnWide} onClick={onCreate} disabled={busy}>
+          <button style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={onCreate} disabled={busy}>
             {busy ? "…" : "Speichern"}
           </button>
         </div>
@@ -1152,15 +1214,15 @@ function GuidesView({
             guides.map((g) => (
               <div key={g.id} style={{ ...styles.guideRow, border: ui.border, background: ui.cardBg }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 650, color: ui.text }}>{g.title}</div>
+                  <div style={{ color: ui.text }}>{g.title}</div>
                   <div style={{ ...styles.meta, color: ui.subText }}>
                     {areaNameById.get(g.area_id) ?? "—"} • {new Date(g.created_at).toLocaleString("de-DE")}
                   </div>
-                  {g.content ? <div style={{ marginTop: 6, opacity: 0.92, color: ui.text }}>{g.content}</div> : null}
+                  {g.content ? <div style={{ marginTop: 6, opacity: 0.95, color: ui.text }}>{g.content}</div> : null}
                 </div>
 
                 {g.file_path ? (
-                  <button style={styles.btnGhost} onClick={() => onOpenFile(g.file_path)}>
+                  <button style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text }} onClick={() => onOpenFile(g.file_path)}>
                     Datei öffnen
                   </button>
                 ) : null}
@@ -1184,7 +1246,7 @@ function AreasView({ ui, areas }) {
         <div style={{ display: "grid", gap: 8 }}>
           {areas.map((a) => (
             <div key={a.id} style={{ ...styles.areaRow, border: ui.border, background: ui.cardBg }}>
-              <div style={{ fontWeight: 650, color: ui.text }}>{a.name}</div>
+              <div style={{ color: ui.text }}>{a.name}</div>
               <div style={{ ...styles.meta, color: ui.subText }}>{a.id}</div>
             </div>
           ))}
@@ -1197,106 +1259,96 @@ function AreasView({ ui, areas }) {
 function SettingsView({ ui, settings, loading, saving, onChange }) {
   const theme = settings?.theme ?? "light";
   const accent = settings?.accent ?? "#4f46e5";
-  const background = settings?.background ?? (ui.isDark ? "#0b1220" : "#f6f7f9");
-
-  const notifEnabled = settings?.notifications_enabled ?? false;
-  const notifEmail = settings?.notifications_email ?? false;
-  const notifDesktop = settings?.notifications_desktop ?? false;
+  const background = settings?.background ?? "soft";
+  const notificationsEnabled = settings?.notifications_enabled ?? true;
+  const notificationsEmail = settings?.notifications_email ?? false;
+  const notificationsDesktop = settings?.notifications_desktop ?? true;
 
   return (
     <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
       <div style={{ ...styles.cardTitle, color: ui.text }}>Einstellungen</div>
 
-      {loading ? <div style={{ opacity: 0.8 }}>Lade…</div> : null}
-
-      <div style={{ display: "grid", gap: 10, marginTop: 8 }}>
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={{ fontSize: 12, opacity: 0.8 }}>Design</div>
-
+      {loading ? (
+        <div style={{ color: ui.subText }}>Lade…</div>
+      ) : (
+        <div style={{ display: "grid", gap: 12 }}>
           <div style={styles.rowWrap}>
+            <label style={{ fontSize: 13, color: ui.subText, minWidth: 120 }}>Theme</label>
             <select
               value={theme}
               onChange={(e) => onChange({ theme: e.target.value })}
-              style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, minWidth: 180 }}
+              style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text }}
               disabled={saving}
             >
               <option value="light">Hell</option>
               <option value="dark">Dunkel</option>
             </select>
+          </div>
 
+          <div style={styles.rowWrap}>
+            <label style={{ fontSize: 13, color: ui.subText, minWidth: 120 }}>Hintergrund</label>
+            <select
+              value={background}
+              onChange={(e) => onChange({ background: e.target.value })}
+              style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text }}
+              disabled={saving}
+            >
+              <option value="soft">Soft</option>
+              <option value="plain">Plain</option>
+            </select>
+          </div>
+
+          <div style={styles.rowWrap}>
+            <label style={{ fontSize: 13, color: ui.subText, minWidth: 120 }}>Akzent</label>
             <input
               type="color"
               value={accent}
               onChange={(e) => onChange({ accent: e.target.value })}
+              style={{ height: 36, width: 56, borderRadius: 10, border: ui.border, background: ui.inputBg }}
               disabled={saving}
-              title="Akzentfarbe"
-              style={{ height: 40, width: 56, borderRadius: 10, border: "none", background: "transparent" }}
             />
-
-            <input
-              type="color"
-              value={background}
-              onChange={(e) => onChange({ background: e.target.value })}
-              disabled={saving}
-              title="Hintergrund"
-              style={{ height: 40, width: 56, borderRadius: 10, border: "none", background: "transparent" }}
-            />
+            <div style={{ fontSize: 12, color: ui.subText }}>{accent}</div>
           </div>
-        </div>
 
-        <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
-          <div style={{ fontSize: 12, opacity: 0.8 }}>Benachrichtigungen</div>
+          <div style={{ borderTop: ui.border, paddingTop: 12, display: "grid", gap: 10 }}>
+            <div style={{ color: ui.text }}>Benachrichtigungen</div>
 
-          <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <input type="checkbox" checked={!!notifEnabled} onChange={(e) => onChange({ notifications_enabled: e.target.checked })} disabled={saving} />
-            <span style={{ opacity: 0.9 }}>Benachrichtigungen aktivieren</span>
-          </label>
-
-          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", opacity: notifEnabled ? 1 : 0.55 }}>
-            <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, color: ui.text }}>
               <input
                 type="checkbox"
-                checked={!!notifEmail}
-                onChange={(e) => onChange({ notifications_email: e.target.checked })}
-                disabled={saving || !notifEnabled}
+                checked={!!notificationsEnabled}
+                onChange={(e) => onChange({ notifications_enabled: e.target.checked })}
+                disabled={saving}
               />
-              <span>E-Mail</span>
+              Aktiviert
             </label>
 
-            <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, color: ui.text }}>
               <input
                 type="checkbox"
-                checked={!!notifDesktop}
+                checked={!!notificationsDesktop}
                 onChange={(e) => onChange({ notifications_desktop: e.target.checked })}
-                disabled={saving || !notifEnabled}
+                disabled={saving || !notificationsEnabled}
               />
-              <span>Desktop</span>
+              Desktop
             </label>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 10, color: ui.text }}>
+              <input
+                type="checkbox"
+                checked={!!notificationsEmail}
+                onChange={(e) => onChange({ notifications_email: e.target.checked })}
+                disabled={saving || !notificationsEnabled}
+              />
+              E-Mail
+            </label>
+
+            {saving ? <div style={{ fontSize: 12, color: ui.subText }}>Speichere…</div> : null}
           </div>
-
-          {saving ? <div style={{ fontSize: 12, opacity: 0.75 }}>Speichere…</div> : null}
         </div>
-      </div>
+      )}
     </div>
   );
-}
-
-function Placeholder({ ui, title, text }) {
-  return (
-    <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-      <div style={{ ...styles.cardTitle, color: ui.text }}>{title}</div>
-      <div style={{ opacity: 0.85, color: ui.subText }}>{text}</div>
-    </div>
-  );
-}
-
-/* ---------------- Helpers ---------------- */
-
-function labelStatus(s) {
-  if (s === "todo") return "Zu erledigen";
-  if (s === "doing") return "In Arbeit";
-  if (s === "done") return "Erledigt";
-  return s ?? "—";
 }
 
 /* ---------------- Styles ---------------- */
@@ -1313,17 +1365,17 @@ const styles = {
     justifyContent: "space-between"
   },
   topTitle: { fontSize: 18, fontWeight: 650 },
-  topSub: { fontSize: 12, opacity: 0.7 },
+  topSub: { fontSize: 12, opacity: 0.9 },
 
   body: { display: "flex" },
   sidebar: {
-    width: 280,
+    width: 260,
     padding: 14,
     minHeight: "calc(100vh - 60px)"
   },
   main: { flex: 1, padding: 18 },
 
-  sidebarSectionTitle: { fontSize: 12, opacity: 0.7, marginBottom: 10 },
+  sidebarSectionTitle: { fontSize: 12, marginBottom: 10 },
 
   navBtn: {
     textAlign: "left",
@@ -1340,7 +1392,7 @@ const styles = {
   },
 
   statCard: { borderRadius: 12, padding: 12 },
-  statLabel: { fontSize: 12, opacity: 0.7 },
+  statLabel: { fontSize: 12 },
   statValue: { fontSize: 22, fontWeight: 750 },
 
   card: {
@@ -1377,29 +1429,22 @@ const styles = {
   },
   file: {
     padding: "10px 12px",
-    borderRadius: 12,
-    background: "transparent"
+    borderRadius: 12
   },
 
   btn: {
     padding: "10px 12px",
     borderRadius: 12,
-    border: "1px solid rgba(148,163,184,0.25)",
-    background: "white",
     cursor: "pointer"
   },
   btnGhost: {
     padding: "10px 12px",
     borderRadius: 12,
-    border: "1px solid rgba(148,163,184,0.25)",
-    background: "rgba(148,163,184,0.12)",
     cursor: "pointer"
   },
   btnWide: {
     padding: "10px 14px",
     borderRadius: 12,
-    border: "1px solid rgba(148,163,184,0.25)",
-    background: "white",
     cursor: "pointer",
     minWidth: 110
   },
@@ -1408,18 +1453,16 @@ const styles = {
   col: { borderRadius: 14, padding: 12 },
   colHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
   colTitle: { fontWeight: 750 },
-  colCount: { fontSize: 12, opacity: 0.7 },
+  colCount: { fontSize: 12, opacity: 0.85 },
 
   taskCard: { borderRadius: 12, padding: 12 },
-  meta: { fontSize: 12, opacity: 0.75, marginTop: 6 },
-  progressText: { fontSize: 12, opacity: 0.85, marginTop: 8 },
+  meta: { fontSize: 12, opacity: 0.85, marginTop: 6 },
+  progressText: { fontSize: 12, opacity: 0.9, marginTop: 8 },
 
-  miniSelect: { padding: "6px 8px", borderRadius: 10, background: "white" },
+  miniSelect: { padding: "6px 8px", borderRadius: 10, background: "transparent" },
   miniBtnDanger: {
     padding: "6px 10px",
     borderRadius: 10,
-    border: "1px solid rgba(148,163,184,0.25)",
-    background: "white",
     cursor: "pointer"
   },
 
@@ -1433,11 +1476,11 @@ const styles = {
   },
 
   table: { width: "100%", borderCollapse: "collapse" },
-  th: { textAlign: "left", padding: 10, fontSize: 12, opacity: 0.8 },
-  td: { padding: 10, verticalAlign: "top" },
+  th: { textAlign: "left", padding: 10, fontSize: 12, opacity: 0.95 },
+  td: { padding: 10, borderBottom: "1px solid rgba(148,163,184,0.15)", verticalAlign: "top" },
   tr: {},
 
-  empty: { padding: 10, opacity: 0.7, fontSize: 13 },
+  empty: { padding: 10, opacity: 0.9, fontSize: 13 },
 
   timelineBlock: { borderRadius: 14, padding: 12 },
   timelineTitle: { fontWeight: 750 },
