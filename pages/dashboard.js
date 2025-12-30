@@ -47,9 +47,9 @@ function pad2(n) {
 function toDatetimeLocalValue(date) {
   // returns YYYY-MM-DDTHH:mm in local time
   const d = new Date(date);
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(
-    d.getMinutes()
-  )}`;
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(
+    d.getHours()
+  )}:${pad2(d.getMinutes())}`;
 }
 
 function parseDatetimeLocalToISO(value) {
@@ -124,6 +124,9 @@ export default function Dashboard() {
   const [tasks, setTasks] = useState([]);
   const [subtasks, setSubtasks] = useState([]);
   const [guides, setGuides] = useState([]);
+
+  // NEW: calendar items (view tasks_calendar)
+  const [calendarItems, setCalendarItems] = useState([]);
 
   // Filters
   const [filterAreaId, setFilterAreaId] = useState("all");
@@ -207,9 +210,10 @@ export default function Dashboard() {
 
   async function reloadAll() {
     // AREAS (no joins)
-    const { data: aData, error: aErr } = await supabase.from("areas").select("id,name").order("name", {
-      ascending: true
-    });
+    const { data: aData, error: aErr } = await supabase
+      .from("areas")
+      .select("id,name")
+      .order("name", { ascending: true });
 
     if (aErr) {
       alert("Fehler beim Laden der Bereiche: " + aErr.message);
@@ -217,10 +221,12 @@ export default function Dashboard() {
     }
     setAreas(aData ?? []);
 
-    // TASKS (no joins)
+    // TASKS (IMPORTANT: no areas(name) join, prevents stack depth / 500)
     const { data: tData, error: tErr } = await supabase
       .from("tasks")
-      .select("id,title,status,period,area_id,due_at,due_bucket,created_at,subtasks_done,subtasks_total,created_by,user_id")
+      .select(
+        "id,title,status,period,area_id,due_at,due_bucket,created_at,subtasks_done,subtasks_total,created_by,user_id"
+      )
       .order("created_at", { ascending: false });
 
     if (tErr) {
@@ -252,6 +258,20 @@ export default function Dashboard() {
       return;
     }
     setGuides(gData ?? []);
+
+    // CALENDAR ITEMS (read-only view tasks_calendar: includes recurring + normal)
+    const { data: cData, error: cErr } = await supabase
+      .from("tasks_calendar")
+      .select(
+        "id,task_id,title,area_id,due_at,due_bucket,status,created_at,created_by,is_recurring,series_id,instance_date"
+      )
+      .order("due_at", { ascending: true });
+
+    if (cErr) {
+      alert("Fehler beim Laden des Kalenders: " + cErr.message);
+      return;
+    }
+    setCalendarItems(cData ?? []);
   }
 
   async function loadSettings() {
@@ -260,7 +280,9 @@ export default function Dashboard() {
 
     const { data, error } = await supabase
       .from("user_settings")
-      .select("user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop")
+      .select(
+        "user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop"
+      )
       .eq("user_id", user.id)
       .maybeSingle();
 
@@ -268,7 +290,9 @@ export default function Dashboard() {
       const { data: insData, error: insErr } = await supabase
         .from("user_settings")
         .insert({ user_id: user.id })
-        .select("user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop")
+        .select(
+          "user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop"
+        )
         .single();
 
       if (insErr) alert("Fehler beim Anlegen der Einstellungen: " + insErr.message);
@@ -328,6 +352,7 @@ export default function Dashboard() {
     return m;
   }, [subtasks]);
 
+  // Filters for tasks (board/list/timeline)
   const filteredTasks = useMemo(() => {
     const q = (search ?? "").trim().toLowerCase();
     return (tasks ?? []).filter((t) => {
@@ -341,6 +366,22 @@ export default function Dashboard() {
       return true;
     });
   }, [tasks, filterAreaId, filterDue, search, areaNameById]);
+
+  // Filters for calendar (tasks_calendar)
+  const filteredCalendarItems = useMemo(() => {
+    const q = (search ?? "").trim().toLowerCase();
+    return (calendarItems ?? []).filter((t) => {
+      if (filterAreaId !== "all" && t.area_id !== filterAreaId) return false;
+      if (filterDue !== "all" && (t.due_bucket ?? "") !== filterDue) return false;
+
+      if (q) {
+        const inTitle = (t.title ?? "").toLowerCase().includes(q);
+        const inArea = (areaNameById.get(t.area_id) ?? "").toLowerCase().includes(q);
+        if (!inTitle && !inArea) return false;
+      }
+      return true;
+    });
+  }, [calendarItems, filterAreaId, filterDue, search, areaNameById]);
 
   const counts = useMemo(() => {
     const open = filteredTasks.filter((t) => t.status !== "done").length;
@@ -492,9 +533,9 @@ export default function Dashboard() {
   }
 
   const calendarGroups = useMemo(() => {
-    // group by local day string YYYY-MM-DD for tasks with due_at
+    // group by local day string YYYY-MM-DD for tasks with due_at (from tasks_calendar)
     const m = new Map();
-    (filteredTasks ?? []).forEach((t) => {
+    (filteredCalendarItems ?? []).forEach((t) => {
       if (!t.due_at) return;
       const d = new Date(t.due_at);
       if (Number.isNaN(d.getTime())) return;
@@ -507,7 +548,7 @@ export default function Dashboard() {
     // sort keys ascending
     const keys = Array.from(m.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     return keys.map((k) => [k, (m.get(k) ?? []).slice().sort((a, b) => (a.due_at < b.due_at ? -1 : 1))]);
-  }, [filteredTasks]);
+  }, [filteredCalendarItems]);
 
   const nowLabel = useMemo(() => {
     return nowTick.toLocaleString("de-DE", {
@@ -556,7 +597,10 @@ export default function Dashboard() {
           >
             Neu laden
           </button>
-          <button style={{ ...styles.btn, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={signOut}>
+          <button
+            style={{ ...styles.btn, border: ui.border, background: ui.panelBg, color: ui.text }}
+            onClick={signOut}
+          >
             Abmelden
           </button>
         </div>
@@ -702,14 +746,28 @@ export default function Dashboard() {
           )}
 
           {activeTab === "list" && (
-            <ListView ui={ui} tasks={filteredTasks} areaNameById={areaNameById} onStatus={setTaskStatus} onDelete={deleteTask} />
+            <ListView
+              ui={ui}
+              tasks={filteredTasks}
+              areaNameById={areaNameById}
+              onStatus={setTaskStatus}
+              onDelete={deleteTask}
+            />
           )}
 
           {activeTab === "calendar" && (
-            <CalendarView ui={ui} groups={calendarGroups} areaNameById={areaNameById} onStatus={setTaskStatus} onDelete={deleteTask} />
+            <CalendarView
+              ui={ui}
+              groups={calendarGroups}
+              areaNameById={areaNameById}
+              onStatus={setTaskStatus}
+              onDelete={deleteTask}
+            />
           )}
 
-          {activeTab === "timeline" && <TimelineView ui={ui} tasks={filteredTasks} areaNameById={areaNameById} />}
+          {activeTab === "timeline" && (
+            <TimelineView ui={ui} tasks={filteredTasks} areaNameById={areaNameById} />
+          )}
 
           {activeTab === "guides" && (
             <GuidesView
@@ -733,7 +791,13 @@ export default function Dashboard() {
           {activeTab === "areas" && <AreasView ui={ui} areas={areas} />}
 
           {activeTab === "settings" && (
-            <SettingsView ui={ui} settings={settings} loading={settingsLoading} saving={settingsSaving} onChange={saveSettings} />
+            <SettingsView
+              ui={ui}
+              settings={settings}
+              loading={settingsLoading}
+              saving={settingsSaving}
+              onChange={saveSettings}
+            />
           )}
         </div>
       </div>
@@ -825,7 +889,11 @@ function CreateTaskBar({
           ))}
         </select>
 
-        <button style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={onCreate} disabled={busy}>
+        <button
+          style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }}
+          onClick={onCreate}
+          disabled={busy}
+        >
           {busy ? "…" : "Anlegen"}
         </button>
       </div>
@@ -837,7 +905,17 @@ function CreateTaskBar({
   );
 }
 
-function BoardView({ ui, tasks, areaNameById, onStatus, onDelete, subtasksByTaskId, onToggleSubtask, guidesByAreaId, onOpenGuideFile }) {
+function BoardView({
+  ui,
+  tasks,
+  areaNameById,
+  onStatus,
+  onDelete,
+  subtasksByTaskId,
+  onToggleSubtask,
+  guidesByAreaId,
+  onOpenGuideFile
+}) {
   const cols = [
     { id: "todo", title: "Zu erledigen" },
     { id: "doing", title: "In Arbeit" },
@@ -903,7 +981,10 @@ function TaskCard({ ui, task, areaName, onStatus, onDelete, subtasks, onToggleSu
             <option value="done">Erledigt</option>
           </select>
 
-          <button style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={() => onDelete(task.id)}>
+          <button
+            style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }}
+            onClick={() => onDelete(task.id)}
+          >
             ✕
           </button>
         </div>
@@ -944,11 +1025,21 @@ function TaskCard({ ui, task, areaName, onStatus, onDelete, subtasks, onToggleSu
         <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
           <div style={{ fontSize: 12, color: ui.subText }}>Anleitungen</div>
           {guides.map((g) => (
-            <div key={g.id} style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+            <div
+              key={g.id}
+              style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}
+            >
               <div style={{ fontSize: 13, color: ui.text, opacity: 0.95 }}>{g.title}</div>
               {g.file_path ? (
                 <button
-                  style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text, padding: "6px 10px", borderRadius: 10 }}
+                  style={{
+                    ...styles.btnGhost,
+                    border: ui.border,
+                    background: ui.inputBg,
+                    color: ui.text,
+                    padding: "6px 10px",
+                    borderRadius: 10
+                  }}
                   onClick={() => onOpenGuideFile(g.file_path)}
                 >
                   Datei
@@ -988,7 +1079,11 @@ function SubtaskBar({ ui, tasks, selectedTaskId, setSelectedTaskId, newSubtaskTi
           onChange={(e) => setNewSubtaskTitle(e.target.value)}
         />
 
-        <button style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={onCreate} disabled={busy}>
+        <button
+          style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }}
+          onClick={onCreate}
+          disabled={busy}
+        >
           {busy ? "…" : "Anlegen"}
         </button>
       </div>
@@ -1032,7 +1127,10 @@ function ListView({ ui, tasks, areaNameById, onStatus, onDelete }) {
                   </select>
                 </td>
                 <td style={{ ...styles.td, width: 60 }}>
-                  <button style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={() => onDelete(t.id)}>
+                  <button
+                    style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }}
+                    onClick={() => onDelete(t.id)}
+                  >
                     ✕
                   </button>
                 </td>
@@ -1052,198 +1150,69 @@ function ListView({ ui, tasks, areaNameById, onStatus, onDelete }) {
   );
 }
 
-/* ---------------- Kalender (Option B: Monatsraster) ---------------- */
-
 function CalendarView({ ui, groups, areaNameById, onStatus, onDelete }) {
-  const tasksByDay = useMemo(() => {
-    const m = new Map();
-    (groups ?? []).forEach(([day, list]) => m.set(day, list ?? []));
-    return m;
-  }, [groups]);
-
-  const todayKey = useMemo(() => {
-    const n = new Date();
-    return `${n.getFullYear()}-${pad2(n.getMonth() + 1)}-${pad2(n.getDate())}`;
-  }, []);
-
-  const [monthCursor, setMonthCursor] = useState(() => {
-    const n = new Date();
-    return new Date(n.getFullYear(), n.getMonth(), 1);
-  });
-
-  const [selectedDay, setSelectedDay] = useState(null);
-  const [selectedTasks, setSelectedTasks] = useState([]);
-
-  const monthLabel = useMemo(() => {
-    return monthCursor.toLocaleDateString("de-DE", { month: "long", year: "numeric" });
-  }, [monthCursor]);
-
-  const gridDays = useMemo(() => {
-    const first = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
-    const firstDow = (first.getDay() + 6) % 7; // Mo=0 ... So=6
-    const start = new Date(first);
-    start.setDate(first.getDate() - firstDow);
-
-    const days = [];
-    for (let i = 0; i < 42; i++) {
-      const d = new Date(start);
-      d.setDate(start.getDate() + i);
-      const key = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-      days.push({
-        date: d,
-        key,
-        inMonth: d.getMonth() === monthCursor.getMonth(),
-        isToday: key === todayKey,
-        tasks: tasksByDay.get(key) ?? []
-      });
-    }
-    return days;
-  }, [monthCursor, tasksByDay, todayKey]);
-
-  function openDay(dayKey, list) {
-    setSelectedDay(dayKey);
-    setSelectedTasks(list ?? []);
-  }
-
-  function closeDay() {
-    setSelectedDay(null);
-    setSelectedTasks([]);
-  }
-
-  function prevMonth() {
-    setMonthCursor((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1));
-    closeDay();
-  }
-
-  function nextMonth() {
-    setMonthCursor((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1));
-    closeDay();
-  }
-
   return (
     <div style={{ display: "grid", gap: 12 }}>
       <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-          <div>
-            <div style={{ ...styles.cardTitle, color: ui.text, marginBottom: 4 }}>Kalender (Monat)</div>
-            <div style={{ fontSize: 12, color: ui.subText }}>Klick auf einen Tag zeigt Details. Aufgaben kommen aus due_at.</div>
-          </div>
-
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text }} onClick={prevMonth} title="Vorheriger Monat">
-              ←
-            </button>
-
-            <div style={{ minWidth: 180, textAlign: "center", color: ui.text }}>{monthLabel}</div>
-
-            <button style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text }} onClick={nextMonth} title="Nächster Monat">
-              →
-            </button>
-          </div>
+        <div style={{ ...styles.cardTitle, color: ui.text }}>Kalender (tasks_calendar)</div>
+        <div style={{ fontSize: 12, color: ui.subText }}>
+          Gruppiert nach Datum (aus due_at). Serien-Einträge sind read-only.
         </div>
       </div>
 
-      <div style={{ ...styles.calendarHeaderRow, color: ui.subText }}>
-        {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((d) => (
-          <div key={d} style={styles.calendarHeaderCell}>
-            {d}
-          </div>
-        ))}
-      </div>
+      {groups.length === 0 ? (
+        <div style={{ ...styles.card, background: ui.panelBg, border: ui.border, color: ui.subText }}>
+          Keine Aufgaben mit Datum/Uhrzeit (due_at).
+        </div>
+      ) : (
+        groups.map(([day, list]) => (
+          <div key={day} style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ color: ui.text }}>{day}</div>
+              <div style={{ color: ui.subText, fontSize: 12 }}>{list.length} Aufgabe(n)</div>
+            </div>
 
-      <div style={styles.calendarGrid}>
-        {gridDays.map((cell) => {
-          const count = cell.tasks.length;
-          const bg = !cell.inMonth ? "transparent" : ui.panelBg;
-          const dim = !cell.inMonth ? 0.5 : 1;
-
-          return (
-            <button
-              key={cell.key}
-              onClick={() => openDay(cell.key, cell.tasks)}
-              style={{
-                ...styles.calendarCell,
-                border: ui.border,
-                background: bg,
-                color: ui.text,
-                opacity: dim,
-                outline: cell.isToday ? `2px solid ${ui.accent}` : "none"
-              }}
-              title={cell.key}
-            >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ fontSize: 12, color: ui.subText }}>
-                  {cell.date.getDate()}.{pad2(cell.date.getMonth() + 1)}.
-                </div>
-
-                {count > 0 ? (
-                  <div style={{ ...styles.calendarBadge, background: ui.navActiveBg, border: ui.border, color: ui.text }}>{count}</div>
-                ) : null}
-              </div>
-
-              <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
-                {cell.tasks.slice(0, 3).map((t) => (
-                  <div key={t.id} style={{ ...styles.calendarChip, border: ui.border, background: ui.cardBg, color: ui.text }} title={`${t.title} • ${formatDueLocal(t.due_at)}`}>
-                    <div style={{ fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.title}</div>
-                    <div style={{ fontSize: 11, color: ui.subText }}>
-                      {formatDueLocal(t.due_at).slice(-5)} • {areaNameById.get(t.area_id) ?? "—"}
-                    </div>
-                  </div>
-                ))}
-
-                {count > 3 ? <div style={{ fontSize: 11, color: ui.subText }}>+{count - 3} weitere</div> : null}
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      {selectedDay ? (
-        <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <div style={{ color: ui.text }}>{selectedDay}</div>
-            <button style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text }} onClick={closeDay}>
-              Schließen
-            </button>
-          </div>
-
-          {selectedTasks.length === 0 ? (
-            <div style={{ marginTop: 10, color: ui.subText }}>Keine Aufgaben an diesem Tag.</div>
-          ) : (
             <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-              {selectedTasks
-                .slice()
-                .sort((a, b) => (a.due_at < b.due_at ? -1 : 1))
-                .map((t) => (
+              {list.map((t) => {
+                const isReadOnly = !t.task_id || !!t.is_recurring; // series instances = read-only
+                return (
                   <div key={t.id} style={{ ...styles.timelineItem, border: ui.border, background: ui.cardBg }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
                       <div style={{ color: ui.text }}>{t.title}</div>
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <select
-                          style={{ ...styles.miniSelect, border: ui.border, background: ui.inputBg, color: ui.text }}
-                          value={t.status}
-                          onChange={(e) => onStatus(t.id, e.target.value)}
-                        >
-                          <option value="todo">Zu erledigen</option>
-                          <option value="doing">In Arbeit</option>
-                          <option value="done">Erledigt</option>
-                        </select>
 
-                        <button style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={() => onDelete(t.id)}>
-                          ✕
-                        </button>
-                      </div>
+                      {isReadOnly ? (
+                        <div style={{ fontSize: 12, color: ui.subText }}>Serie (read-only)</div>
+                      ) : (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <select
+                            style={{ ...styles.miniSelect, border: ui.border, background: ui.inputBg, color: ui.text }}
+                            value={t.status}
+                            onChange={(e) => onStatus(t.task_id, e.target.value)} // IMPORTANT: use task_id
+                          >
+                            <option value="todo">Zu erledigen</option>
+                            <option value="doing">In Arbeit</option>
+                            <option value="done">Erledigt</option>
+                          </select>
+                          <button
+                            style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }}
+                            onClick={() => onDelete(t.task_id)} // IMPORTANT: use task_id
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     <div style={{ ...styles.meta, color: ui.subText }}>
                       {areaNameById.get(t.area_id) ?? "—"} • {formatDueLocal(t.due_at)} • {labelStatus(t.status)}
                     </div>
                   </div>
-                ))}
+                );
+              })}
             </div>
-          )}
-        </div>
-      ) : null}
+          </div>
+        ))
+      )}
     </div>
   );
 }
@@ -1334,7 +1303,11 @@ function GuidesView({
             style={{ ...styles.file, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
           />
 
-          <button style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }} onClick={onCreate} disabled={busy}>
+          <button
+            style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }}
+            onClick={onCreate}
+            disabled={busy}
+          >
             {busy ? "…" : "Speichern"}
           </button>
         </div>
@@ -1365,7 +1338,10 @@ function GuidesView({
                 </div>
 
                 {g.file_path ? (
-                  <button style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text }} onClick={() => onOpenFile(g.file_path)}>
+                  <button
+                    style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text }}
+                    onClick={() => onOpenFile(g.file_path)}
+                  >
                     Datei öffnen
                   </button>
                 ) : null}
@@ -1640,41 +1616,5 @@ const styles = {
   areaRow: {
     borderRadius: 14,
     padding: 12
-  },
-
-  /* Kalender Styles (Monatsraster) */
-  calendarHeaderRow: {
-    display: "grid",
-    gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
-    gap: 8,
-    padding: "0 2px"
-  },
-  calendarHeaderCell: {
-    fontSize: 12,
-    padding: "6px 8px"
-  },
-  calendarGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
-    gap: 8
-  },
-  calendarCell: {
-    borderRadius: 14,
-    padding: 10,
-    cursor: "pointer",
-    textAlign: "left",
-    minHeight: 120
-  },
-  calendarBadge: {
-    fontSize: 12,
-    padding: "2px 8px",
-    borderRadius: 999,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center"
-  },
-  calendarChip: {
-    borderRadius: 12,
-    padding: "8px 10px"
   }
 };
