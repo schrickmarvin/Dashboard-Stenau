@@ -1,1618 +1,1306 @@
-// dashboard.js
-import React, { useEffect, useMemo, useState } from "react";
+// Dashboard.js
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 /* ---------------- Supabase ---------------- */
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const SUPABASE_URL = import.meta?.env?.VITE_SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta?.env?.VITE_SUPABASE_ANON_KEY || process.env.REACT_APP_SUPABASE_ANON_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  // eslint-disable-next-line no-console
-  console.error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
-}
-
-const supabase = createClient(supabaseUrl || "", supabaseAnonKey || "");
-
-/* ---------------- Constants ---------------- */
-
-const TABS = [
-  { id: "board", label: "Board" },
-  { id: "list", label: "Liste" },
-  { id: "calendar", label: "Kalender" },
-  { id: "timeline", label: "Timeline" },
-  { id: "guides", label: "Anleitungen" },
-  { id: "areas", label: "Bereiche" },
-  { id: "settings", label: "Einstellungen" }
-];
-
-const DUE_BUCKETS = [
-  { value: "Heute", label: "Heute" },
-  { value: "Diese Woche", label: "Diese Woche" },
-  { value: "Monat", label: "Monat" },
-  { value: "Jahr", label: "Jahr" }
-];
-
-const STATUS = [
-  { value: "todo", label: "Zu erledigen" },
-  { value: "doing", label: "In Arbeit" },
-  { value: "done", label: "Erledigt" }
-];
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 /* ---------------- Helpers ---------------- */
+const STATUS = ["Zu erledigen", "In Arbeit", "Erledigt"];
 
-function pad2(n) {
-  return String(n).padStart(2, "0");
+const DEFAULT_SETTINGS = {
+  theme_mode: "light", // light | dark | system
+  background: "soft", // default | soft | clean
+  accent: "#16a34a", // green default wie auf deinem Screenshot
+  notifications_enabled: true,
+  notifications_desktop: true,
+  notifications_email: false,
+};
+
+function safeJsonParse(s, fallback) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return fallback;
+  }
 }
 
-function toDatetimeLocalValue(date) {
-  // returns YYYY-MM-DDTHH:mm in local time
-  const d = new Date(date);
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(
-    d.getHours()
-  )}:${pad2(d.getMinutes())}`;
-}
-
-function parseDatetimeLocalToISO(value) {
-  // value: YYYY-MM-DDTHH:mm (local)
-  if (!value) return null;
+function formatDateTime(value) {
+  if (!value) return "—";
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
-
-function labelStatus(s) {
-  if (s === "todo") return "Zu erledigen";
-  if (s === "doing") return "In Arbeit";
-  if (s === "done") return "Erledigt";
-  return s ?? "—";
-}
-
-function formatDueLocal(dueAt) {
-  if (!dueAt) return "—";
-  const d = new Date(dueAt);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("de-DE", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
+  return d.toLocaleString("de-DE", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-/* ---------------- Theme (minimal) ---------------- */
-
-function getUiTheme(settings) {
-  const theme = settings?.theme ?? "light";
-  const accent = settings?.accent ?? "#4f46e5";
-  const background = settings?.background ?? "soft";
-
-  const dark = theme === "dark";
-  const bg =
-    background === "plain"
-      ? dark
-        ? "#0b1020"
-        : "#ffffff"
-      : dark
-      ? "#0b1020"
-      : "#f6f7f9";
-
-  return {
-    dark,
-    accent,
-    pageBg: bg,
-    text: dark ? "#eef2ff" : "#0f172a",
-    subText: dark ? "rgba(238,242,255,0.7)" : "rgba(15,23,42,0.65)",
-    border: dark ? "1px solid rgba(148,163,184,0.25)" : "1px solid #e5e7eb",
-    panelBg: dark ? "rgba(30,41,59,0.35)" : "#ffffff",
-    cardBg: dark ? "rgba(30,41,59,0.55)" : "#fafafa",
-    inputBg: dark ? "rgba(2,6,23,0.4)" : "#ffffff",
-    navActiveBg: dark ? "rgba(79,70,229,0.25)" : "#eef2ff",
-    topbarBg: dark ? "rgba(2,6,23,0.5)" : "#ffffff"
-  };
+function startOfWeek(date = new Date()) {
+  const d = new Date(date);
+  const day = (d.getDay() + 6) % 7; // Monday=0
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - day);
+  return d;
 }
 
-/* ---------------- Main ---------------- */
+function endOfWeek(date = new Date()) {
+  const d = startOfWeek(date);
+  d.setDate(d.getDate() + 7);
+  return d;
+}
 
+/* ---------------- Theme apply ---------------- */
+function applyThemeToDom(settings) {
+  const root = document.documentElement;
+
+  const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+  const mode = settings.theme_mode === "system" ? (prefersDark ? "dark" : "light") : settings.theme_mode;
+
+  root.dataset.theme = mode;
+  root.dataset.bg = settings.background;
+  root.style.setProperty("--accent", settings.accent);
+}
+
+/* ---------------- Minimal UI primitives ---------------- */
+function Card({ title, right, children, style }) {
+  return (
+    <div
+      style={{
+        border: "1px solid rgba(0,0,0,0.06)",
+        background: "rgba(255,255,255,0.92)",
+        borderRadius: 18,
+        padding: 14,
+        boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+        ...style,
+      }}
+    >
+      {(title || right) && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+          <div style={{ fontSize: 16 }}>{title}</div>
+          <div>{right}</div>
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+function Button({ children, onClick, variant = "primary", disabled, style, title }) {
+  const isGhost = variant === "ghost";
+  const isDanger = variant === "danger";
+  return (
+    <button
+      title={title}
+      disabled={disabled}
+      onClick={onClick}
+      style={{
+        cursor: disabled ? "not-allowed" : "pointer",
+        borderRadius: 12,
+        border: "1px solid rgba(0,0,0,0.10)",
+        padding: "8px 12px",
+        background: isGhost ? "transparent" : isDanger ? "rgba(239,68,68,0.10)" : "var(--accent)",
+        color: isGhost ? "inherit" : isDanger ? "rgb(185,28,28)" : "white",
+        opacity: disabled ? 0.6 : 1,
+        ...style,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Input({ value, onChange, placeholder, style, type = "text" }) {
+  return (
+    <input
+      type={type}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      style={{
+        width: "100%",
+        borderRadius: 12,
+        border: "1px solid rgba(0,0,0,0.10)",
+        padding: "10px 12px",
+        outline: "none",
+        ...style,
+      }}
+    />
+  );
+}
+
+function Select({ value, onChange, options, style }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        width: "100%",
+        borderRadius: 12,
+        border: "1px solid rgba(0,0,0,0.10)",
+        padding: "10px 12px",
+        outline: "none",
+        background: "white",
+        ...style,
+      }}
+    >
+      {options.map((o) => (
+        <option key={String(o.value)} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/* ---------------- Main Component ---------------- */
 export default function Dashboard() {
-  const [user, setUser] = useState(null);
-  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [session, setSession] = useState(null);
+  const user = session?.user || null;
 
-  const [activeTab, setActiveTab] = useState("board");
-
-  const [areas, setAreas] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [calendarRows, setCalendarRows] = useState([]); // <-- neu: tasks_calendar
-  const [subtasks, setSubtasks] = useState([]);
-  const [guides, setGuides] = useState([]);
+  const [activeTab, setActiveTab] = useState("Board"); // Board | Liste | Kalender | Timeline | Anleitungen | Bereiche | Einstellungen
+  const [loading, setLoading] = useState(false);
+  const [uiError, setUiError] = useState("");
 
   // Filters
-  const [filterAreaId, setFilterAreaId] = useState("all");
-  const [filterDue, setFilterDue] = useState("all");
+  const [filterArea, setFilterArea] = useState("ALL");
+  const [filterBucket, setFilterBucket] = useState("ALL");
   const [search, setSearch] = useState("");
 
-  // Create Task
+  // Settings (Design) - lokal gespeichert (später supabase möglich)
+  const [settings, setSettings] = useState(() => safeJsonParse(localStorage.getItem("stenau_settings_v1"), DEFAULT_SETTINGS));
+
+  // Data
+  const [areas, setAreas] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [subtasks, setSubtasks] = useState([]);
+  const [instructions, setInstructions] = useState([]);
+
+  // Calendar
+  const [calendarRows, setCalendarRows] = useState([]);
+
+  // Create Task form
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
-  const [newDueBucket, setNewDueBucket] = useState("Heute");
-  const [newDueAtLocal, setNewDueAtLocal] = useState(toDatetimeLocalValue(new Date()));
-  const [newStatus, setNewStatus] = useState("todo");
-  const [busyCreateTask, setBusyCreateTask] = useState(false);
+  const [newDueAt, setNewDueAt] = useState(() => {
+    const d = new Date();
+    d.setSeconds(0, 0);
+    return d.toISOString().slice(0, 16); // for datetime-local
+  });
+  const [newBucket, setNewBucket] = useState("Heute");
+  const [newStatus, setNewStatus] = useState("Zu erledigen");
 
   // Create Subtask
-  const [selectedTaskId, setSelectedTaskId] = useState("");
-  const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
-  const [busyCreateSubtask, setBusyCreateSubtask] = useState(false);
+  const [subTaskParentId, setSubTaskParentId] = useState("");
+  const [subTaskTitle, setSubTaskTitle] = useState("");
 
-  // Create Guide
-  const [guideTitle, setGuideTitle] = useState("");
-  const [guideAreaId, setGuideAreaId] = useState("");
-  const [guideContent, setGuideContent] = useState("");
-  const [guideFile, setGuideFile] = useState(null);
-  const [busyCreateGuide, setBusyCreateGuide] = useState(false);
+  // Create Instruction
+  const [instTitle, setInstTitle] = useState("");
+  const [instAreaId, setInstAreaId] = useState("");
+  const [instBody, setInstBody] = useState("");
+  const fileInputRef = useRef(null);
 
-  // Settings
-  const [settings, setSettings] = useState(null);
-  const [settingsLoading, setSettingsLoading] = useState(false);
-  const [settingsSaving, setSettingsSaving] = useState(false);
+  // Area management
+  const [areaNewName, setAreaNewName] = useState("");
+  const [areaEditId, setAreaEditId] = useState("");
+  const [areaEditName, setAreaEditName] = useState("");
+  const [areaEditColor, setAreaEditColor] = useState("#94a3b8"); // future
 
-  // Clock
-  const [nowTick, setNowTick] = useState(new Date());
+  /* ----------- Apply theme ----------- */
   useEffect(() => {
-    const t = setInterval(() => setNowTick(new Date()), 1000);
-    return () => clearInterval(t);
+    applyThemeToDom(settings);
+    localStorage.setItem("stenau_settings_v1", JSON.stringify(settings));
+  }, [settings]);
+
+  /* ----------- Auth ----------- */
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => setSession(newSession));
+    return () => sub?.subscription?.unsubscribe?.();
   }, []);
 
-  // Auth check
+  /* ----------- Load initial data when logged in ----------- */
   useEffect(() => {
-    let mounted = true;
-
-    supabase.auth.getUser().then(({ data }) => {
-      if (!mounted) return;
-      setUser(data.user ?? null);
-      setLoadingAuth(false);
-    });
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      if (!mounted) return;
-      setUser(session?.user ?? null);
-      setLoadingAuth(false);
-    });
-
-    return () => {
-      mounted = false;
-      sub?.subscription?.unsubscribe?.();
-    };
-  }, []);
-
-  // Load after login
-  useEffect(() => {
-    if (!user) return;
+    if (!user?.id) return;
     reloadAll();
-    loadSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // Defaults after data loads
-  useEffect(() => {
-    if (!newAreaId && areas.length) setNewAreaId(areas[0].id);
-    if (!guideAreaId && areas.length) setGuideAreaId(areas[0].id);
-    if (!selectedTaskId && tasks.length) setSelectedTaskId(tasks[0].id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [areas, tasks]);
-
-  async function signOut() {
-    await supabase.auth.signOut();
-    window.location.href = "/";
-  }
-
   async function reloadAll() {
-    // AREAS (no joins)
-    const { data: aData, error: aErr } = await supabase
-      .from("areas")
-      .select("id,name")
-      .order("name", { ascending: true });
-
-    if (aErr) {
-      alert("Fehler beim Laden der Bereiche: " + aErr.message);
-      return;
-    }
-    setAreas(aData ?? []);
-
-    // TASKS
-    const { data: tData, error: tErr } = await supabase
-      .from("tasks")
-      .select(
-        "id,title,status,period,area_id,due_at,due_bucket,created_at,subtasks_done,subtasks_total,created_by,user_id"
-      )
-      .order("created_at", { ascending: false });
-
-    if (tErr) {
-      alert("Fehler beim Laden der Aufgaben: " + tErr.message);
-      return;
-    }
-    setTasks(tData ?? []);
-
-    // CALENDAR ROWS (tasks_calendar)
-    // WICHTIG: tasks_calendar hat bei dir KEIN task_id -> wir lesen nur echte Spalten.
-    // Wenn tasks_calendar (noch) nicht existiert oder keine Rechte: wir lassen es einfach leer.
+    setUiError("");
+    setLoading(true);
     try {
-      const { data: cData, error: cErr } = await supabase
-        .from("tasks_calendar")
-        .select(
-          "cal_id,id,title,status,area_id,due_at,due_bucket,is_series,series_id,series_parent_id,series_rule,series_interval,series_weekdays,series_until,created_by,created_at"
-        )
-        .order("due_at", { ascending: true });
-
-      if (cErr) {
-        // keine harte Unterbrechung
-        // eslint-disable-next-line no-console
-        console.warn("tasks_calendar load error:", cErr.message);
-        setCalendarRows([]);
-      } else {
-        setCalendarRows(cData ?? []);
-      }
-    } catch (_e) {
-      setCalendarRows([]);
+      await Promise.all([loadAreas(), loadTasksAndSubtasks(), loadInstructions()]);
+      await loadCalendar(); // uses tasks_calendar
+    } catch (e) {
+      setUiError(String(e?.message || e));
+    } finally {
+      setLoading(false);
     }
-
-    // SUBTASKS
-    const { data: sData, error: sErr } = await supabase
-      .from("subtasks")
-      .select("id,task_id,title,is_done,status,created_at,updated_at")
-      .order("created_at", { ascending: false });
-
-    if (sErr) {
-      alert("Fehler beim Laden der Unteraufgaben: " + sErr.message);
-      return;
-    }
-    setSubtasks(sData ?? []);
-
-    // GUIDES
-    const { data: gData, error: gErr } = await supabase
-      .from("guides")
-      .select("id,title,content,area_id,file_path,created_at")
-      .order("created_at", { ascending: false });
-
-    if (gErr) {
-      alert("Fehler beim Laden der Anleitungen: " + gErr.message);
-      return;
-    }
-    setGuides(gData ?? []);
   }
 
-  async function loadSettings() {
-    if (!user?.id) return;
-    setSettingsLoading(true);
+  async function loadAreas() {
+    const { data, error } = await supabase.from("areas").select("id, name, color").order("name", { ascending: true });
+    if (error) throw error;
+    setAreas(data || []);
+    // set default selection
+    if (!newAreaId && data?.length) setNewAreaId(data[0].id);
+    if (!instAreaId && data?.length) setInstAreaId(data[0].id);
+  }
 
+  async function loadTasksAndSubtasks() {
+    const { data: t, error: te } = await supabase
+      .from("tasks")
+      .select("id, title, status, area_id, due_at, due_bucket, instructions, created_at")
+      .order("created_at", { ascending: false });
+    if (te) throw te;
+
+    const { data: st, error: se } = await supabase.from("subtasks").select("id, task_id, title, done, created_at").order("created_at", { ascending: true });
+    if (se) throw se;
+
+    setTasks(t || []);
+    setSubtasks(st || []);
+
+    if (!subTaskParentId && (t || []).length) setSubTaskParentId(t[0].id);
+  }
+
+  async function loadInstructions() {
     const { data, error } = await supabase
-      .from("user_settings")
-      .select(
-        "user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop"
-      )
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if (!data && !error) {
-      const { data: insData, error: insErr } = await supabase
-        .from("user_settings")
-        .insert({ user_id: user.id })
-        .select(
-          "user_id,theme,accent,background,notifications_enabled,notifications_email,notifications_desktop"
-        )
-        .single();
-
-      if (insErr) alert("Fehler beim Anlegen der Einstellungen: " + insErr.message);
-      setSettings(insErr ? null : insData);
-      setSettingsLoading(false);
-      return;
-    }
-
-    if (error) alert("Fehler beim Laden der Einstellungen: " + error.message);
-    setSettings(data ?? null);
-    setSettingsLoading(false);
+      .from("instructions")
+      .select("id, title, area_id, body, file_url, created_at")
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    setInstructions(data || []);
   }
 
-  async function saveSettings(patch) {
-    if (!user?.id) return;
-    if (!settings) return;
+  // Kalender: fix für task_id-Fehler -> wir nutzen id
+  async function loadCalendar() {
+    const { data, error } = await supabase
+      .from("tasks_calendar")
+      .select("id, title, status, area_id, due_at, due_bucket, is_series, series_id, series_parent_id, cal_id")
+      .not("due_at", "is", null)
+      .order("due_at", { ascending: true });
 
-    setSettingsSaving(true);
-    const next = { ...settings, ...patch };
-    setSettings(next);
-
-    const { error } = await supabase.from("user_settings").update(patch).eq("user_id", user.id);
-
-    setSettingsSaving(false);
-
-    if (error) {
-      alert("Fehler beim Speichern: " + error.message);
-      await loadSettings();
-    }
+    if (error) throw error;
+    setCalendarRows(data || []);
   }
 
-  const ui = useMemo(() => getUiTheme(settings), [settings]);
-
-  const areaNameById = useMemo(() => {
+  /* ----------- Derived data ----------- */
+  const areasById = useMemo(() => {
     const m = new Map();
-    (areas ?? []).forEach((a) => m.set(a.id, a.name));
+    for (const a of areas) m.set(a.id, a);
     return m;
   }, [areas]);
 
-  const guidesByAreaId = useMemo(() => {
-    const m = new Map();
-    (guides ?? []).forEach((g) => {
-      const list = m.get(g.area_id) ?? [];
-      list.push(g);
-      m.set(g.area_id, list);
+  const filteredTasks = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return tasks.filter((t) => {
+      if (filterArea !== "ALL" && t.area_id !== filterArea) return false;
+      if (filterBucket !== "ALL" && (t.due_bucket || "—") !== filterBucket) return false;
+      if (q && !String(t.title || "").toLowerCase().includes(q)) return false;
+      return true;
     });
-    return m;
-  }, [guides]);
+  }, [tasks, filterArea, filterBucket, search]);
 
-  const subtasksByTaskId = useMemo(() => {
-    const m = new Map();
-    (subtasks ?? []).forEach((s) => {
-      const list = m.get(s.task_id) ?? [];
-      list.push(s);
-      m.set(s.task_id, list);
-    });
-    return m;
+  const subtasksByTask = useMemo(() => {
+    const map = new Map();
+    for (const st of subtasks) {
+      if (!map.has(st.task_id)) map.set(st.task_id, []);
+      map.get(st.task_id).push(st);
+    }
+    return map;
   }, [subtasks]);
 
-  const filteredTasks = useMemo(() => {
-    const q = (search ?? "").trim().toLowerCase();
-    return (tasks ?? []).filter((t) => {
-      if (filterAreaId !== "all" && t.area_id !== filterAreaId) return false;
-      if (filterDue !== "all" && (t.due_bucket ?? "") !== filterDue) return false;
-      if (q) {
-        const inTitle = (t.title ?? "").toLowerCase().includes(q);
-        const inArea = (areaNameById.get(t.area_id) ?? "").toLowerCase().includes(q);
-        if (!inTitle && !inArea) return false;
-      }
-      return true;
-    });
-  }, [tasks, filterAreaId, filterDue, search, areaNameById]);
+  const openCount = useMemo(() => tasks.filter((t) => t.status !== "Erledigt").length, [tasks]);
 
-  const filteredCalendarRows = useMemo(() => {
-    const q = (search ?? "").trim().toLowerCase();
-    return (calendarRows ?? []).filter((t) => {
-      if (filterAreaId !== "all" && t.area_id !== filterAreaId) return false;
-      if (filterDue !== "all" && (t.due_bucket ?? "") !== filterDue) return false;
-      if (q) {
-        const inTitle = (t.title ?? "").toLowerCase().includes(q);
-        const inArea = (areaNameById.get(t.area_id) ?? "").toLowerCase().includes(q);
-        if (!inTitle && !inArea) return false;
-      }
-      return true;
-    });
-  }, [calendarRows, filterAreaId, filterDue, search, areaNameById]);
+  const todayCount = useMemo(() => {
+    const now = new Date();
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return tasks.filter((t) => t.due_at && new Date(t.due_at) >= start && new Date(t.due_at) < end && t.status !== "Erledigt").length;
+  }, [tasks]);
 
-  const counts = useMemo(() => {
-    const open = filteredTasks.filter((t) => t.status !== "done").length;
-    const today = filteredTasks.filter((t) => t.due_bucket === "Heute" && t.status !== "done").length;
-    const week = filteredTasks.filter((t) => t.due_bucket === "Diese Woche" && t.status !== "done").length;
-    return { open, today, week };
-  }, [filteredTasks]);
+  const weekCount = useMemo(() => {
+    const s = startOfWeek(new Date());
+    const e = endOfWeek(new Date());
+    return tasks.filter((t) => t.due_at && new Date(t.due_at) >= s && new Date(t.due_at) < e && t.status !== "Erledigt").length;
+  }, [tasks]);
 
+  const buckets = useMemo(() => {
+    const set = new Set();
+    for (const t of tasks) if (t.due_bucket) set.add(t.due_bucket);
+    return ["ALL", ...Array.from(set).sort((a, b) => String(a).localeCompare(String(b), "de"))];
+  }, [tasks]);
+
+  /* ----------- Mutations ----------- */
   async function createTask() {
-    if (!newTitle.trim()) return alert("Bitte einen Titel eingeben.");
-    if (!newAreaId) return alert("Bitte einen Bereich auswählen.");
-
-    setBusyCreateTask(true);
-
-    const dueAtISO = parseDatetimeLocalToISO(newDueAtLocal);
+    setUiError("");
+    if (!newTitle.trim()) return;
 
     const payload = {
       title: newTitle.trim(),
-      area_id: newAreaId,
+      area_id: newAreaId || null,
       status: newStatus,
-      due_bucket: newDueBucket,
-      period: newDueBucket,
-      due_at: dueAtISO,
-      subtasks_done: 0,
-      subtasks_total: 0,
-      created_by: user?.id ?? null,
-      user_id: user?.id ?? null
+      due_bucket: newBucket,
+      due_at: newDueAt ? new Date(newDueAt).toISOString() : null,
     };
 
     const { error } = await supabase.from("tasks").insert(payload);
-    setBusyCreateTask(false);
-
-    if (error) return alert("Fehler beim Anlegen: " + error.message);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
 
     setNewTitle("");
-    await reloadAll();
+    await loadTasksAndSubtasks();
+    await loadCalendar();
   }
 
-  async function setTaskStatus(taskId, status) {
+  async function updateTaskStatus(taskId, status) {
+    setUiError("");
     const { error } = await supabase.from("tasks").update({ status }).eq("id", taskId);
-    if (error) return alert("Fehler beim Update: " + error.message);
-    await reloadAll();
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
+    await loadTasksAndSubtasks();
+    await loadCalendar();
   }
 
   async function deleteTask(taskId) {
+    setUiError("");
     if (!confirm("Aufgabe wirklich löschen?")) return;
     const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-    if (error) return alert("Fehler beim Löschen: " + error.message);
-    await reloadAll();
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
+    await loadTasksAndSubtasks();
+    await loadCalendar();
   }
 
   async function createSubtask() {
-    if (!selectedTaskId) return alert("Bitte zuerst eine Aufgabe auswählen.");
-    if (!newSubtaskTitle.trim()) return alert("Bitte einen Unteraufgaben-Titel eingeben.");
+    setUiError("");
+    if (!subTaskParentId) return;
+    if (!subTaskTitle.trim()) return;
 
-    setBusyCreateSubtask(true);
-
-    const payload = {
-      task_id: selectedTaskId,
-      title: newSubtaskTitle.trim(),
-      is_done: false,
-      status: "todo"
-    };
-
-    const { error } = await supabase.from("subtasks").insert(payload);
-    setBusyCreateSubtask(false);
-
-    if (error) return alert("Fehler beim Anlegen: " + error.message);
-
-    setNewSubtaskTitle("");
-    await recomputeTaskSubtasks(selectedTaskId);
-    await reloadAll();
+    const { error } = await supabase.from("subtasks").insert({ task_id: subTaskParentId, title: subTaskTitle.trim(), done: false });
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
+    setSubTaskTitle("");
+    await loadTasksAndSubtasks();
   }
 
-  async function toggleSubtaskDone(subtask) {
-    const newDone = !(subtask.is_done ?? false);
-    const newStatus = newDone ? "done" : "todo";
-
-    const { error } = await supabase
-      .from("subtasks")
-      .update({ is_done: newDone, status: newStatus, updated_at: new Date().toISOString() })
-      .eq("id", subtask.id);
-
-    if (error) return alert("Fehler beim Update: " + error.message);
-
-    await recomputeTaskSubtasks(subtask.task_id);
-    await reloadAll();
+  async function toggleSubtask(subId, done) {
+    setUiError("");
+    const { error } = await supabase.from("subtasks").update({ done }).eq("id", subId);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
+    await loadTasksAndSubtasks();
   }
 
-  async function recomputeTaskSubtasks(taskId) {
-    const { data, error } = await supabase
-      .from("subtasks")
-      .select("id,is_done,status")
-      .eq("task_id", taskId);
-    if (error) return;
+  async function createInstruction() {
+    setUiError("");
+    if (!instTitle.trim()) return;
 
-    const total = (data ?? []).length;
-    const done = (data ?? []).filter((s) => (s.is_done ?? false) || s.status === "done").length;
+    // optional file upload (wenn du Storage schon nutzt)
+    let file_url = null;
+    const file = fileInputRef.current?.files?.[0] || null;
 
-    await supabase.from("tasks").update({ subtasks_total: total, subtasks_done: done }).eq("id", taskId);
-  }
-
-  async function createGuide() {
-    if (!guideTitle.trim()) return alert("Bitte einen Titel eingeben.");
-    if (!guideAreaId) return alert("Bitte einen Bereich auswählen.");
-
-    setBusyCreateGuide(true);
-
-    let file_path = null;
-
-    if (guideFile) {
-      const safeName = guideFile.name.replace(/\s+/g, "_").replace(/[^\w.\-]/g, "");
-      const path = `${user?.id ?? "user"}/${Date.now()}_${safeName}`;
-
-      const { error: upErr } = await supabase.storage.from("guides").upload(path, guideFile, {
-        upsert: false
-      });
-
-      if (upErr) {
-        setBusyCreateGuide(false);
-        return alert("Upload-Fehler: " + upErr.message);
+    if (file) {
+      try {
+        const path = `instructions/${Date.now()}_${file.name}`;
+        const { error: upErr } = await supabase.storage.from("files").upload(path, file, { upsert: true });
+        if (!upErr) {
+          const { data: pub } = supabase.storage.from("files").getPublicUrl(path);
+          file_url = pub?.publicUrl || null;
+        }
+      } catch (e) {
+        // Storage ist optional; wenn nicht vorhanden, ignorieren
       }
-
-      file_path = path;
     }
 
-    const payload = {
-      title: guideTitle.trim(),
-      content: guideContent?.trim() || null,
-      area_id: guideAreaId,
-      file_path
-    };
-
-    const { error } = await supabase.from("guides").insert(payload);
-
-    setBusyCreateGuide(false);
-
-    if (error) return alert("Fehler beim Speichern: " + error.message);
-
-    setGuideTitle("");
-    setGuideContent("");
-    setGuideFile(null);
-
-    await reloadAll();
-  }
-
-  async function openGuideFile(file_path) {
-    if (!file_path) return;
-    const { data, error } = await supabase.storage.from("guides").createSignedUrl(file_path, 60 * 10);
-    if (error) return alert("Fehler beim Öffnen: " + error.message);
-    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
-  }
-
-  const calendarGroups = useMemo(() => {
-    // group by local day string YYYY-MM-DD for calendar rows with due_at
-    const m = new Map();
-    (filteredCalendarRows ?? []).forEach((t) => {
-      if (!t.due_at) return;
-      const d = new Date(t.due_at);
-      if (Number.isNaN(d.getTime())) return;
-      const key = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-      const list = m.get(key) ?? [];
-      list.push(t);
-      m.set(key, list);
+    const { error } = await supabase.from("instructions").insert({
+      title: instTitle.trim(),
+      area_id: instAreaId || null,
+      body: instBody || null,
+      file_url,
     });
 
-    const keys = Array.from(m.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    return keys.map((k) => [k, (m.get(k) ?? []).slice().sort((a, b) => (a.due_at < b.due_at ? -1 : 1))]);
-  }, [filteredCalendarRows]);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
 
-  const nowLabel = useMemo(() => {
-    return nowTick.toLocaleString("de-DE", {
-      weekday: "short",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit"
-    });
-  }, [nowTick]);
+    setInstTitle("");
+    setInstBody("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    await loadInstructions();
+  }
 
-  if (loadingAuth) {
+  /* ----------- Areas CRUD ----------- */
+  async function createArea() {
+    setUiError("");
+    const name = areaNewName.trim();
+    if (!name) return;
+
+    // color column optional, we pass it anyway
+    const { error } = await supabase.from("areas").insert({ name, color: "#94a3b8" });
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
+
+    setAreaNewName("");
+    await loadAreas();
+  }
+
+  function startEditArea(a) {
+    setAreaEditId(a.id);
+    setAreaEditName(a.name || "");
+    setAreaEditColor(a.color || "#94a3b8");
+  }
+
+  async function saveArea() {
+    setUiError("");
+    if (!areaEditId) return;
+
+    const name = areaEditName.trim();
+    if (!name) return;
+
+    // color column "für später" -> wird direkt mitgespeichert, wenn die Spalte existiert
+    const { error } = await supabase.from("areas").update({ name, color: areaEditColor }).eq("id", areaEditId);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
+
+    setAreaEditId("");
+    setAreaEditName("");
+    await loadAreas();
+  }
+
+  async function deleteArea(areaId) {
+    setUiError("");
+    if (!confirm("Bereich wirklich löschen? Aufgaben bleiben dann ohne Bereich, falls keine DB-Constraint existiert.")) return;
+
+    const { error } = await supabase.from("areas").delete().eq("id", areaId);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
+    await loadAreas();
+    await loadTasksAndSubtasks();
+  }
+
+  /* ----------- Layout styles ----------- */
+  const pageBg =
+    settings.background === "soft" ? "linear-gradient(180deg, rgba(248,250,252,1) 0%, rgba(241,245,249,1) 100%)" : settings.background === "clean" ? "#ffffff" : "#f8fafc";
+
+  const themeColors =
+    document?.documentElement?.dataset?.theme === "dark"
+      ? { text: "#e5e7eb", card: "rgba(17,24,39,0.75)", border: "rgba(255,255,255,0.10)", muted: "rgba(229,231,235,0.65)" }
+      : { text: "#0f172a", card: "rgba(255,255,255,0.92)", border: "rgba(0,0,0,0.08)", muted: "rgba(15,23,42,0.55)" };
+
+  /* ----------- Auth UI (simple) ----------- */
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return (
-      <div style={{ padding: 24, fontFamily: "system-ui" }}>
-        <h1>Dashboard</h1>
-        <div>Prüfe Login…</div>
+      <div style={{ padding: 20 }}>
+        Supabase ENV fehlt (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).
       </div>
     );
   }
 
   if (!user) {
-    return (
-      <div style={{ padding: 24, fontFamily: "system-ui" }}>
-        <h1>Dashboard</h1>
-        <div>Du bist nicht eingeloggt. Bitte gehe zurück zur Login-Seite.</div>
-      </div>
-    );
+    return <AuthScreen onLoggedIn={setSession} settings={settings} setSettings={setSettings} />;
   }
 
+  /* ----------- Top-level render ----------- */
   return (
-    <div style={{ ...styles.page, background: ui.pageBg, color: ui.text }}>
-      {/* Topbar */}
-      <div style={{ ...styles.topbar, background: ui.topbarBg, borderBottom: ui.border }}>
-        <div>
-          <div style={{ ...styles.topTitle, color: ui.text }}>Armaturenbrett</div>
-          <div style={{ ...styles.topSub, color: ui.subText }}>Angemeldet als: {user.email}</div>
-          <div style={{ ...styles.topSub, color: ui.subText }}>Aktuell: {nowLabel}</div>
-        </div>
+    <div
+      style={{
+        minHeight: "100vh",
+        background: pageBg,
+        color: themeColors.text,
+      }}
+    >
+      <GlobalStyle />
 
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text }}
-            onClick={reloadAll}
-          >
-            Neu laden
-          </button>
-          <button
-            style={{ ...styles.btn, border: ui.border, background: ui.panelBg, color: ui.text }}
-            onClick={signOut}
-          >
-            Abmelden
-          </button>
+      <div style={{ padding: 18, borderBottom: `1px solid ${themeColors.border}`, background: "rgba(255,255,255,0.65)", backdropFilter: "blur(8px)" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, maxWidth: 1320, margin: "0 auto" }}>
+          <div>
+            <div style={{ fontSize: 22 }}>Armaturenbrett</div>
+            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>Angemeldet als: {user.email}</div>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>Aktuell: {formatDateTime(new Date().toISOString())}</div>
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button variant="ghost" onClick={reloadAll} disabled={loading}>
+              Neu laden
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={async () => {
+                await supabase.auth.signOut();
+              }}
+            >
+              Abmelden
+            </Button>
+          </div>
         </div>
       </div>
 
-      <div style={styles.body}>
-        {/* Sidebar */}
-        <div style={{ ...styles.sidebar, background: ui.panelBg, borderRight: ui.border }}>
-          <div style={{ ...styles.sidebarSectionTitle, color: ui.subText }}>Übersicht</div>
+      <div style={{ maxWidth: 1320, margin: "0 auto", padding: 18, display: "grid", gridTemplateColumns: "260px 1fr", gap: 16 }}>
+        {/* Left sidebar */}
+        <div style={{ display: "grid", gap: 12 }}>
+          <Card
+            title="Übersicht"
+            style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}
+          >
+            <div style={{ display: "grid", gap: 10 }}>
+              <MiniStat label="Aufgaben heute" value={String(todayCount)} />
+              <MiniStat label="Diese Woche" value={String(weekCount)} />
+              <MiniStat label="Offen" value={String(openCount)} />
+            </div>
+          </Card>
 
-          <div style={{ display: "grid", gap: 10 }}>
-            <StatCard label="Aufgaben heute" value={counts.today} ui={ui} />
-            <StatCard label="Diese Woche" value={counts.week} ui={ui} />
-            <StatCard label="Offen" value={counts.open} ui={ui} />
-          </div>
-
-          <div style={{ marginTop: 16 }}>
-            <div style={{ ...styles.sidebarSectionTitle, color: ui.subText }}>Navigation</div>
-            <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-              {TABS.map((t) => (
+          <Card title="Navigation" style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+            <div style={{ display: "grid", gap: 10 }}>
+              {["Board", "Liste", "Kalender", "Timeline", "Anleitungen", "Bereiche", "Einstellungen"].map((t) => (
                 <button
-                  key={t.id}
-                  onClick={() => setActiveTab(t.id)}
+                  key={t}
+                  onClick={() => setActiveTab(t)}
                   style={{
-                    ...styles.navBtn,
-                    border: ui.border,
-                    background: activeTab === t.id ? ui.navActiveBg : ui.panelBg,
-                    color: ui.text
+                    textAlign: "left",
+                    borderRadius: 12,
+                    border: `1px solid ${themeColors.border}`,
+                    background: activeTab === t ? "rgba(59,130,246,0.08)" : "transparent",
+                    padding: "10px 12px",
+                    cursor: "pointer",
+                    color: themeColors.text,
                   }}
                 >
-                  {t.label}
+                  {t}
                 </button>
               ))}
             </div>
-          </div>
+          </Card>
 
-          <div style={{ marginTop: 18 }}>
-            <div style={{ ...styles.sidebarSectionTitle, color: ui.subText }}>Filter</div>
-
-            <select
-              value={filterAreaId}
-              onChange={(e) => setFilterAreaId(e.target.value)}
-              style={{ ...styles.select, border: ui.border, background: ui.inputBg, color: ui.text }}
-            >
-              <option value="all">Alle Bereiche</option>
-              {areas.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-
-            <select
-              value={filterDue}
-              onChange={(e) => setFilterDue(e.target.value)}
-              style={{ ...styles.select, border: ui.border, background: ui.inputBg, color: ui.text }}
-            >
-              <option value="all">Alle Zeiträume</option>
-              {DUE_BUCKETS.map((d) => (
-                <option key={d.value} value={d.value}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
-
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Suche…"
-              style={{
-                ...styles.input,
-                border: ui.border,
-                background: ui.inputBg,
-                color: ui.text,
-                width: "100%",
-                marginTop: 8
-              }}
-            />
-          </div>
+          <Card title="Filter" style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+            <div style={{ display: "grid", gap: 10 }}>
+              <Select
+                value={filterArea}
+                onChange={setFilterArea}
+                options={[
+                  { value: "ALL", label: "Alle Bereiche" },
+                  ...areas.map((a) => ({ value: a.id, label: a.name })),
+                ]}
+              />
+              <Select value={filterBucket} onChange={setFilterBucket} options={buckets.map((b) => ({ value: b, label: b === "ALL" ? "Alle Zeiträume" : b }))} />
+              <Input value={search} onChange={setSearch} placeholder="Suche..." />
+            </div>
+          </Card>
         </div>
 
-        {/* Main */}
-        <div style={styles.main}>
-          <div style={styles.tabRow}>
-            {TABS.map((t) => (
+        {/* Main content */}
+        <div style={{ display: "grid", gap: 12 }}>
+          {/* Top tab pills */}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {["Board", "Liste", "Kalender", "Timeline", "Anleitungen", "Bereiche", "Einstellungen"].map((t) => (
               <button
-                key={t.id}
-                onClick={() => setActiveTab(t.id)}
+                key={t}
+                onClick={() => setActiveTab(t)}
                 style={{
-                  ...styles.pill,
-                  border: ui.border,
-                  color: ui.text,
-                  background: activeTab === t.id ? ui.panelBg : "transparent"
+                  borderRadius: 999,
+                  border: `1px solid ${themeColors.border}`,
+                  padding: "8px 12px",
+                  background: activeTab === t ? "white" : "rgba(255,255,255,0.65)",
+                  cursor: "pointer",
+                  color: themeColors.text,
                 }}
               >
-                {t.label}
+                {t}
               </button>
             ))}
           </div>
 
-          {activeTab === "board" && (
-            <div style={{ display: "grid", gap: 12 }}>
-              <CreateTaskBar
-                ui={ui}
-                areas={areas}
-                newTitle={newTitle}
-                setNewTitle={setNewTitle}
-                newAreaId={newAreaId}
-                setNewAreaId={setNewAreaId}
-                newDueBucket={newDueBucket}
-                setNewDueBucket={setNewDueBucket}
-                newDueAtLocal={newDueAtLocal}
-                setNewDueAtLocal={setNewDueAtLocal}
-                newStatus={newStatus}
-                setNewStatus={setNewStatus}
-                busy={busyCreateTask}
-                onCreate={createTask}
-              />
-
-              <BoardView
-                ui={ui}
-                tasks={filteredTasks}
-                areaNameById={areaNameById}
-                onStatus={setTaskStatus}
-                onDelete={deleteTask}
-                subtasksByTaskId={subtasksByTaskId}
-                onToggleSubtask={toggleSubtaskDone}
-                guidesByAreaId={guidesByAreaId}
-                onOpenGuideFile={openGuideFile}
-              />
-
-              <SubtaskBar
-                ui={ui}
-                tasks={tasks}
-                selectedTaskId={selectedTaskId}
-                setSelectedTaskId={setSelectedTaskId}
-                newSubtaskTitle={newSubtaskTitle}
-                setNewSubtaskTitle={setNewSubtaskTitle}
-                busy={busyCreateSubtask}
-                onCreate={createSubtask}
-              />
+          {uiError && (
+            <div style={{ padding: 12, borderRadius: 14, border: "1px solid rgba(239,68,68,0.25)", background: "rgba(239,68,68,0.06)", color: "rgb(185,28,28)" }}>
+              {uiError}
             </div>
           )}
 
-          {activeTab === "list" && (
-            <ListView
-              ui={ui}
-              tasks={filteredTasks}
-              areaNameById={areaNameById}
-              onStatus={setTaskStatus}
-              onDelete={deleteTask}
-            />
-          )}
+          {/* Create task */}
+          <Card
+            title="Aufgabe anlegen"
+            style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}
+            right={<div style={{ fontSize: 12, opacity: 0.7 }}>Hinweis: Kalender nutzt due_at, due_bucket bleibt für schnelle Filter.</div>}
+          >
+            <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.7fr 0.55fr 0.55fr 0.6fr auto", gap: 10, alignItems: "center" }}>
+              <Input value={newTitle} onChange={setNewTitle} placeholder="Titel" />
+              <Select value={newAreaId} onChange={setNewAreaId} options={areas.map((a) => ({ value: a.id, label: a.name }))} />
+              <input
+                type="datetime-local"
+                value={newDueAt}
+                onChange={(e) => setNewDueAt(e.target.value)}
+                style={{
+                  width: "100%",
+                  borderRadius: 12,
+                  border: "1px solid rgba(0,0,0,0.10)",
+                  padding: "10px 12px",
+                  outline: "none",
+                }}
+              />
+              <Select
+                value={newBucket}
+                onChange={setNewBucket}
+                options={[
+                  { value: "Heute", label: "Heute" },
+                  { value: "Diese Woche", label: "Diese Woche" },
+                  { value: "Monat", label: "Monat" },
+                  { value: "Jahr", label: "Jahr" },
+                ]}
+              />
+              <Select value={newStatus} onChange={setNewStatus} options={STATUS.map((s) => ({ value: s, label: s }))} />
+              <Button onClick={createTask} disabled={!newTitle.trim()}>
+                Anlegen
+              </Button>
+            </div>
+          </Card>
 
-          {activeTab === "calendar" && (
-            <CalendarView
-              ui={ui}
-              groups={calendarGroups}
-              areaNameById={areaNameById}
-              onStatus={setTaskStatus}
-              onDelete={deleteTask}
-            />
-          )}
+          {/* Tab content */}
+          {activeTab === "Board" && <BoardView tasks={filteredTasks} areasById={areasById} subtasksByTask={subtasksByTask} onStatus={updateTaskStatus} onDelete={deleteTask} themeColors={themeColors} />}
 
-          {activeTab === "timeline" && <TimelineView ui={ui} tasks={filteredTasks} areaNameById={areaNameById} />}
+          {activeTab === "Liste" && <ListView tasks={filteredTasks} areasById={areasById} onStatus={updateTaskStatus} onDelete={deleteTask} themeColors={themeColors} />}
 
-          {activeTab === "guides" && (
-            <GuidesView
-              ui={ui}
+          {activeTab === "Kalender" && <CalendarView rows={calendarRows} areasById={areasById} themeColors={themeColors} />}
+
+          {activeTab === "Timeline" && <TimelineView tasks={filteredTasks} areasById={areasById} themeColors={themeColors} />}
+
+          {activeTab === "Anleitungen" && (
+            <InstructionsView
+              themeColors={themeColors}
               areas={areas}
-              guides={guides}
-              areaNameById={areaNameById}
-              guideTitle={guideTitle}
-              setGuideTitle={setGuideTitle}
-              guideAreaId={guideAreaId}
-              setGuideAreaId={setGuideAreaId}
-              guideContent={guideContent}
-              setGuideContent={setGuideContent}
-              setGuideFile={setGuideFile}
-              busy={busyCreateGuide}
-              onCreate={createGuide}
-              onOpenFile={openGuideFile}
+              instructions={instructions}
+              instTitle={instTitle}
+              setInstTitle={setInstTitle}
+              instAreaId={instAreaId}
+              setInstAreaId={setInstAreaId}
+              instBody={instBody}
+              setInstBody={setInstBody}
+              fileInputRef={fileInputRef}
+              onCreate={createInstruction}
             />
           )}
 
-          {activeTab === "areas" && <AreasView ui={ui} areas={areas} />}
-
-          {activeTab === "settings" && (
-            <SettingsView
-              ui={ui}
-              settings={settings}
-              loading={settingsLoading}
-              saving={settingsSaving}
-              onChange={saveSettings}
+          {activeTab === "Bereiche" && (
+            <AreasView
+              themeColors={themeColors}
+              areas={areas}
+              areaNewName={areaNewName}
+              setAreaNewName={setAreaNewName}
+              onCreateArea={createArea}
+              onStartEdit={startEditArea}
+              areaEditId={areaEditId}
+              areaEditName={areaEditName}
+              setAreaEditName={setAreaEditName}
+              areaEditColor={areaEditColor}
+              setAreaEditColor={setAreaEditColor}
+              onSaveArea={saveArea}
+              onCancelEdit={() => setAreaEditId("")}
+              onDeleteArea={deleteArea}
             />
           )}
+
+          {activeTab === "Einstellungen" && <SettingsView settings={settings} setSettings={setSettings} themeColors={themeColors} />}
+          
+          {/* Subtask create section */}
+          <Card title="Unteraufgabe anlegen" style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+            <div style={{ display: "grid", gridTemplateColumns: "260px 1fr auto", gap: 10 }}>
+              <Select
+                value={subTaskParentId}
+                onChange={setSubTaskParentId}
+                options={(tasks || []).map((t) => ({ value: t.id, label: t.title }))}
+              />
+              <Input value={subTaskTitle} onChange={setSubTaskTitle} placeholder="Unteraufgabe..." />
+              <Button onClick={createSubtask} disabled={!subTaskParentId || !subTaskTitle.trim()}>
+                Anlegen
+              </Button>
+            </div>
+
+            {subTaskParentId && (
+              <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+                {(subtasksByTask.get(subTaskParentId) || []).map((st) => (
+                  <label key={st.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", border: `1px solid ${themeColors.border}`, borderRadius: 12 }}>
+                    <input type="checkbox" checked={!!st.done} onChange={(e) => toggleSubtask(st.id, e.target.checked)} />
+                    <span style={{ textDecoration: st.done ? "line-through" : "none", opacity: st.done ? 0.7 : 1 }}>{st.title}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </Card>
         </div>
       </div>
     </div>
   );
 }
 
-/* ---------------- Components ---------------- */
-
-function StatCard({ label, value, ui }) {
-  return (
-    <div style={{ ...styles.statCard, background: ui.cardBg, border: ui.border, color: ui.text }}>
-      <div style={{ ...styles.statLabel, color: ui.subText }}>{label}</div>
-      <div style={styles.statValue}>{value}</div>
-    </div>
+/* ---------------- Views ---------------- */
+function BoardView({ tasks, areasById, subtasksByTask, onStatus, onDelete, themeColors }) {
+  const cols = useMemo(
+    () => ({
+      "Zu erledigen": [],
+      "In Arbeit": [],
+      Erledigt: [],
+    }),
+    []
   );
-}
 
-function CreateTaskBar({
-  ui,
-  areas,
-  newTitle,
-  setNewTitle,
-  newAreaId,
-  setNewAreaId,
-  newDueBucket,
-  setNewDueBucket,
-  newDueAtLocal,
-  setNewDueAtLocal,
-  newStatus,
-  setNewStatus,
-  busy,
-  onCreate
-}) {
-  return (
-    <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-      <div style={{ ...styles.cardTitle, color: ui.text }}>Aufgabe anlegen</div>
-
-      <div style={styles.rowWrap}>
-        <input
-          style={{ ...styles.input, border: ui.border, background: ui.inputBg, color: ui.text, flex: 2 }}
-          placeholder="Titel"
-          value={newTitle}
-          onChange={(e) => setNewTitle(e.target.value)}
-        />
-
-        <select
-          style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
-          value={newAreaId}
-          onChange={(e) => setNewAreaId(e.target.value)}
-        >
-          <option value="">Bereich auswählen</option>
-          {areas.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </select>
-
-        <input
-          type="datetime-local"
-          value={newDueAtLocal}
-          onChange={(e) => setNewDueAtLocal(e.target.value)}
-          style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
-          title="Datum & Uhrzeit"
-        />
-
-        <select
-          style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
-          value={newDueBucket}
-          onChange={(e) => setNewDueBucket(e.target.value)}
-        >
-          {DUE_BUCKETS.map((d) => (
-            <option key={d.value} value={d.value}>
-              {d.label}
-            </option>
-          ))}
-        </select>
-
-        <select
-          style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
-          value={newStatus}
-          onChange={(e) => setNewStatus(e.target.value)}
-        >
-          {STATUS.map((s) => (
-            <option key={s.value} value={s.value}>
-              {s.label}
-            </option>
-          ))}
-        </select>
-
-        <button
-          style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }}
-          onClick={onCreate}
-          disabled={busy}
-        >
-          {busy ? "…" : "Anlegen"}
-        </button>
-      </div>
-
-      <div style={{ marginTop: 8, fontSize: 12, color: ui.subText }}>
-        Hinweis: Kalender lädt aus tasks_calendar. Normale Aufgaben bleiben in tasks.
-      </div>
-    </div>
-  );
-}
-
-function BoardView({ ui, tasks, areaNameById, onStatus, onDelete, subtasksByTaskId, onToggleSubtask, guidesByAreaId, onOpenGuideFile }) {
-  const cols = [
-    { id: "todo", title: "Zu erledigen" },
-    { id: "doing", title: "In Arbeit" },
-    { id: "done", title: "Erledigt" }
-  ];
+  for (const t of tasks) {
+    const s = STATUS.includes(t.status) ? t.status : "Zu erledigen";
+    cols[s].push(t);
+  }
 
   return (
-    <div style={styles.board}>
-      {cols.map((col) => {
-        const colTasks = (tasks ?? []).filter((t) => t.status === col.id);
-        return (
-          <div key={col.id} style={{ ...styles.col, background: ui.panelBg, border: ui.border }}>
-            <div style={styles.colHeader}>
-              <div style={{ ...styles.colTitle, color: ui.text }}>{col.title}</div>
-              <div style={{ ...styles.colCount, color: ui.subText }}>{colTasks.length}</div>
-            </div>
-
-            <div style={{ display: "grid", gap: 10 }}>
-              {colTasks.length === 0 ? (
-                <div style={{ ...styles.empty, color: ui.subText }}>Keine Aufgaben</div>
-              ) : (
-                colTasks.map((t) => (
-                  <TaskCard
-                    key={t.id}
-                    ui={ui}
-                    task={t}
-                    areaName={areaNameById.get(t.area_id) ?? "—"}
-                    onStatus={onStatus}
-                    onDelete={onDelete}
-                    subtasks={(subtasksByTaskId.get(t.id) ?? []).slice(0, 6)}
-                    onToggleSubtask={onToggleSubtask}
-                    guides={(guidesByAreaId.get(t.area_id) ?? []).slice(0, 3)}
-                    onOpenGuideFile={onOpenGuideFile}
-                  />
-                ))
-              )}
-            </div>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+      {STATUS.map((st) => (
+        <Card
+          key={st}
+          title={st}
+          style={{ background: themeColors.card, border: `1px solid ${themeColors.border}`, minHeight: 260 }}
+          right={<div style={{ fontSize: 12, opacity: 0.7 }}>{cols[st].length}</div>}
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            {cols[st].length === 0 ? (
+              <div style={{ opacity: 0.6 }}>Keine Aufgaben</div>
+            ) : (
+              cols[st].map((t) => <TaskCard key={t.id} task={t} area={areasById.get(t.area_id)} subtasks={subtasksByTask.get(t.id) || []} onStatus={onStatus} onDelete={onDelete} themeColors={themeColors} />)
+            )}
           </div>
-        );
-      })}
+        </Card>
+      ))}
     </div>
   );
 }
 
-function TaskCard({ ui, task, areaName, onStatus, onDelete, subtasks, onToggleSubtask, guides, onOpenGuideFile }) {
-  const total = Number(task.subtasks_total ?? 0);
-  const done = Number(task.subtasks_done ?? 0);
-  const progress = total > 0 ? Math.round((done / total) * 100) : 0;
+function TaskCard({ task, area, subtasks, onStatus, onDelete, themeColors }) {
+  const done = subtasks.filter((s) => s.done).length;
+  const total = subtasks.length;
+  const percent = total ? Math.round((done / total) * 100) : 0;
 
   return (
-    <div style={{ ...styles.taskCard, background: ui.cardBg, border: ui.border }}>
+    <div style={{ border: `1px solid ${themeColors.border}`, borderRadius: 14, padding: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-        <div style={{ color: ui.text }}>{task.title}</div>
-
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ fontSize: 14 }}>{task.title}</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <select
-            style={{ ...styles.miniSelect, border: ui.border, background: ui.inputBg, color: ui.text }}
-            value={task.status}
+            value={task.status || "Zu erledigen"}
             onChange={(e) => onStatus(task.id, e.target.value)}
+            style={{ borderRadius: 12, border: `1px solid ${themeColors.border}`, padding: "6px 10px", background: "white" }}
           >
-            <option value="todo">Zu erledigen</option>
-            <option value="doing">In Arbeit</option>
-            <option value="done">Erledigt</option>
+            {STATUS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
           </select>
-
           <button
-            style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }}
             onClick={() => onDelete(task.id)}
+            style={{ width: 30, height: 30, borderRadius: 10, border: `1px solid ${themeColors.border}`, background: "transparent", cursor: "pointer" }}
+            title="Löschen"
           >
-            ✕
+            ×
           </button>
         </div>
       </div>
 
-      <div style={{ ...styles.meta, color: ui.subText }}>
-        {areaName} • {task.due_bucket ?? "—"} • {formatDueLocal(task.due_at)}
+      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+        {area?.name || "—"} · {task.due_bucket || "—"} · {task.due_at ? formatDateTime(task.due_at) : "—"}
       </div>
 
-      <div style={{ ...styles.progressText, color: ui.subText }}>
-        Unteraufgaben: {done}/{total} {total > 0 ? `(${progress}%)` : ""}
-      </div>
+      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>Unteraufgaben: {done}/{total}{total ? ` (${percent}%)` : ""}</div>
 
-      {subtasks.length > 0 ? (
-        <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-          {subtasks.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => onToggleSubtask(s)}
-              style={{
-                ...styles.subtaskRow,
-                border: ui.border,
-                background: ui.inputBg,
-                color: ui.text,
-                textDecoration: s.is_done ? "line-through" : "none",
-                opacity: s.is_done ? 0.7 : 1
-              }}
-              title="Klicken = erledigt/unerledigt"
-            >
-              <span>{s.is_done ? "✓" : "•"}</span>
-              <span style={{ flex: 1, textAlign: "left" }}>{s.title}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {guides?.length ? (
-        <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-          <div style={{ fontSize: 12, color: ui.subText }}>Anleitungen</div>
-          {guides.map((g) => (
-            <div key={g.id} style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ fontSize: 13, color: ui.text, opacity: 0.95 }}>{g.title}</div>
-              {g.file_path ? (
-                <button
-                  style={{
-                    ...styles.btnGhost,
-                    border: ui.border,
-                    background: ui.inputBg,
-                    color: ui.text,
-                    padding: "6px 10px",
-                    borderRadius: 10
-                  }}
-                  onClick={() => onOpenGuideFile(g.file_path)}
-                >
-                  Datei
-                </button>
-              ) : null}
+      {total > 0 && (
+        <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+          {subtasks.slice(0, 6).map((s) => (
+            <div key={s.id} style={{ padding: "6px 10px", borderRadius: 12, border: `1px solid ${themeColors.border}`, opacity: s.done ? 0.7 : 1 }}>
+              <span style={{ textDecoration: s.done ? "line-through" : "none" }}>{s.title}</span>
             </div>
           ))}
+          {subtasks.length > 6 && <div style={{ fontSize: 12, opacity: 0.65 }}>+{subtasks.length - 6} weitere…</div>}
         </div>
-      ) : null}
+      )}
+
+      {task.instructions && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, opacity: 0.7 }}>Anleitungen</div>
+          <div style={{ whiteSpace: "pre-wrap", fontSize: 12, marginTop: 4 }}>{task.instructions}</div>
+        </div>
+      )}
     </div>
   );
 }
 
-function SubtaskBar({ ui, tasks, selectedTaskId, setSelectedTaskId, newSubtaskTitle, setNewSubtaskTitle, busy, onCreate }) {
+function ListView({ tasks, areasById, onStatus, onDelete, themeColors }) {
   return (
-    <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-      <div style={{ ...styles.cardTitle, color: ui.text }}>Unteraufgabe anlegen</div>
-
-      <div style={styles.rowWrap}>
-        <select
-          style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
-          value={selectedTaskId}
-          onChange={(e) => setSelectedTaskId(e.target.value)}
-        >
-          <option value="">Aufgabe auswählen</option>
-          {tasks.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.title}
-            </option>
-          ))}
-        </select>
-
-        <input
-          style={{ ...styles.input, border: ui.border, background: ui.inputBg, color: ui.text, flex: 2 }}
-          placeholder="Unteraufgabe…"
-          value={newSubtaskTitle}
-          onChange={(e) => setNewSubtaskTitle(e.target.value)}
-        />
-
-        <button
-          style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }}
-          onClick={onCreate}
-          disabled={busy}
-        >
-          {busy ? "…" : "Anlegen"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ListView({ ui, tasks, areaNameById, onStatus, onDelete }) {
-  return (
-    <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-      <div style={{ ...styles.cardTitle, color: ui.text }}>Liste</div>
-
-      <div style={{ width: "100%", overflowX: "auto" }}>
-        <table style={styles.table}>
+    <Card title="Liste" style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
           <thead>
             <tr>
-              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}>Aufgabe</th>
-              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}>Bereich</th>
-              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}>Datum/Uhrzeit</th>
-              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}>Zeitraum</th>
-              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}>Status</th>
-              <th style={{ ...styles.th, color: ui.subText, borderBottom: ui.border }}></th>
+              {["Aufgabe", "Bereich", "Datum/Uhrzeit", "Zeitraum", "Status", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", fontSize: 12, opacity: 0.7, padding: "10px 10px", borderBottom: `1px solid ${themeColors.border}` }}>
+                  {h}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {tasks.map((t) => (
-              <tr key={t.id} style={styles.tr}>
-                <td style={{ ...styles.td, color: ui.text }}>{t.title}</td>
-                <td style={{ ...styles.td, color: ui.text }}>{areaNameById.get(t.area_id) ?? "—"}</td>
-                <td style={{ ...styles.td, color: ui.text }}>{formatDueLocal(t.due_at)}</td>
-                <td style={{ ...styles.td, color: ui.text }}>{t.due_bucket ?? "—"}</td>
-                <td style={{ ...styles.td, color: ui.text }}>
+              <tr key={t.id}>
+                <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}` }}>{t.title}</td>
+                <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}` }}>{areasById.get(t.area_id)?.name || "—"}</td>
+                <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}` }}>{t.due_at ? formatDateTime(t.due_at) : "—"}</td>
+                <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}` }}>{t.due_bucket || "—"}</td>
+                <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}` }}>
                   <select
-                    style={{ ...styles.miniSelect, border: ui.border, background: ui.inputBg, color: ui.text }}
-                    value={t.status}
+                    value={t.status || "Zu erledigen"}
                     onChange={(e) => onStatus(t.id, e.target.value)}
+                    style={{ borderRadius: 12, border: `1px solid ${themeColors.border}`, padding: "6px 10px", background: "white" }}
                   >
-                    <option value="todo">Zu erledigen</option>
-                    <option value="doing">In Arbeit</option>
-                    <option value="done">Erledigt</option>
+                    {STATUS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
                   </select>
                 </td>
-                <td style={{ ...styles.td, width: 60 }}>
+                <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}`, textAlign: "right" }}>
                   <button
-                    style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text }}
                     onClick={() => onDelete(t.id)}
+                    style={{ width: 30, height: 30, borderRadius: 10, border: `1px solid ${themeColors.border}`, background: "transparent", cursor: "pointer" }}
+                    title="Löschen"
                   >
-                    ✕
+                    ×
                   </button>
                 </td>
               </tr>
             ))}
-            {tasks.length === 0 ? (
+            {tasks.length === 0 && (
               <tr>
-                <td style={{ ...styles.td, color: ui.subText }} colSpan={6}>
-                  <div style={{ ...styles.empty, color: ui.subText }}>Keine Einträge</div>
+                <td colSpan={6} style={{ padding: 14, opacity: 0.7 }}>
+                  Keine Aufgaben.
                 </td>
               </tr>
-            ) : null}
+            )}
           </tbody>
         </table>
       </div>
-    </div>
+    </Card>
   );
 }
 
-function CalendarView({ ui, groups, areaNameById, onStatus, onDelete }) {
+function CalendarView({ rows, areasById, themeColors }) {
+  const grouped = useMemo(() => {
+    const m = new Map();
+    for (const r of rows) {
+      const d = new Date(r.due_at);
+      const key = d.toLocaleDateString("de-DE", { year: "numeric", month: "2-digit", day: "2-digit" });
+      if (!m.has(key)) m.set(key, []);
+      m.get(key).push(r);
+    }
+    return Array.from(m.entries());
+  }, [rows]);
+
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-        <div style={{ ...styles.cardTitle, color: ui.text }}>Kalender</div>
-        <div style={{ fontSize: 12, color: ui.subText }}>
-          Lädt aus tasks_calendar. Serien-Einträge sind schreibgeschützt (Status/Löschen).
-        </div>
-      </div>
+      <Card
+        title="Kalender (tasks_calendar)"
+        style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}
+        right={<div style={{ fontSize: 12, opacity: 0.7 }}>Gruppiert nach Datum (aus due_at). Serien-Einträge sind read-only.</div>}
+      />
 
-      {groups.length === 0 ? (
-        <div style={{ ...styles.card, background: ui.panelBg, border: ui.border, color: ui.subText }}>
-          Keine Kalender-Einträge (tasks_calendar) mit Datum/Uhrzeit (due_at).
-        </div>
+      {rows.length === 0 ? (
+        <Card style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+          <div style={{ opacity: 0.7 }}>Keine Aufgaben mit Datum/Uhrzeit (due_at).</div>
+        </Card>
       ) : (
-        groups.map(([day, list]) => (
-          <div key={day} style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ color: ui.text }}>{day}</div>
-              <div style={{ color: ui.subText, fontSize: 12 }}>{list.length} Eintrag(e)</div>
-            </div>
-
-            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-              {list.map((t) => {
-                const isReadOnly = !!t.is_series; // <-- wichtig: kein task_id mehr
-                return (
-                  <div key={t.cal_id ?? t.id} style={{ ...styles.timelineItem, border: ui.border, background: ui.cardBg }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div style={{ color: ui.text, display: "flex", gap: 8, alignItems: "center" }}>
-                        <span>{t.title}</span>
-                        {isReadOnly ? (
-                          <span style={{ fontSize: 12, color: ui.subText, border: ui.border, padding: "2px 8px", borderRadius: 999 }}>
-                            Serie
-                          </span>
-                        ) : null}
-                      </div>
-
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <select
-                          style={{ ...styles.miniSelect, border: ui.border, background: ui.inputBg, color: ui.text, opacity: isReadOnly ? 0.6 : 1 }}
-                          value={t.status}
-                          disabled={isReadOnly}
-                          onChange={(e) => onStatus(t.id, e.target.value)} // <-- id statt task_id
-                        >
-                          <option value="todo">Zu erledigen</option>
-                          <option value="doing">In Arbeit</option>
-                          <option value="done">Erledigt</option>
-                        </select>
-
-                        <button
-                          style={{ ...styles.miniBtnDanger, border: ui.border, background: ui.panelBg, color: ui.text, opacity: isReadOnly ? 0.6 : 1 }}
-                          disabled={isReadOnly}
-                          onClick={() => onDelete(t.id)} // <-- id statt task_id
-                          title={isReadOnly ? "Serien-Einträge werden über die Serienverwaltung geändert." : "Löschen"}
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-
-                    <div style={{ ...styles.meta, color: ui.subText }}>
-                      {areaNameById.get(t.area_id) ?? "—"} • {formatDueLocal(t.due_at)} • {labelStatus(t.status)}
-                    </div>
+        grouped.map(([day, items]) => (
+          <Card key={day} title={day} style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+            <div style={{ display: "grid", gap: 10 }}>
+              {items.map((it) => (
+                <div key={it.id} style={{ border: `1px solid ${themeColors.border}`, borderRadius: 14, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div>{it.title}</div>
+                    <div style={{ fontSize: 12, opacity: 0.75 }}>{formatDateTime(it.due_at)}</div>
                   </div>
-                );
-              })}
+                  <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
+                    {areasById.get(it.area_id)?.name || "—"} · {it.status || "—"} · {it.due_bucket || "—"}
+                    {it.is_series ? " · Serie" : ""}
+                  </div>
+                </div>
+              ))}
             </div>
-          </div>
+          </Card>
         ))
       )}
     </div>
   );
 }
 
-function TimelineView({ ui, tasks, areaNameById }) {
-  const groups = useMemo(() => {
-    const m = new Map();
-    (tasks ?? []).forEach((t) => {
-      const key = t.period ?? t.due_bucket ?? "—";
-      const list = m.get(key) ?? [];
-      list.push(t);
-      m.set(key, list);
-    });
-    return Array.from(m.entries());
-  }, [tasks]);
+function TimelineView({ tasks, areasById, themeColors }) {
+  const weekStart = startOfWeek(new Date());
+  const weekEnd = endOfWeek(new Date());
+
+  const weekTasks = tasks
+    .filter((t) => t.due_bucket === "Diese Woche" || (t.due_at && new Date(t.due_at) >= weekStart && new Date(t.due_at) < weekEnd))
+    .slice(0, 30);
 
   return (
-    <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-      <div style={{ ...styles.cardTitle, color: ui.text }}>Timeline (minimal)</div>
-
-      <div style={{ display: "grid", gap: 14 }}>
-        {groups.map(([k, list]) => (
-          <div key={k} style={{ ...styles.timelineBlock, border: ui.border, background: ui.cardBg }}>
-            <div style={{ ...styles.timelineTitle, color: ui.text }}>{k}</div>
-            <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
-              {list.map((t) => (
-                <div key={t.id} style={{ ...styles.timelineItem, border: ui.border, background: ui.panelBg }}>
-                  <div style={{ color: ui.text }}>{t.title}</div>
-                  <div style={{ ...styles.meta, color: ui.subText }}>
-                    {areaNameById.get(t.area_id) ?? "—"} • {labelStatus(t.status)} • {formatDueLocal(t.due_at)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-        {groups.length === 0 ? <div style={{ ...styles.empty, color: ui.subText }}>Keine Einträge</div> : null}
-      </div>
-    </div>
-  );
-}
-
-function GuidesView({
-  ui,
-  areas,
-  guides,
-  areaNameById,
-  guideTitle,
-  setGuideTitle,
-  guideAreaId,
-  setGuideAreaId,
-  guideContent,
-  setGuideContent,
-  setGuideFile,
-  busy,
-  onCreate,
-  onOpenFile
-}) {
-  return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-        <div style={{ ...styles.cardTitle, color: ui.text }}>Anleitung anlegen</div>
-
-        <div style={styles.rowWrap}>
-          <input
-            style={{ ...styles.input, border: ui.border, background: ui.inputBg, color: ui.text, flex: 2 }}
-            placeholder="Titel"
-            value={guideTitle}
-            onChange={(e) => setGuideTitle(e.target.value)}
-          />
-
-          <select
-            style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
-            value={guideAreaId}
-            onChange={(e) => setGuideAreaId(e.target.value)}
-          >
-            <option value="">Bereich auswählen</option>
-            {areas.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-
-          <input
-            type="file"
-            onChange={(e) => setGuideFile(e.target.files?.[0] ?? null)}
-            style={{ ...styles.file, border: ui.border, background: ui.inputBg, color: ui.text, flex: 1 }}
-          />
-
-          <button
-            style={{ ...styles.btnWide, border: ui.border, background: ui.panelBg, color: ui.text }}
-            onClick={onCreate}
-            disabled={busy}
-          >
-            {busy ? "…" : "Speichern"}
-          </button>
-        </div>
-
-        <textarea
-          style={{ ...styles.textarea, border: ui.border, background: ui.inputBg, color: ui.text }}
-          placeholder="Kurzbeschreibung / Inhalt (optional)…"
-          value={guideContent}
-          onChange={(e) => setGuideContent(e.target.value)}
-        />
-      </div>
-
-      <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-        <div style={{ ...styles.cardTitle, color: ui.text }}>Anleitungen</div>
-
+    <Card title="Timeline (minimal)" style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ fontSize: 14 }}>Diese Woche</div>
         <div style={{ display: "grid", gap: 10 }}>
-          {guides.length === 0 ? (
-            <div style={{ ...styles.empty, color: ui.subText }}>Noch keine Anleitungen.</div>
+          {weekTasks.length === 0 ? (
+            <div style={{ opacity: 0.7 }}>Keine Einträge.</div>
           ) : (
-            guides.map((g) => (
-              <div key={g.id} style={{ ...styles.guideRow, border: ui.border, background: ui.cardBg }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ color: ui.text }}>{g.title}</div>
-                  <div style={{ ...styles.meta, color: ui.subText }}>
-                    {areaNameById.get(g.area_id) ?? "—"} • {new Date(g.created_at).toLocaleString("de-DE")}
-                  </div>
-                  {g.content ? <div style={{ marginTop: 6, opacity: 0.95, color: ui.text }}>{g.content}</div> : null}
+            weekTasks.map((t) => (
+              <div key={t.id} style={{ border: `1px solid ${themeColors.border}`, borderRadius: 14, padding: 12 }}>
+                <div style={{ fontSize: 14 }}>{t.title}</div>
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  {areasById.get(t.area_id)?.name || "—"} · {t.status || "—"} · {t.due_at ? formatDateTime(t.due_at) : "—"}
                 </div>
-
-                {g.file_path ? (
-                  <button
-                    style={{ ...styles.btnGhost, border: ui.border, background: ui.inputBg, color: ui.text }}
-                    onClick={() => onOpenFile(g.file_path)}
-                  >
-                    Datei öffnen
-                  </button>
-                ) : null}
               </div>
             ))
           )}
         </div>
       </div>
-    </div>
+    </Card>
   );
 }
 
-function AreasView({ ui, areas }) {
+function InstructionsView({
+  themeColors,
+  areas,
+  instructions,
+  instTitle,
+  setInstTitle,
+  instAreaId,
+  setInstAreaId,
+  instBody,
+  setInstBody,
+  fileInputRef,
+  onCreate,
+}) {
   return (
-    <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-      <div style={{ ...styles.cardTitle, color: ui.text }}>Bereiche</div>
+    <div style={{ display: "grid", gap: 12 }}>
+      <Card title="Anleitung anlegen" style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 280px 1fr auto", gap: 10, alignItems: "center" }}>
+          <Input value={instTitle} onChange={setInstTitle} placeholder="Titel" />
+          <Select value={instAreaId} onChange={setInstAreaId} options={areas.map((a) => ({ value: a.id, label: a.name }))} />
+          <input ref={fileInputRef} type="file" style={{ width: "100%" }} />
+          <Button onClick={onCreate} disabled={!instTitle.trim()}>
+            Speichern
+          </Button>
+        </div>
+        <textarea
+          value={instBody}
+          onChange={(e) => setInstBody(e.target.value)}
+          placeholder="Kurzbeschreibung / Inhalt (optional)..."
+          style={{ marginTop: 10, width: "100%", minHeight: 120, borderRadius: 14, border: `1px solid ${themeColors.border}`, padding: 12, outline: "none" }}
+        />
+      </Card>
 
-      {areas.length === 0 ? (
-        <div style={{ ...styles.empty, color: ui.subText }}>Keine Bereiche vorhanden.</div>
-      ) : (
-        <div style={{ display: "grid", gap: 8 }}>
-          {areas.map((a) => (
-            <div key={a.id} style={{ ...styles.areaRow, border: ui.border, background: ui.cardBg }}>
-              <div style={{ color: ui.text }}>{a.name}</div>
-              <div style={{ ...styles.meta, color: ui.subText }}>{a.id}</div>
+      <Card title="Anleitungen" style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+        <div style={{ display: "grid", gap: 10 }}>
+          {instructions.map((it) => (
+            <div key={it.id} style={{ border: `1px solid ${themeColors.border}`, borderRadius: 14, padding: 12 }}>
+              <div style={{ fontSize: 14 }}>{it.title}</div>
+              <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
+                {(areas.find((a) => a.id === it.area_id)?.name || "—")} · {it.created_at ? formatDateTime(it.created_at) : "—"}
+              </div>
+              {it.body && <div style={{ marginTop: 8, fontSize: 13, whiteSpace: "pre-wrap" }}>{it.body}</div>}
+              {it.file_url && (
+                <div style={{ marginTop: 8 }}>
+                  <a href={it.file_url} target="_blank" rel="noreferrer">
+                    Datei öffnen
+                  </a>
+                </div>
+              )}
             </div>
           ))}
+          {instructions.length === 0 && <div style={{ opacity: 0.7 }}>Keine Anleitungen.</div>}
         </div>
-      )}
+      </Card>
     </div>
   );
 }
 
-function SettingsView({ ui, settings, loading, saving, onChange }) {
-  const theme = settings?.theme ?? "light";
-  const accent = settings?.accent ?? "#4f46e5";
-  const background = settings?.background ?? "soft";
-  const notificationsEnabled = settings?.notifications_enabled ?? true;
-  const notificationsEmail = settings?.notifications_email ?? false;
-  const notificationsDesktop = settings?.notifications_desktop ?? true;
+function AreasView({
+  themeColors,
+  areas,
+  areaNewName,
+  setAreaNewName,
+  onCreateArea,
+  onStartEdit,
+  areaEditId,
+  areaEditName,
+  setAreaEditName,
+  areaEditColor,
+  setAreaEditColor,
+  onSaveArea,
+  onCancelEdit,
+  onDeleteArea,
+}) {
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <Card title="Bereiche" style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10 }}>
+          <Input value={areaNewName} onChange={setAreaNewName} placeholder="Neuer Bereichname..." />
+          <Button onClick={onCreateArea} disabled={!areaNewName.trim()}>
+            Anlegen
+          </Button>
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+          {areas.map((a) => {
+            const isEditing = areaEditId === a.id;
+            return (
+              <div key={a.id} style={{ border: `1px solid ${themeColors.border}`, borderRadius: 14, padding: 12 }}>
+                {!isEditing ? (
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div
+                        title="Bereichsfarbe (später)"
+                        style={{
+                          width: 12,
+                          height: 12,
+                          borderRadius: 999,
+                          background: a.color || "#94a3b8",
+                          border: `1px solid ${themeColors.border}`,
+                        }}
+                      />
+                      <div style={{ fontSize: 14 }}>{a.name}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <Button variant="ghost" onClick={() => onStartEdit(a)}>
+                        Bearbeiten
+                      </Button>
+                      <Button variant="danger" onClick={() => onDeleteArea(a.id)}>
+                        Löschen
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gap: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 180px", gap: 10, alignItems: "center" }}>
+                      <Input value={areaEditName} onChange={setAreaEditName} placeholder="Bereichsname" />
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                        <input type="color" value={areaEditColor} onChange={(e) => setAreaEditColor(e.target.value)} style={{ width: 48, height: 36, border: "none", background: "transparent" }} />
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>Farbe (für später)</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <Button onClick={onSaveArea} disabled={!areaEditName.trim()}>
+                        Speichern
+                      </Button>
+                      <Button variant="ghost" onClick={onCancelEdit}>
+                        Abbrechen
+                      </Button>
+                    </div>
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>
+                      Hinweis: Sobald du in Supabase in der Tabelle areas eine Spalte color (text) hast, wird die Farbe auch gespeichert und überall nutzbar.
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {areas.length === 0 && <div style={{ opacity: 0.7 }}>Keine Bereiche.</div>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function SettingsView({ settings, setSettings, themeColors }) {
+  return (
+    <Card title="Einstellungen" style={{ background: themeColors.card, border: `1px solid ${themeColors.border}` }}>
+      <div style={{ display: "grid", gridTemplateColumns: "200px 220px", gap: 14, alignItems: "center" }}>
+        <div style={{ fontSize: 13, opacity: 0.8 }}>Theme</div>
+        <Select
+          value={settings.theme_mode}
+          onChange={(v) => setSettings((s) => ({ ...s, theme_mode: v }))}
+          options={[
+            { value: "light", label: "Hell" },
+            { value: "dark", label: "Dunkel" },
+            { value: "system", label: "System" },
+          ]}
+        />
+
+        <div style={{ fontSize: 13, opacity: 0.8 }}>Hintergrund</div>
+        <Select
+          value={settings.background}
+          onChange={(v) => setSettings((s) => ({ ...s, background: v }))}
+          options={[
+            { value: "default", label: "Standard" },
+            { value: "soft", label: "Soft" },
+            { value: "clean", label: "Clean" },
+          ]}
+        />
+
+        <div style={{ fontSize: 13, opacity: 0.8 }}>Akzent</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <input type="color" value={settings.accent} onChange={(e) => setSettings((s) => ({ ...s, accent: e.target.value }))} style={{ width: 48, height: 36, border: "none", background: "transparent" }} />
+          <div style={{ fontSize: 12, opacity: 0.7 }}>{settings.accent}</div>
+        </div>
+
+        <div style={{ gridColumn: "1 / -1", marginTop: 6, borderTop: `1px solid ${themeColors.border}`, paddingTop: 12 }}>Benachrichtigungen</div>
+
+        <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input type="checkbox" checked={settings.notifications_enabled} onChange={(e) => setSettings((s) => ({ ...s, notifications_enabled: e.target.checked }))} />
+          Aktiviert
+        </label>
+        <div />
+
+        <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            type="checkbox"
+            checked={settings.notifications_desktop}
+            onChange={(e) => setSettings((s) => ({ ...s, notifications_desktop: e.target.checked }))}
+            disabled={!settings.notifications_enabled}
+          />
+          Desktop
+        </label>
+        <div />
+
+        <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            type="checkbox"
+            checked={settings.notifications_email}
+            onChange={(e) => setSettings((s) => ({ ...s, notifications_email: e.target.checked }))}
+            disabled={!settings.notifications_enabled}
+          />
+          E-Mail
+        </label>
+        <div />
+      </div>
+    </Card>
+  );
+}
+
+/* ---------------- Auth Screen ---------------- */
+function AuthScreen({ onLoggedIn, settings, setSettings }) {
+  const [mode, setMode] = useState("login"); // login | signup
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    applyThemeToDom(settings);
+  }, [settings]);
+
+  async function submit() {
+    setErr("");
+    setBusy(true);
+    try {
+      if (mode === "login") {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password: pw });
+        if (error) throw error;
+        onLoggedIn(data.session);
+      } else {
+        const { error } = await supabase.auth.signUp({ email, password: pw });
+        if (error) throw error;
+        setMode("login");
+      }
+    } catch (e) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
-    <div style={{ ...styles.card, background: ui.panelBg, border: ui.border }}>
-      <div style={{ ...styles.cardTitle, color: ui.text }}>Einstellungen</div>
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 16, background: settings.background === "soft" ? "#f1f5f9" : "#ffffff" }}>
+      <div style={{ width: "min(520px, 100%)", border: "1px solid rgba(0,0,0,0.10)", borderRadius: 18, padding: 16, background: "white" }}>
+        <div style={{ fontSize: 20 }}>Anmeldung</div>
+        <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Stenau Dashboard</div>
 
-      {loading ? (
-        <div style={{ color: ui.subText }}>Lade…</div>
-      ) : (
-        <div style={{ display: "grid", gap: 12 }}>
-          <div style={styles.rowWrap}>
-            <label style={{ fontSize: 13, color: ui.subText, minWidth: 120 }}>Theme</label>
-            <select
-              value={theme}
-              onChange={(e) => onChange({ theme: e.target.value })}
-              style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text }}
-              disabled={saving}
-            >
-              <option value="light">Hell</option>
-              <option value="dark">Dunkel</option>
-            </select>
-          </div>
+        <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
+          <Input value={email} onChange={setEmail} placeholder="E-Mail" />
+          <Input value={pw} onChange={setPw} placeholder="Passwort" type="password" />
+          {err && <div style={{ color: "rgb(185,28,28)", fontSize: 12 }}>{err}</div>}
+          <Button onClick={submit} disabled={busy || !email.trim() || !pw.trim()}>
+            {mode === "login" ? "Anmelden" : "Registrieren"}
+          </Button>
+          <Button variant="ghost" onClick={() => setMode((m) => (m === "login" ? "signup" : "login"))}>
+            {mode === "login" ? "Neues Konto erstellen" : "Zurück zur Anmeldung"}
+          </Button>
+        </div>
 
-          <div style={styles.rowWrap}>
-            <label style={{ fontSize: 13, color: ui.subText, minWidth: 120 }}>Hintergrund</label>
-            <select
-              value={background}
-              onChange={(e) => onChange({ background: e.target.value })}
-              style={{ ...styles.selectInline, border: ui.border, background: ui.inputBg, color: ui.text }}
-              disabled={saving}
-            >
-              <option value="soft">Soft</option>
-              <option value="plain">Plain</option>
-            </select>
-          </div>
-
-          <div style={styles.rowWrap}>
-            <label style={{ fontSize: 13, color: ui.subText, minWidth: 120 }}>Akzent</label>
-            <input
-              type="color"
-              value={accent}
-              onChange={(e) => onChange({ accent: e.target.value })}
-              style={{ height: 36, width: 56, borderRadius: 10, border: ui.border, background: ui.inputBg }}
-              disabled={saving}
+        <div style={{ marginTop: 14, borderTop: "1px solid rgba(0,0,0,0.10)", paddingTop: 12 }}>
+          <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 8 }}>Design</div>
+          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>Theme</div>
+            <Select
+              value={settings.theme_mode}
+              onChange={(v) => setSettings((s) => ({ ...s, theme_mode: v }))}
+              options={[
+                { value: "light", label: "Hell" },
+                { value: "dark", label: "Dunkel" },
+                { value: "system", label: "System" },
+              ]}
             />
-            <div style={{ fontSize: 12, color: ui.subText }}>{accent}</div>
-          </div>
-
-          <div style={{ borderTop: ui.border, paddingTop: 12, display: "grid", gap: 10 }}>
-            <div style={{ color: ui.text }}>Benachrichtigungen</div>
-
-            <label style={{ display: "flex", alignItems: "center", gap: 10, color: ui.text }}>
-              <input
-                type="checkbox"
-                checked={!!notificationsEnabled}
-                onChange={(e) => onChange({ notifications_enabled: e.target.checked })}
-                disabled={saving}
-              />
-              Aktiviert
-            </label>
-
-            <label style={{ display: "flex", alignItems: "center", gap: 10, color: ui.text }}>
-              <input
-                type="checkbox"
-                checked={!!notificationsDesktop}
-                onChange={(e) => onChange({ notifications_desktop: e.target.checked })}
-                disabled={saving || !notificationsEnabled}
-              />
-              Desktop
-            </label>
-
-            <label style={{ display: "flex", alignItems: "center", gap: 10, color: ui.text }}>
-              <input
-                type="checkbox"
-                checked={!!notificationsEmail}
-                onChange={(e) => onChange({ notifications_email: e.target.checked })}
-                disabled={saving || !notificationsEnabled}
-              />
-              E-Mail
-            </label>
-
-            {saving ? <div style={{ fontSize: 12, color: ui.subText }}>Speichere…</div> : null}
+            <div style={{ fontSize: 12, opacity: 0.7 }}>Hintergrund</div>
+            <Select
+              value={settings.background}
+              onChange={(v) => setSettings((s) => ({ ...s, background: v }))}
+              options={[
+                { value: "default", label: "Standard" },
+                { value: "soft", label: "Soft" },
+                { value: "clean", label: "Clean" },
+              ]}
+            />
+            <div style={{ fontSize: 12, opacity: 0.7 }}>Akzent</div>
+            <input type="color" value={settings.accent} onChange={(e) => setSettings((s) => ({ ...s, accent: e.target.value }))} style={{ width: 48, height: 36, border: "none", background: "transparent" }} />
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
-/* ---------------- Styles ---------------- */
+/* ---------------- Small components ---------------- */
+function MiniStat({ label, value }) {
+  return (
+    <div style={{ border: "1px solid rgba(0,0,0,0.06)", borderRadius: 14, padding: 12, background: "rgba(255,255,255,0.6)" }}>
+      <div style={{ fontSize: 12, opacity: 0.7 }}>{label}</div>
+      <div style={{ fontSize: 24, marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
 
-const styles = {
-  page: {
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-    minHeight: "100vh"
-  },
-  topbar: {
-    padding: "14px 18px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between"
-  },
-  topTitle: { fontSize: 18, fontWeight: 650 },
-  topSub: { fontSize: 12, opacity: 0.9 },
-
-  body: { display: "flex" },
-  sidebar: {
-    width: 260,
-    padding: 14,
-    minHeight: "calc(100vh - 60px)"
-  },
-  main: { flex: 1, padding: 18 },
-
-  sidebarSectionTitle: { fontSize: 12, marginBottom: 10 },
-
-  navBtn: {
-    textAlign: "left",
-    padding: "10px 10px",
-    borderRadius: 12,
-    cursor: "pointer"
-  },
-
-  tabRow: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 },
-  pill: {
-    padding: "10px 12px",
-    borderRadius: 999,
-    cursor: "pointer"
-  },
-
-  statCard: { borderRadius: 12, padding: 12 },
-  statLabel: { fontSize: 12 },
-  statValue: { fontSize: 22, fontWeight: 750 },
-
-  card: {
-    borderRadius: 14,
-    padding: 12
-  },
-  cardTitle: { fontWeight: 750, marginBottom: 10 },
-
-  rowWrap: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
-
-  input: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    outline: "none"
-  },
-  select: {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 12,
-    marginTop: 8
-  },
-  selectInline: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    outline: "none"
-  },
-  textarea: {
-    width: "100%",
-    minHeight: 120,
-    marginTop: 10,
-    padding: "10px 12px",
-    borderRadius: 12,
-    outline: "none"
-  },
-  file: {
-    padding: "10px 12px",
-    borderRadius: 12
-  },
-
-  btn: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    cursor: "pointer"
-  },
-  btnGhost: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    cursor: "pointer"
-  },
-  btnWide: {
-    padding: "10px 14px",
-    borderRadius: 12,
-    cursor: "pointer",
-    minWidth: 110
-  },
-
-  board: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 },
-  col: { borderRadius: 14, padding: 12 },
-  colHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
-  colTitle: { fontWeight: 750 },
-  colCount: { fontSize: 12, opacity: 0.85 },
-
-  taskCard: { borderRadius: 12, padding: 12 },
-  meta: { fontSize: 12, opacity: 0.85, marginTop: 6 },
-  progressText: { fontSize: 12, opacity: 0.9, marginTop: 8 },
-
-  miniSelect: { padding: "6px 8px", borderRadius: 10, background: "transparent" },
-  miniBtnDanger: {
-    padding: "6px 10px",
-    borderRadius: 10,
-    cursor: "pointer"
-  },
-
-  subtaskRow: {
-    display: "flex",
-    gap: 8,
-    alignItems: "center",
-    padding: "8px 10px",
-    borderRadius: 10,
-    cursor: "pointer"
-  },
-
-  table: { width: "100%", borderCollapse: "collapse" },
-  th: { textAlign: "left", padding: 10, fontSize: 12, opacity: 0.95 },
-  td: { padding: 10, borderBottom: "1px solid rgba(148,163,184,0.15)", verticalAlign: "top" },
-  tr: {},
-
-  empty: { padding: 10, opacity: 0.9, fontSize: 13 },
-
-  timelineBlock: { borderRadius: 14, padding: 12 },
-  timelineTitle: { fontWeight: 750 },
-  timelineItem: { borderRadius: 12, padding: 10 },
-
-  guideRow: {
-    display: "flex",
-    gap: 12,
-    alignItems: "flex-start",
-    borderRadius: 14,
-    padding: 12
-  },
-
-  areaRow: {
-    borderRadius: 14,
-    padding: 12
-  }
-};
+function GlobalStyle() {
+  useEffect(() => {
+    const style = document.createElement("style");
+    style.innerHTML = `
+      :root { --accent: #16a34a; }
+      :root[data-theme="dark"] {
+        background: #0b1220;
+        color: #e5e7eb;
+      }
+      :root[data-bg="soft"] { }
+      :root[data-bg="clean"] { }
+      a { color: var(--accent); }
+    `;
+    document.head.appendChild(style);
+    return () => document.head.removeChild(style);
+  }, []);
+  return null;
+}
