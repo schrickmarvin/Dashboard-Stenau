@@ -6,19 +6,25 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
-function getSupabaseClient() {
-  // verhindert Build/Runtime-Crash, falls ENV fehlt
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Supabase Client (nur erstellen, wenn ENV da ist)
+const supabase =
+  SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+/* ---------------- Status (DB: todo/done) ---------------- */
+const STATUS = [
+  { value: "todo", label: "Zu erledigen" },
+  { value: "done", label: "Erledigt" },
+];
+
+function statusLabel(v) {
+  return STATUS.find((s) => s.value === v)?.label || "Zu erledigen";
 }
 
-/* ---------------- Constants ---------------- */
-const STATUS = ["Zu erledigen", "Erledigt"];
-
+/* ---------------- Settings ---------------- */
 const DEFAULT_SETTINGS = {
   theme_mode: "light", // light | dark | system
   background: "soft", // default | soft | clean
-  accent: "#16a34a",
+  accent: "#1626a2",
   notifications_enabled: true,
   notifications_desktop: true,
   notifications_email: false,
@@ -26,13 +32,11 @@ const DEFAULT_SETTINGS = {
 
 /* ---------------- Helpers ---------------- */
 function safeJsonParse(s, fallback) {
-  // WICHTIG: wenn localStorage leer ist -> fallback
-  if (!s) return fallback;
   try {
-    const v = JSON.parse(s);
-    // WICHTIG: JSON.parse("null") oder JSON.parse(null) -> null
-    if (v === null || v === undefined) return fallback;
-    return v;
+    const parsed = JSON.parse(s);
+    if (!parsed || typeof parsed !== "object") return fallback;
+    // merge defaults so missing keys don't crash
+    return { ...fallback, ...parsed };
   } catch {
     return fallback;
   }
@@ -51,27 +55,6 @@ function formatDateTime(value) {
   });
 }
 
-function applyThemeToDom(settings) {
-  if (typeof document === "undefined") return;
-  if (!settings) return;
-
-  const root = document.documentElement;
-  const prefersDark =
-    typeof window !== "undefined" &&
-    window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
-
-  const mode =
-    settings.theme_mode === "system"
-      ? prefersDark
-        ? "dark"
-        : "light"
-      : settings.theme_mode;
-
-  root.dataset.theme = mode;
-  root.dataset.bg = settings.background;
-  root.style.setProperty("--accent", settings.accent);
-}
-
 function startOfWeek(date = new Date()) {
   const d = new Date(date);
   const day = (d.getDay() + 6) % 7; // Monday=0
@@ -84,6 +67,26 @@ function endOfWeek(date = new Date()) {
   const d = startOfWeek(date);
   d.setDate(d.getDate() + 7);
   return d;
+}
+
+function applyThemeToDom(settings) {
+  if (typeof document === "undefined") return;
+
+  const root = document.documentElement;
+  const prefersDark = typeof window !== "undefined"
+    ? window.matchMedia?.("(prefers-color-scheme: dark)")?.matches
+    : false;
+
+  const mode =
+    settings.theme_mode === "system"
+      ? prefersDark
+        ? "dark"
+        : "light"
+      : settings.theme_mode;
+
+  root.dataset.theme = mode;
+  root.dataset.bg = settings.background;
+  root.style.setProperty("--accent", settings.accent);
 }
 
 /* ---------------- UI atoms ---------------- */
@@ -118,14 +121,7 @@ function Card({ title, right, children, style, themeColors }) {
   );
 }
 
-function Button({
-  children,
-  onClick,
-  variant = "primary",
-  disabled,
-  style,
-  title,
-}) {
+function Button({ children, onClick, variant = "primary", disabled, style, title }) {
   const isGhost = variant === "ghost";
   const isDanger = variant === "danger";
   return (
@@ -212,10 +208,8 @@ function MiniStat({ label, value }) {
   );
 }
 
-/* ---------------- Page ---------------- */
+/* ---------------- Main Page ---------------- */
 export default function DashboardPage() {
-  const supabase = useMemo(() => getSupabaseClient(), []);
-
   const [session, setSession] = useState(null);
   const user = session?.user || null;
 
@@ -223,8 +217,22 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [uiError, setUiError] = useState("");
 
-  // settings (Design) - SSR safe
+  // settings (Design) - localStorage safe
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const s = safeJsonParse(window.localStorage.getItem("stenau_settings_v1"), DEFAULT_SETTINGS);
+    setSettings(s);
+  }, []);
+
+  // apply theme + persist
+  useEffect(() => {
+    applyThemeToDom(settings);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("stenau_settings_v1", JSON.stringify(settings));
+    }
+  }, [settings]);
 
   // filters
   const [filterArea, setFilterArea] = useState("ALL");
@@ -243,10 +251,10 @@ export default function DashboardPage() {
   const [newDueAt, setNewDueAt] = useState(() => {
     const d = new Date();
     d.setSeconds(0, 0);
-    return d.toISOString().slice(0, 16);
+    return d.toISOString().slice(0, 16); // datetime-local
   });
   const [newBucket, setNewBucket] = useState("Heute");
-  const [newStatus, setNewStatus] = useState("Zu erledigen");
+  const [newStatus, setNewStatus] = useState("todo");
 
   // create subtask
   const [subTaskParentId, setSubTaskParentId] = useState("");
@@ -258,45 +266,23 @@ export default function DashboardPage() {
   const [areaEditName, setAreaEditName] = useState("");
   const [areaEditColor, setAreaEditColor] = useState("#94a3b8");
 
-  /* ---- load settings from localStorage (client only) ---- */
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const loaded = safeJsonParse(
-      localStorage.getItem("stenau_settings_v1"),
-      DEFAULT_SETTINGS
-    );
-    setSettings(loaded);
-  }, []);
-
-  /* ---- apply theme + persist (client only) ---- */
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    applyThemeToDom(settings);
-    localStorage.setItem("stenau_settings_v1", JSON.stringify(settings));
-  }, [settings]);
-
   /* ---- auth ---- */
   useEffect(() => {
     if (!supabase) return;
 
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session || null);
-    });
-
+    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
     const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) =>
       setSession(newSession)
     );
-
     return () => sub?.subscription?.unsubscribe?.();
-  }, [supabase]);
+  }, []);
 
   /* ---- load data after login ---- */
   useEffect(() => {
-    if (!supabase) return;
     if (!user?.id) return;
     reloadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, user?.id]);
+  }, [user?.id]);
 
   async function reloadAll() {
     setUiError("");
@@ -329,7 +315,7 @@ export default function DashboardPage() {
 
     const { data: st, error: se } = await supabase
       .from("subtasks")
-      .select("id, task_id, title, is_done, status, created_at, updated_at")
+      .select("id, task_id, title, is_done, created_at, updated_at")
       .order("created_at", { ascending: true });
     if (se) throw se;
 
@@ -342,9 +328,7 @@ export default function DashboardPage() {
   async function loadCalendar() {
     const { data, error } = await supabase
       .from("tasks_calendar")
-      .select(
-        "id, title, status, area_id, due_at, due_bucket, is_series, series_id, series_parent_id, cal_id"
-      )
+      .select("id, title, status, area_id, due_at, due_bucket, is_series, series_id, series_parent_id, cal_id")
       .not("due_at", "is", null)
       .order("due_at", { ascending: true });
     if (error) throw error;
@@ -352,11 +336,15 @@ export default function DashboardPage() {
   }
 
   /* ---- derived ---- */
-  const themeColors = useMemo(() => {
-    const isDark =
-      typeof document !== "undefined" &&
-      document?.documentElement?.dataset?.theme === "dark";
+  const isDark = useMemo(() => {
+    if (settings.theme_mode === "dark") return true;
+    if (settings.theme_mode === "light") return false;
+    // system
+    if (typeof window === "undefined") return false;
+    return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches || false;
+  }, [settings.theme_mode]);
 
+  const themeColors = useMemo(() => {
     return isDark
       ? {
           text: "#e5e7eb",
@@ -370,7 +358,7 @@ export default function DashboardPage() {
           border: "rgba(0,0,0,0.08)",
           muted: "rgba(15,23,42,0.55)",
         };
-  }, [settings.theme_mode]);
+  }, [isDark]);
 
   const pageBg = useMemo(() => {
     if (settings.background === "soft")
@@ -410,10 +398,7 @@ export default function DashboardPage() {
     });
   }, [tasks, filterArea, filterBucket, search]);
 
-  const openCount = useMemo(
-    () => tasks.filter((t) => t.status !== "Erledigt").length,
-    [tasks]
-  );
+  const openCount = useMemo(() => tasks.filter((t) => t.status !== "done").length, [tasks]);
 
   const todayCount = useMemo(() => {
     const now = new Date();
@@ -426,7 +411,7 @@ export default function DashboardPage() {
         t.due_at &&
         new Date(t.due_at) >= start &&
         new Date(t.due_at) < end &&
-        t.status !== "Erledigt"
+        t.status !== "done"
     ).length;
   }, [tasks]);
 
@@ -438,7 +423,7 @@ export default function DashboardPage() {
         t.due_at &&
         new Date(t.due_at) >= s &&
         new Date(t.due_at) < e &&
-        t.status !== "Erledigt"
+        t.status !== "done"
     ).length;
   }, [tasks]);
 
@@ -450,13 +435,16 @@ export default function DashboardPage() {
     const payload = {
       title: newTitle.trim(),
       area_id: newAreaId || null,
-      status: newStatus,
+      status: newStatus, // todo | done
       due_bucket: newBucket,
       due_at: newDueAt ? new Date(newDueAt).toISOString() : null,
     };
 
     const { error } = await supabase.from("tasks").insert(payload);
-    if (error) return setUiError(error.message);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
 
     setNewTitle("");
     await loadTasksAndSubtasks();
@@ -466,7 +454,10 @@ export default function DashboardPage() {
   async function updateTaskStatus(taskId, status) {
     setUiError("");
     const { error } = await supabase.from("tasks").update({ status }).eq("id", taskId);
-    if (error) return setUiError(error.message);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
     await loadTasksAndSubtasks();
     await loadCalendar();
   }
@@ -475,7 +466,10 @@ export default function DashboardPage() {
     setUiError("");
     if (!confirm("Aufgabe wirklich löschen?")) return;
     const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-    if (error) return setUiError(error.message);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
     await loadTasksAndSubtasks();
     await loadCalendar();
   }
@@ -489,8 +483,10 @@ export default function DashboardPage() {
       .from("subtasks")
       .insert({ task_id: subTaskParentId, title: subTaskTitle.trim(), is_done: false });
 
-    if (error) return setUiError(error.message);
-
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
     setSubTaskTitle("");
     await loadTasksAndSubtasks();
   }
@@ -498,7 +494,10 @@ export default function DashboardPage() {
   async function toggleSubtask(subId, is_done) {
     setUiError("");
     const { error } = await supabase.from("subtasks").update({ is_done }).eq("id", subId);
-    if (error) return setUiError(error.message);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
     await loadTasksAndSubtasks();
   }
 
@@ -509,7 +508,10 @@ export default function DashboardPage() {
     if (!name) return;
 
     const { error } = await supabase.from("areas").insert({ name, color: "#94a3b8" });
-    if (error) return setUiError(error.message);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
 
     setAreaNewName("");
     await loadAreas();
@@ -533,7 +535,10 @@ export default function DashboardPage() {
       .update({ name, color: areaEditColor })
       .eq("id", areaEditId);
 
-    if (error) return setUiError(error.message);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
 
     setAreaEditId("");
     setAreaEditName("");
@@ -545,32 +550,32 @@ export default function DashboardPage() {
     if (!confirm("Bereich wirklich löschen?")) return;
 
     const { error } = await supabase.from("areas").delete().eq("id", areaId);
-    if (error) return setUiError(error.message);
+    if (error) {
+      setUiError(error.message);
+      return;
+    }
 
     await loadAreas();
     await loadTasksAndSubtasks();
     await loadCalendar();
   }
 
-  /* ---- ENV missing ---- */
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  /* ---- ENV check ---- */
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !supabase) {
     return (
       <div style={{ padding: 20, fontFamily: "system-ui" }}>
-        Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY
+        Supabase ENV fehlt. Bitte in Vercel setzen:
+        <div style={{ marginTop: 8 }}>
+          NEXT_PUBLIC_SUPABASE_URL<br />
+          NEXT_PUBLIC_SUPABASE_ANON_KEY
+        </div>
       </div>
     );
   }
 
   /* ---- auth screen ---- */
   if (!user) {
-    return (
-      <AuthScreen
-        supabase={supabase}
-        settings={settings}
-        setSettings={setSettings}
-        onLoggedIn={setSession}
-      />
-    );
+    return <AuthScreen settings={settings} setSettings={setSettings} onLoggedIn={setSession} />;
   }
 
   /* ---- render ---- */
@@ -677,10 +682,7 @@ export default function DashboardPage() {
               <Select
                 value={filterBucket}
                 onChange={setFilterBucket}
-                options={buckets.map((b) => ({
-                  value: b,
-                  label: b === "ALL" ? "Alle Zeiträume" : b,
-                }))}
+                options={buckets.map((b) => ({ value: b, label: b === "ALL" ? "Alle Zeiträume" : b }))}
               />
               <Input value={search} onChange={setSearch} placeholder="Suche..." />
             </div>
@@ -767,7 +769,7 @@ export default function DashboardPage() {
               <Select
                 value={newStatus}
                 onChange={setNewStatus}
-                options={STATUS.map((s) => ({ value: s, label: s }))}
+                options={STATUS.map((s) => ({ value: s.value, label: s.label }))}
               />
               <Button onClick={createTask} disabled={!newTitle.trim()}>
                 Anlegen
@@ -882,33 +884,32 @@ export default function DashboardPage() {
 function BoardView({ tasks, areasById, subtasksByTask, onStatus, onDelete, themeColors }) {
   const cols = useMemo(
     () => ({
-      "Zu erledigen": [],
-      "In Arbeit": [],
-      Erledigt: [],
+      todo: [],
+      done: [],
     }),
     []
   );
 
   for (const t of tasks) {
-    const s = STATUS.includes(t.status) ? t.status : "Zu erledigen";
+    const s = t.status === "done" ? "done" : "todo";
     cols[s].push(t);
   }
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
       {STATUS.map((st) => (
         <Card
-          key={st}
-          title={st}
-          right={<div style={{ fontSize: 12, opacity: 0.7 }}>{cols[st].length}</div>}
+          key={st.value}
+          title={st.label}
+          right={<div style={{ fontSize: 12, opacity: 0.7 }}>{cols[st.value].length}</div>}
           themeColors={themeColors}
           style={{ minHeight: 260 }}
         >
           <div style={{ display: "grid", gap: 10 }}>
-            {cols[st].length === 0 ? (
+            {cols[st.value].length === 0 ? (
               <div style={{ opacity: 0.6 }}>Keine Aufgaben</div>
             ) : (
-              cols[st].map((t) => (
+              cols[st.value].map((t) => (
                 <TaskCard
                   key={t.id}
                   task={t}
@@ -953,7 +954,7 @@ function TaskCard({ task, area, subtasks, onStatus, onDelete, themeColors }) {
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <select
-            value={task.status || "Zu erledigen"}
+            value={task.status || "todo"}
             onChange={(e) => onStatus(task.id, e.target.value)}
             style={{
               borderRadius: 12,
@@ -963,8 +964,8 @@ function TaskCard({ task, area, subtasks, onStatus, onDelete, themeColors }) {
             }}
           >
             {STATUS.map((s) => (
-              <option key={s} value={s}>
-                {s}
+              <option key={s.value} value={s.value}>
+                {s.label}
               </option>
             ))}
           </select>
@@ -987,8 +988,7 @@ function TaskCard({ task, area, subtasks, onStatus, onDelete, themeColors }) {
       </div>
 
       <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
-        {area?.name || "—"} · {task.due_bucket || "—"} ·{" "}
-        {task.due_at ? formatDateTime(task.due_at) : "—"}
+        {area?.name || "—"} · {task.due_bucket || "—"} · {task.due_at ? formatDateTime(task.due_at) : "—"}
       </div>
 
       <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
@@ -1008,15 +1008,11 @@ function TaskCard({ task, area, subtasks, onStatus, onDelete, themeColors }) {
                 opacity: s.is_done ? 0.7 : 1,
               }}
             >
-              <span style={{ textDecoration: s.is_done ? "line-through" : "none" }}>
-                {s.title}
-              </span>
+              <span style={{ textDecoration: s.is_done ? "line-through" : "none" }}>{s.title}</span>
             </div>
           ))}
           {subtasks.length > 6 && (
-            <div style={{ fontSize: 12, opacity: 0.65 }}>
-              +{subtasks.length - 6} weitere…
-            </div>
+            <div style={{ fontSize: 12, opacity: 0.65 }}>+{subtasks.length - 6} weitere…</div>
           )}
         </div>
       )}
@@ -1077,7 +1073,7 @@ function ListView({ tasks, areasById, onStatus, onDelete, themeColors }) {
                   </td>
                   <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}` }}>
                     <select
-                      value={t.status || "Zu erledigen"}
+                      value={t.status || "todo"}
                       onChange={(e) => onStatus(t.id, e.target.value)}
                       style={{
                         borderRadius: 12,
@@ -1087,13 +1083,19 @@ function ListView({ tasks, areasById, onStatus, onDelete, themeColors }) {
                       }}
                     >
                       {STATUS.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
+                        <option key={s.value} value={s.value}>
+                          {s.label}
                         </option>
                       ))}
                     </select>
                   </td>
-                  <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}`, textAlign: "right" }}>
+                  <td
+                    style={{
+                      padding: "12px 10px",
+                      borderBottom: `1px solid ${themeColors.border}`,
+                      textAlign: "right",
+                    }}
+                  >
                     <button
                       onClick={() => onDelete(t.id)}
                       style={{
@@ -1132,11 +1134,7 @@ function CalendarView({ rows, areasById, themeColors }) {
     const m = new Map();
     for (const r of rows) {
       const d = new Date(r.due_at);
-      const key = d.toLocaleDateString("de-DE", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      });
+      const key = d.toLocaleDateString("de-DE", { year: "numeric", month: "2-digit", day: "2-digit" });
       if (!m.has(key)) m.set(key, []);
       m.get(key).push(r);
     }
@@ -1179,7 +1177,7 @@ function CalendarView({ rows, areasById, themeColors }) {
                       <div style={{ fontSize: 12, opacity: 0.75 }}>{formatDateTime(it.due_at)}</div>
                     </div>
                     <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-                      {a?.name || "—"} · {it.status || "—"} · {it.due_bucket || "—"}
+                      {a?.name || "—"} · {statusLabel(it.status)} · {it.due_bucket || "—"}
                       {it.is_series ? " · Serie" : ""}
                     </div>
                   </div>
@@ -1230,8 +1228,7 @@ function TimelineView({ tasks, areasById, themeColors }) {
                     {t.title}
                   </div>
                   <div style={{ fontSize: 12, opacity: 0.75 }}>
-                    {a?.name || "—"} · {t.status || "—"} ·{" "}
-                    {t.due_at ? formatDateTime(t.due_at) : "—"}
+                    {a?.name || "—"} · {statusLabel(t.status)} · {t.due_at ? formatDateTime(t.due_at) : "—"}
                   </div>
                 </div>
               );
@@ -1408,7 +1405,7 @@ function SettingsView({ settings, setSettings, themeColors }) {
 }
 
 /* ---------------- Auth ---------------- */
-function AuthScreen({ supabase, onLoggedIn, settings, setSettings }) {
+function AuthScreen({ onLoggedIn, settings, setSettings }) {
   const [mode, setMode] = useState("login"); // login | signup
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -1447,7 +1444,6 @@ function AuthScreen({ supabase, onLoggedIn, settings, setSettings }) {
         placeItems: "center",
         padding: 16,
         background: settings.background === "soft" ? "#f1f5f9" : "#ffffff",
-        fontFamily: "system-ui",
       }}
     >
       <div
@@ -1457,16 +1453,20 @@ function AuthScreen({ supabase, onLoggedIn, settings, setSettings }) {
           borderRadius: 18,
           padding: 16,
           background: "white",
+          fontFamily: "system-ui",
         }}
       >
         <div style={{ fontSize: 20 }}>Anmeldung</div>
+
         <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
           <Input value={email} onChange={setEmail} placeholder="E-Mail" />
           <Input value={pw} onChange={setPw} placeholder="Passwort" type="password" />
           {err && <div style={{ color: "rgb(185,28,28)", fontSize: 12 }}>{err}</div>}
+
           <Button onClick={submit} disabled={busy || !email.trim() || !pw.trim()}>
             {mode === "login" ? "Anmelden" : "Registrieren"}
           </Button>
+
           <Button variant="ghost" onClick={() => setMode((m) => (m === "login" ? "signup" : "login"))}>
             {mode === "login" ? "Neues Konto erstellen" : "Zurück zur Anmeldung"}
           </Button>
@@ -1485,6 +1485,7 @@ function AuthScreen({ supabase, onLoggedIn, settings, setSettings }) {
                 { value: "system", label: "System" },
               ]}
             />
+
             <div style={{ fontSize: 12, opacity: 0.7 }}>Hintergrund</div>
             <Select
               value={settings.background}
@@ -1495,6 +1496,7 @@ function AuthScreen({ supabase, onLoggedIn, settings, setSettings }) {
                 { value: "clean", label: "Clean" },
               ]}
             />
+
             <div style={{ fontSize: 12, opacity: 0.7 }}>Akzent</div>
             <input
               type="color"
@@ -1511,10 +1513,9 @@ function AuthScreen({ supabase, onLoggedIn, settings, setSettings }) {
 
 function GlobalStyle() {
   useEffect(() => {
-    if (typeof document === "undefined") return;
     const style = document.createElement("style");
     style.innerHTML = `
-      :root { --accent: #16a34a; }
+      :root { --accent: #1626a2; }
       :root[data-theme="dark"] { background: #0b1220; color: #e5e7eb; }
       a { color: var(--accent); }
     `;
