@@ -2,29 +2,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Supabase (Next.js safe) ---------------- */
-let _supabase = null;
+/* ---------------- Supabase (Next.js) ---------------- */
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
-function getSupabase() {
-  // Never create client during SSR/build page data collection
-  if (typeof window === "undefined") return null;
-
-  if (_supabase) return _supabase;
-
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!url || !key) {
-    // Keep it explicit for debugging in browser
-    console.error("Missing Supabase ENV:", {
-      NEXT_PUBLIC_SUPABASE_URL: !!url,
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: !!key,
-    });
-    return null;
-  }
-
-  _supabase = createClient(url, key);
-  return _supabase;
+function getSupabaseClient() {
+  // verhindert Build/Runtime-Crash, falls ENV fehlt
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 }
 
 /* ---------------- Constants ---------------- */
@@ -41,8 +26,13 @@ const DEFAULT_SETTINGS = {
 
 /* ---------------- Helpers ---------------- */
 function safeJsonParse(s, fallback) {
+  // WICHTIG: wenn localStorage leer ist -> fallback
+  if (!s) return fallback;
   try {
-    return JSON.parse(s);
+    const v = JSON.parse(s);
+    // WICHTIG: JSON.parse("null") oder JSON.parse(null) -> null
+    if (v === null || v === undefined) return fallback;
+    return v;
   } catch {
     return fallback;
   }
@@ -63,6 +53,7 @@ function formatDateTime(value) {
 
 function applyThemeToDom(settings) {
   if (typeof document === "undefined") return;
+  if (!settings) return;
 
   const root = document.documentElement;
   const prefersDark =
@@ -127,7 +118,14 @@ function Card({ title, right, children, style, themeColors }) {
   );
 }
 
-function Button({ children, onClick, variant = "primary", disabled, style, title }) {
+function Button({
+  children,
+  onClick,
+  variant = "primary",
+  disabled,
+  style,
+  title,
+}) {
   const isGhost = variant === "ghost";
   const isDanger = variant === "danger";
   return (
@@ -216,7 +214,7 @@ function MiniStat({ label, value }) {
 
 /* ---------------- Page ---------------- */
 export default function DashboardPage() {
-  const supabase = getSupabase();
+  const supabase = useMemo(() => getSupabaseClient(), []);
 
   const [session, setSession] = useState(null);
   const user = session?.user || null;
@@ -226,10 +224,7 @@ export default function DashboardPage() {
   const [uiError, setUiError] = useState("");
 
   // settings (Design) - SSR safe
-  const [settings, setSettings] = useState(() => {
-    if (typeof window === "undefined") return DEFAULT_SETTINGS;
-    return safeJsonParse(localStorage.getItem("stenau_settings_v1"), DEFAULT_SETTINGS);
-  });
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
 
   // filters
   const [filterArea, setFilterArea] = useState("ALL");
@@ -248,7 +243,7 @@ export default function DashboardPage() {
   const [newDueAt, setNewDueAt] = useState(() => {
     const d = new Date();
     d.setSeconds(0, 0);
-    return d.toISOString().slice(0, 16); // datetime-local
+    return d.toISOString().slice(0, 16);
   });
   const [newBucket, setNewBucket] = useState("Heute");
   const [newStatus, setNewStatus] = useState("Zu erledigen");
@@ -263,19 +258,30 @@ export default function DashboardPage() {
   const [areaEditName, setAreaEditName] = useState("");
   const [areaEditColor, setAreaEditColor] = useState("#94a3b8");
 
-  /* ---- theme apply ---- */
+  /* ---- load settings from localStorage (client only) ---- */
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const loaded = safeJsonParse(
+      localStorage.getItem("stenau_settings_v1"),
+      DEFAULT_SETTINGS
+    );
+    setSettings(loaded);
+  }, []);
+
+  /* ---- apply theme + persist (client only) ---- */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
     applyThemeToDom(settings);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("stenau_settings_v1", JSON.stringify(settings));
-    }
+    localStorage.setItem("stenau_settings_v1", JSON.stringify(settings));
   }, [settings]);
 
   /* ---- auth ---- */
   useEffect(() => {
     if (!supabase) return;
 
-    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session || null);
+    });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) =>
       setSession(newSession)
@@ -293,7 +299,6 @@ export default function DashboardPage() {
   }, [supabase, user?.id]);
 
   async function reloadAll() {
-    if (!supabase) return;
     setUiError("");
     setLoading(true);
     try {
@@ -306,7 +311,6 @@ export default function DashboardPage() {
   }
 
   async function loadAreas() {
-    if (!supabase) return;
     const { data, error } = await supabase
       .from("areas")
       .select("id, name, color, created_at")
@@ -317,8 +321,6 @@ export default function DashboardPage() {
   }
 
   async function loadTasksAndSubtasks() {
-    if (!supabase) return;
-
     const { data: t, error: te } = await supabase
       .from("tasks")
       .select("id, title, area_id, status, due_bucket, due_at, created_at")
@@ -338,8 +340,6 @@ export default function DashboardPage() {
   }
 
   async function loadCalendar() {
-    if (!supabase) return;
-
     const { data, error } = await supabase
       .from("tasks_calendar")
       .select(
@@ -354,7 +354,9 @@ export default function DashboardPage() {
   /* ---- derived ---- */
   const themeColors = useMemo(() => {
     const isDark =
-      typeof document !== "undefined" && document?.documentElement?.dataset?.theme === "dark";
+      typeof document !== "undefined" &&
+      document?.documentElement?.dataset?.theme === "dark";
+
     return isDark
       ? {
           text: "#e5e7eb",
@@ -433,13 +435,15 @@ export default function DashboardPage() {
     const e = endOfWeek(new Date());
     return tasks.filter(
       (t) =>
-        t.due_at && new Date(t.due_at) >= s && new Date(t.due_at) < e && t.status !== "Erledigt"
+        t.due_at &&
+        new Date(t.due_at) >= s &&
+        new Date(t.due_at) < e &&
+        t.status !== "Erledigt"
     ).length;
   }, [tasks]);
 
   /* ---- mutations ---- */
   async function createTask() {
-    if (!supabase) return;
     setUiError("");
     if (!newTitle.trim()) return;
 
@@ -452,10 +456,7 @@ export default function DashboardPage() {
     };
 
     const { error } = await supabase.from("tasks").insert(payload);
-    if (error) {
-      setUiError(error.message);
-      return;
-    }
+    if (error) return setUiError(error.message);
 
     setNewTitle("");
     await loadTasksAndSubtasks();
@@ -463,33 +464,23 @@ export default function DashboardPage() {
   }
 
   async function updateTaskStatus(taskId, status) {
-    if (!supabase) return;
     setUiError("");
     const { error } = await supabase.from("tasks").update({ status }).eq("id", taskId);
-    if (error) {
-      setUiError(error.message);
-      return;
-    }
+    if (error) return setUiError(error.message);
     await loadTasksAndSubtasks();
     await loadCalendar();
   }
 
   async function deleteTask(taskId) {
-    if (!supabase) return;
     setUiError("");
-    if (typeof window !== "undefined" && !window.confirm("Aufgabe wirklich löschen?")) return;
-
+    if (!confirm("Aufgabe wirklich löschen?")) return;
     const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-    if (error) {
-      setUiError(error.message);
-      return;
-    }
+    if (error) return setUiError(error.message);
     await loadTasksAndSubtasks();
     await loadCalendar();
   }
 
   async function createSubtask() {
-    if (!supabase) return;
     setUiError("");
     if (!subTaskParentId) return;
     if (!subTaskTitle.trim()) return;
@@ -498,37 +489,27 @@ export default function DashboardPage() {
       .from("subtasks")
       .insert({ task_id: subTaskParentId, title: subTaskTitle.trim(), is_done: false });
 
-    if (error) {
-      setUiError(error.message);
-      return;
-    }
+    if (error) return setUiError(error.message);
+
     setSubTaskTitle("");
     await loadTasksAndSubtasks();
   }
 
   async function toggleSubtask(subId, is_done) {
-    if (!supabase) return;
     setUiError("");
     const { error } = await supabase.from("subtasks").update({ is_done }).eq("id", subId);
-    if (error) {
-      setUiError(error.message);
-      return;
-    }
+    if (error) return setUiError(error.message);
     await loadTasksAndSubtasks();
   }
 
   /* ---- areas CRUD ---- */
   async function createArea() {
-    if (!supabase) return;
     setUiError("");
     const name = areaNewName.trim();
     if (!name) return;
 
     const { error } = await supabase.from("areas").insert({ name, color: "#94a3b8" });
-    if (error) {
-      setUiError(error.message);
-      return;
-    }
+    if (error) return setUiError(error.message);
 
     setAreaNewName("");
     await loadAreas();
@@ -541,7 +522,6 @@ export default function DashboardPage() {
   }
 
   async function saveArea() {
-    if (!supabase) return;
     setUiError("");
     if (!areaEditId) return;
 
@@ -553,10 +533,7 @@ export default function DashboardPage() {
       .update({ name, color: areaEditColor })
       .eq("id", areaEditId);
 
-    if (error) {
-      setUiError(error.message);
-      return;
-    }
+    if (error) return setUiError(error.message);
 
     setAreaEditId("");
     setAreaEditName("");
@@ -564,39 +541,36 @@ export default function DashboardPage() {
   }
 
   async function deleteArea(areaId) {
-    if (!supabase) return;
     setUiError("");
-    if (typeof window !== "undefined" && !window.confirm("Bereich wirklich löschen?")) return;
+    if (!confirm("Bereich wirklich löschen?")) return;
 
     const { error } = await supabase.from("areas").delete().eq("id", areaId);
-    if (error) {
-      setUiError(error.message);
-      return;
-    }
+    if (error) return setUiError(error.message);
 
     await loadAreas();
     await loadTasksAndSubtasks();
     await loadCalendar();
   }
 
-  /* ---- SSR / missing ENV friendly screen ---- */
-  if (typeof window === "undefined") {
-    return null; // Avoid SSR rendering issues
-  }
-
-  if (!supabase) {
+  /* ---- ENV missing ---- */
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return (
       <div style={{ padding: 20, fontFamily: "system-ui" }}>
-        Supabase ENV fehlt oder konnte nicht geladen werden.
-        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-          Prüfe in Vercel: NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY.
-        </div>
+        Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY
       </div>
     );
   }
 
+  /* ---- auth screen ---- */
   if (!user) {
-    return <AuthScreen settings={settings} setSettings={setSettings} onLoggedIn={setSession} />;
+    return (
+      <AuthScreen
+        supabase={supabase}
+        settings={settings}
+        setSettings={setSettings}
+        onLoggedIn={setSession}
+      />
+    );
   }
 
   /* ---- render ---- */
@@ -624,8 +598,12 @@ export default function DashboardPage() {
         >
           <div>
             <div style={{ fontSize: 22 }}>Armaturenbrett</div>
-            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>Angemeldet als: {user.email}</div>
-            <div style={{ fontSize: 12, opacity: 0.7 }}>Aktuell: {formatDateTime(new Date().toISOString())}</div>
+            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
+              Angemeldet als: {user.email}
+            </div>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>
+              Aktuell: {formatDateTime(new Date().toISOString())}
+            </div>
           </div>
 
           <div style={{ display: "flex", gap: 10 }}>
@@ -699,7 +677,10 @@ export default function DashboardPage() {
               <Select
                 value={filterBucket}
                 onChange={setFilterBucket}
-                options={buckets.map((b) => ({ value: b, label: b === "ALL" ? "Alle Zeiträume" : b }))}
+                options={buckets.map((b) => ({
+                  value: b,
+                  label: b === "ALL" ? "Alle Zeiträume" : b,
+                }))}
               />
               <Input value={search} onChange={setSearch} placeholder="Suche..." />
             </div>
@@ -783,7 +764,11 @@ export default function DashboardPage() {
                   { value: "Jahr", label: "Jahr" },
                 ]}
               />
-              <Select value={newStatus} onChange={setNewStatus} options={STATUS.map((s) => ({ value: s, label: s }))} />
+              <Select
+                value={newStatus}
+                onChange={setNewStatus}
+                options={STATUS.map((s) => ({ value: s, label: s }))}
+              />
               <Button onClick={createTask} disabled={!newTitle.trim()}>
                 Anlegen
               </Button>
@@ -1002,7 +987,8 @@ function TaskCard({ task, area, subtasks, onStatus, onDelete, themeColors }) {
       </div>
 
       <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
-        {area?.name || "—"} · {task.due_bucket || "—"} · {task.due_at ? formatDateTime(task.due_at) : "—"}
+        {area?.name || "—"} · {task.due_bucket || "—"} ·{" "}
+        {task.due_at ? formatDateTime(task.due_at) : "—"}
       </div>
 
       <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
@@ -1022,10 +1008,16 @@ function TaskCard({ task, area, subtasks, onStatus, onDelete, themeColors }) {
                 opacity: s.is_done ? 0.7 : 1,
               }}
             >
-              <span style={{ textDecoration: s.is_done ? "line-through" : "none" }}>{s.title}</span>
+              <span style={{ textDecoration: s.is_done ? "line-through" : "none" }}>
+                {s.title}
+              </span>
             </div>
           ))}
-          {subtasks.length > 6 && <div style={{ fontSize: 12, opacity: 0.65 }}>+{subtasks.length - 6} weitere…</div>}
+          {subtasks.length > 6 && (
+            <div style={{ fontSize: 12, opacity: 0.65 }}>
+              +{subtasks.length - 6} weitere…
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1060,7 +1052,9 @@ function ListView({ tasks, areasById, onStatus, onDelete, themeColors }) {
               const a = areasById.get(t.area_id);
               return (
                 <tr key={t.id}>
-                  <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}` }}>{t.title}</td>
+                  <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}` }}>
+                    {t.title}
+                  </td>
                   <td style={{ padding: "12px 10px", borderBottom: `1px solid ${themeColors.border}` }}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                       <span
@@ -1138,7 +1132,11 @@ function CalendarView({ rows, areasById, themeColors }) {
     const m = new Map();
     for (const r of rows) {
       const d = new Date(r.due_at);
-      const key = d.toLocaleDateString("de-DE", { year: "numeric", month: "2-digit", day: "2-digit" });
+      const key = d.toLocaleDateString("de-DE", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
       if (!m.has(key)) m.set(key, []);
       m.get(key).push(r);
     }
@@ -1147,7 +1145,11 @@ function CalendarView({ rows, areasById, themeColors }) {
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <Card title="Kalender" right={<div style={{ fontSize: 12, opacity: 0.7 }}>Quelle: tasks_calendar</div>} themeColors={themeColors} />
+      <Card
+        title="Kalender"
+        right={<div style={{ fontSize: 12, opacity: 0.7 }}>Quelle: tasks_calendar (id statt task_id).</div>}
+        themeColors={themeColors}
+      />
 
       {rows.length === 0 ? (
         <Card themeColors={themeColors}>
@@ -1198,7 +1200,8 @@ function TimelineView({ tasks, areasById, themeColors }) {
   const weekTasks = tasks
     .filter(
       (t) =>
-        t.due_bucket === "Diese Woche" || (t.due_at && new Date(t.due_at) >= weekStart && new Date(t.due_at) < weekEnd)
+        t.due_bucket === "Diese Woche" ||
+        (t.due_at && new Date(t.due_at) >= weekStart && new Date(t.due_at) < weekEnd)
     )
     .slice(0, 50);
 
@@ -1227,7 +1230,8 @@ function TimelineView({ tasks, areasById, themeColors }) {
                     {t.title}
                   </div>
                   <div style={{ fontSize: 12, opacity: 0.75 }}>
-                    {a?.name || "—"} · {t.status || "—"} · {t.due_at ? formatDateTime(t.due_at) : "—"}
+                    {a?.name || "—"} · {t.status || "—"} ·{" "}
+                    {t.due_at ? formatDateTime(t.due_at) : "—"}
                   </div>
                 </div>
               );
@@ -1404,9 +1408,7 @@ function SettingsView({ settings, setSettings, themeColors }) {
 }
 
 /* ---------------- Auth ---------------- */
-function AuthScreen({ onLoggedIn, settings, setSettings }) {
-  const supabase = getSupabase();
-
+function AuthScreen({ supabase, onLoggedIn, settings, setSettings }) {
   const [mode, setMode] = useState("login"); // login | signup
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -1418,8 +1420,6 @@ function AuthScreen({ onLoggedIn, settings, setSettings }) {
   }, [settings]);
 
   async function submit() {
-    if (!supabase) return;
-
     setErr("");
     setBusy(true);
     try {
@@ -1450,18 +1450,23 @@ function AuthScreen({ onLoggedIn, settings, setSettings }) {
         fontFamily: "system-ui",
       }}
     >
-      <div style={{ width: "min(520px, 100%)", border: "1px solid rgba(0,0,0,0.10)", borderRadius: 18, padding: 16, background: "white" }}>
+      <div
+        style={{
+          width: "min(520px, 100%)",
+          border: "1px solid rgba(0,0,0,0.10)",
+          borderRadius: 18,
+          padding: 16,
+          background: "white",
+        }}
+      >
         <div style={{ fontSize: 20 }}>Anmeldung</div>
-
         <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
           <Input value={email} onChange={setEmail} placeholder="E-Mail" />
           <Input value={pw} onChange={setPw} placeholder="Passwort" type="password" />
           {err && <div style={{ color: "rgb(185,28,28)", fontSize: 12 }}>{err}</div>}
-
           <Button onClick={submit} disabled={busy || !email.trim() || !pw.trim()}>
             {mode === "login" ? "Anmelden" : "Registrieren"}
           </Button>
-
           <Button variant="ghost" onClick={() => setMode((m) => (m === "login" ? "signup" : "login"))}>
             {mode === "login" ? "Neues Konto erstellen" : "Zurück zur Anmeldung"}
           </Button>
@@ -1469,7 +1474,6 @@ function AuthScreen({ onLoggedIn, settings, setSettings }) {
 
         <div style={{ marginTop: 14, borderTop: "1px solid rgba(0,0,0,0.10)", paddingTop: 12 }}>
           <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 8 }}>Design</div>
-
           <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
             <div style={{ fontSize: 12, opacity: 0.7 }}>Theme</div>
             <Select
@@ -1481,7 +1485,6 @@ function AuthScreen({ onLoggedIn, settings, setSettings }) {
                 { value: "system", label: "System" },
               ]}
             />
-
             <div style={{ fontSize: 12, opacity: 0.7 }}>Hintergrund</div>
             <Select
               value={settings.background}
@@ -1492,7 +1495,6 @@ function AuthScreen({ onLoggedIn, settings, setSettings }) {
                 { value: "clean", label: "Clean" },
               ]}
             />
-
             <div style={{ fontSize: 12, opacity: 0.7 }}>Akzent</div>
             <input
               type="color"
@@ -1509,6 +1511,7 @@ function AuthScreen({ onLoggedIn, settings, setSettings }) {
 
 function GlobalStyle() {
   useEffect(() => {
+    if (typeof document === "undefined") return;
     const style = document.createElement("style");
     style.innerHTML = `
       :root { --accent: #16a34a; }
