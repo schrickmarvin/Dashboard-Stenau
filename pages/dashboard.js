@@ -13,7 +13,7 @@ function getSupabaseClient() {
 }
 
 /* ---------------- Constants ---------------- */
-const STATUS = ["Zu erledigen", "In Arbeit", "Erledigt"];
+const STATUS = ["Zu erledigen", "Erledigt"];
 
 const DEFAULT_SETTINGS = {
   theme_mode: "light", // light | dark | system
