@@ -1,3 +1,5 @@
-// pages/index.js
-import Dashboard from "../Dashboard"; 
-export default Dashboard;
+import Dashboard from "./dashboard";
+
+export default function Home() {
+  return <Dashboard />;
+}
