@@ -1,974 +1,865 @@
-// pages/dashboard.js
-import React, { useEffect, useMemo, useRef, useState } from "react";
+// dashboard.js
+import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* =========================================================
-   Next.js + Supabase (wichtig):
-   - createClient NICHT auf Server/Build ausführen
-   - Client nur im Browser erstellen (typeof window !== "undefined")
-   ========================================================= */
+/* ---------------- Supabase ---------------- */
+const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL;
+const SUPABASE_ANON = process.env.REACT_APP_SUPABASE_ANON_KEY;
 
-function getSupabaseClient() {
-  if (typeof window === "undefined") return null;
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  // Wenn Env Vars fehlen, soll die Seite nicht crashen
-  if (!supabaseUrl || !supabaseAnonKey) {
-    console.warn("Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY");
-    return null;
-  }
-
-  // Singleton in window halten, damit GoTrue nicht mehrfach initialisiert
-  if (!window.__supabase__) {
-    window.__supabase__ = createClient(supabaseUrl, supabaseAnonKey, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
-    });
-  }
-  return window.__supabase__;
+if (!SUPABASE_URL || !SUPABASE_ANON) {
+  // eslint-disable-next-line no-console
+  console.error(
+    "Missing Supabase env vars. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY"
+  );
 }
 
-/* ---------------- Settings Defaults ---------------- */
-const DEFAULT_SETTINGS = {
-  theme_mode: "light", // light | dark | system (system optional)
-  background: "standard", // standard | soft | grid | waves | clean | custom
-  accent: "#1626a2",
-  notifications_enabled: true,
-  notifications_desktop: true,
-  notifications_email: false,
-  background_custom_url: "",
-};
-
-const STATUS_VALUES = ["todo", "done"]; // "doing" entfernt
-
-const GUIDE_BUCKET = "guides"; // Supabase Storage bucket name
+const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON || "");
 
 /* ---------------- Helpers ---------------- */
-function safeJsonParse(s, fallback) {
-  try {
-    const p = JSON.parse(s);
-    if (!p || typeof p !== "object") return fallback;
-    return { ...fallback, ...p };
-  } catch {
-    return fallback;
-  }
-}
+const toISO = (value) => {
+  if (!value) return null;
+  // value can be "YYYY-MM-DDTHH:mm" (from input[type=datetime-local])
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+};
 
-function fmtDateTimeLocal(ts) {
-  if (!ts) return "";
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(
-    d.getMinutes()
-  )}`;
-}
-
-function fmtDateDE(ts) {
-  if (!ts) return "—";
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return "—";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}, ${pad(d.getHours())}:${pad(
-    d.getMinutes()
-  )}`;
-}
-
-function startOfToday() {
+const startOfToday = () => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d;
-}
+};
 
-function endOfToday() {
+const endOfToday = () => {
   const d = new Date();
   d.setHours(23, 59, 59, 999);
   return d;
-}
-
-function isSameWeek(d, base = new Date()) {
-  // ISO-ish week compare (good enough)
-  const onejan = new Date(base.getFullYear(), 0, 1);
-  const week = Math.ceil((((base - onejan) / 86400000) + onejan.getDay() + 1) / 7);
-  const onejan2 = new Date(d.getFullYear(), 0, 1);
-  const week2 = Math.ceil((((d - onejan2) / 86400000) + onejan2.getDay() + 1) / 7);
-  return d.getFullYear() === base.getFullYear() && week2 === week;
-}
-
-/* ---------------- UI style ---------------- */
-const baseFont = {
-  fontFamily:
-    'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial',
 };
 
-function backgroundCSS(settings) {
-  const mode = settings?.theme_mode || "light";
-  const isDark = mode === "dark";
-  const bg = settings?.background || "standard";
+const startOfWeek = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  // Monday as first day
+  const day = d.getDay(); // 0 Sun, 1 Mon ...
+  const diff = (day === 0 ? -6 : 1 - day);
+  d.setDate(d.getDate() + diff);
+  return d;
+};
 
-  const base = {
-    backgroundColor: isDark ? "#0b1020" : "#f6f7fb",
-    color: isDark ? "#eef2ff" : "#111827",
-    minHeight: "100vh",
-  };
+const endOfWeek = () => {
+  const d = startOfWeek();
+  d.setDate(d.getDate() + 6);
+  d.setHours(23, 59, 59, 999);
+  return d;
+};
 
-  if (bg === "soft") {
-    return {
-      ...base,
-      backgroundImage: isDark
-        ? "radial-gradient(1200px 600px at 20% 10%, rgba(99,102,241,0.20), transparent 60%), radial-gradient(900px 500px at 70% 20%, rgba(34,197,94,0.10), transparent 55%)"
-        : "radial-gradient(1200px 600px at 20% 10%, rgba(99,102,241,0.15), transparent 60%), radial-gradient(900px 500px at 70% 20%, rgba(34,197,94,0.10), transparent 55%)",
-    };
-  }
+const fmtDateTime = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("de-DE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
 
-  if (bg === "grid") {
-    return {
-      ...base,
-      backgroundImage: isDark
-        ? "linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)"
-        : "linear-gradient(rgba(17,24,39,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(17,24,39,0.06) 1px, transparent 1px)",
-      backgroundSize: "42px 42px",
-    };
-  }
+const makeLocalDateTimeValue = () => {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mi = pad(d.getMinutes());
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+};
 
-  if (bg === "waves") {
-    return {
-      ...base,
-      backgroundImage: isDark
-        ? "radial-gradient(circle at 10% 10%, rgba(99,102,241,0.20), transparent 50%), radial-gradient(circle at 80% 20%, rgba(236,72,153,0.12), transparent 55%), radial-gradient(circle at 30% 90%, rgba(34,197,94,0.10), transparent 55%)"
-        : "radial-gradient(circle at 10% 10%, rgba(99,102,241,0.12), transparent 50%), radial-gradient(circle at 80% 20%, rgba(236,72,153,0.10), transparent 55%), radial-gradient(circle at 30% 90%, rgba(34,197,94,0.10), transparent 55%)",
-    };
-  }
+/* ---------------- UI Constants ---------------- */
+const TABS = [
+  { key: "board", label: "Board" },
+  { key: "list", label: "Liste" },
+  { key: "calendar", label: "Kalender" },
+  { key: "timeline", label: "Timeline" },
+  { key: "areas", label: "Bereiche" },
+  { key: "guides", label: "Anleitung" },
+  { key: "settings", label: "Einstellungen" },
+];
 
-  if (bg === "clean") {
-    return { ...base, backgroundColor: isDark ? "#0b1020" : "#ffffff" };
-  }
+const DUE_BUCKETS = [
+  { value: "heute", label: "Heute" },
+  { value: "diese_woche", label: "Diese Woche" },
+  { value: "alle", label: "Alle" },
+];
 
-  if (bg === "custom" && settings?.background_custom_url) {
-    return {
-      ...base,
-      backgroundImage: `url(${settings.background_custom_url})`,
-      backgroundSize: "cover",
-      backgroundPosition: "center",
-      backgroundAttachment: "fixed",
-    };
-  }
+const THEMES = [
+  { value: "hell", label: "Hell" },
+  { value: "dunkel", label: "Dunkel" },
+];
 
-  return base;
-}
+const BACKGROUNDS = [
+  { value: "soft", label: "Soft" },
+  { value: "neutral", label: "Neutral" },
+  { value: "clear", label: "Clear" },
+];
 
-function cardStyle(settings) {
-  const mode = settings?.theme_mode || "light";
-  const isDark = mode === "dark";
-  return {
-    background: isDark ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.85)",
-    border: isDark ? "1px solid rgba(255,255,255,0.12)" : "1px solid rgba(15,23,42,0.10)",
-    borderRadius: 18,
-    boxShadow: isDark ? "0 8px 22px rgba(0,0,0,0.35)" : "0 8px 22px rgba(15,23,42,0.06)",
-    backdropFilter: "blur(6px)",
-  };
-}
+const ACCENTS = [
+  { value: "green", label: "green" },
+  { value: "blue", label: "blue" },
+  { value: "orange", label: "orange" },
+  { value: "purple", label: "purple" },
+  { value: "gray", label: "gray" },
+];
 
-function pillStyle(settings, active) {
-  const mode = settings?.theme_mode || "light";
-  const isDark = mode === "dark";
-  const accent = settings?.accent || "#1626a2";
-  if (active) {
-    return {
-      borderRadius: 999,
-      padding: "10px 16px",
-      border: `1px solid ${accent}`,
-      background: accent,
-      color: "#fff",
-      cursor: "pointer",
-    };
-  }
-  return {
-    borderRadius: 999,
-    padding: "10px 16px",
-    border: isDark ? "1px solid rgba(255,255,255,0.12)" : "1px solid rgba(15,23,42,0.10)",
-    background: isDark ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.75)",
-    color: isDark ? "#eef2ff" : "#0f172a",
-    cursor: "pointer",
-  };
-}
+/* ---------------- Main Component ---------------- */
+export default function Dashboard() {
+  /* ---------- Auth ---------- */
+  const [session, setSession] = useState(null);
+  const user = session?.user || null;
 
-function buttonStyle(settings, variant = "primary") {
-  const mode = settings?.theme_mode || "light";
-  const isDark = mode === "dark";
-  const accent = settings?.accent || "#1626a2";
-  if (variant === "primary") {
-    return {
-      borderRadius: 12,
-      padding: "10px 14px",
-      border: `1px solid ${accent}`,
-      background: accent,
-      color: "#fff",
-      cursor: "pointer",
-      fontWeight: 600,
-    };
-  }
-  if (variant === "danger") {
-    return {
-      borderRadius: 12,
-      padding: "10px 14px",
-      border: "1px solid rgba(239,68,68,0.35)",
-      background: "rgba(239,68,68,0.12)",
-      color: isDark ? "#fecaca" : "#991b1b",
-      cursor: "pointer",
-      fontWeight: 600,
-    };
-  }
-  return {
-    borderRadius: 12,
-    padding: "10px 14px",
-    border: isDark ? "1px solid rgba(255,255,255,0.12)" : "1px solid rgba(15,23,42,0.10)",
-    background: isDark ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.75)",
-    color: isDark ? "#eef2ff" : "#0f172a",
-    cursor: "pointer",
-    fontWeight: 600,
-  };
-}
+  /* ---------- Global UI State ---------- */
+  const [activeTab, setActiveTab] = useState("board");
+  const [globalError, setGlobalError] = useState("");
 
-function inputStyle(settings) {
-  const mode = settings?.theme_mode || "light";
-  const isDark = mode === "dark";
-  return {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: isDark ? "1px solid rgba(255,255,255,0.14)" : "1px solid rgba(15,23,42,0.12)",
-    background: isDark ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.9)",
-    color: isDark ? "#eef2ff" : "#0f172a",
-    outline: "none",
-  };
-}
+  /* ---------- Design (local + DB) ---------- */
+  const [theme, setTheme] = useState(
+    localStorage.getItem("ui_theme") || "hell"
+  );
+  const [background, setBackground] = useState(
+    localStorage.getItem("ui_background") || "soft"
+  );
+  const [accent, setAccent] = useState(
+    localStorage.getItem("ui_accent") || "green"
+  );
 
-/* =========================================================
-   Main Page
-   ========================================================= */
-export default function DashboardPage() {
-  const supabase = useMemo(() => getSupabaseClient(), []);
+  /* ---------- Filters ---------- */
+  const [filterAreaId, setFilterAreaId] = useState("");
+  const [filterDueBucket, setFilterDueBucket] = useState("heute");
+  const [search, setSearch] = useState("");
 
-  // Auth
-  const [user, setUser] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [authMode, setAuthMode] = useState("login"); // login | register
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-
-  // Settings (nie null!)
-  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
-  const [settingsSaving, setSettingsSaving] = useState(false);
-
-  // App
-  const [activeTab, setActiveTab] = useState("board"); // board | list | calendar | timeline | areas | guide | settings
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState("");
-
-  // Data
+  /* ---------- Data ---------- */
   const [areas, setAreas] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [calendarItems, setCalendarItems] = useState([]);
+  const [guides, setGuides] = useState([]);
+  const [subtasks, setSubtasks] = useState([]);
 
-  // Filters
-  const [areaFilter, setAreaFilter] = useState("");
-  const [bucketFilter, setBucketFilter] = useState("Heute"); // Heute | Diese Woche | Jahr | Alle
-  const [search, setSearch] = useState("");
-
-  // Create task
+  /* ---------- Create Task ---------- */
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
-  const [newDueAt, setNewDueAt] = useState(() => fmtDateTimeLocal(new Date()));
-  const [newStatus, setNewStatus] = useState("todo");
-  const [newDueBucket, setNewDueBucket] = useState("Heute");
-  const [newPeriod, setNewPeriod] = useState("Heute"); // legacy display
+  const [newDueAtLocal, setNewDueAtLocal] = useState(makeLocalDateTimeValue());
+  const [newDueBucket, setNewDueBucket] = useState("heute");
+  const [newStatus, setNewStatus] = useState("open"); // open | done
+  const [newGuideId, setNewGuideId] = useState("");
 
-  // Subtasks
-  const [subtasks, setSubtasks] = useState([]);
-  const [subtaskTaskId, setSubtaskTaskId] = useState("");
-  const [subtaskTitle, setSubtaskTitle] = useState("");
-
-  // Areas create
+  /* ---------- Areas ---------- */
   const [newAreaName, setNewAreaName] = useState("");
 
-  // Anleitung
-  const [guides, setGuides] = useState([]);
-  const [guideFiles, setGuideFiles] = useState([]);
-  const [newGuideTitle, setNewGuideTitle] = useState("");
-  const [newGuideBody, setNewGuideBody] = useState("");
+  /* ---------- Guides ---------- */
+  const [guideTitle, setGuideTitle] = useState("");
+  const [guideContent, setGuideContent] = useState("");
   const [selectedGuideId, setSelectedGuideId] = useState("");
-  const fileInputRef = useRef(null);
+  const [uploadingGuideFile, setUploadingGuideFile] = useState(false);
+  const [guideFiles, setGuideFiles] = useState([]);
 
-  /* ---------------- Auth bootstrap ---------------- */
+  /* ---------- Subtasks ---------- */
+  const [subtaskTaskId, setSubtaskTaskId] = useState("");
+  const [subtaskTitle, setSubtaskTitle] = useState("");
+  const [subtaskGuideId, setSubtaskGuideId] = useState("");
+
+  /* ---------------- Effects: Auth ---------------- */
   useEffect(() => {
     let mounted = true;
-    const run = async () => {
-      setAuthLoading(true);
 
-      if (!supabase) {
-        setAuthLoading(false);
-        setErrorMsg("Supabase ENV fehlt (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY).");
-        return;
-      }
-
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
+    supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      setUser(session?.user || null);
-      setAuthLoading(false);
+      setSession(data.session || null);
+    });
 
-      // subscribe
-      const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
-        setUser(sess?.user || null);
-      });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession || null);
+    });
 
-      return () => sub?.subscription?.unsubscribe?.();
-    };
-
-    const cleanupPromise = run();
     return () => {
       mounted = false;
-      // cleanup handled by subscription unsubscribe
-      void cleanupPromise;
+      sub?.subscription?.unsubscribe?.();
     };
-  }, [supabase]);
+  }, []);
 
-  /* ---------------- Load user settings ---------------- */
+  /* ---------------- Effects: Persist Design Local ---------------- */
   useEffect(() => {
-    if (!supabase || !user) return;
+    localStorage.setItem("ui_theme", theme);
+  }, [theme]);
+  useEffect(() => {
+    localStorage.setItem("ui_background", background);
+  }, [background]);
+  useEffect(() => {
+    localStorage.setItem("ui_accent", accent);
+  }, [accent]);
 
-    const loadSettings = async () => {
-      const { data, error } = await supabase
-        .from("user_settings")
-        .select("*")
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      if (error) {
-        console.warn("Settings load error:", error);
-        setSettings(DEFAULT_SETTINGS);
-        return;
-      }
-
-      if (!data) {
-        setSettings(DEFAULT_SETTINGS);
-        return;
-      }
-
-      // Merge (wichtig!)
-      setSettings({ ...DEFAULT_SETTINGS, ...data });
-    };
-
-    loadSettings();
-  }, [supabase, user]);
-
-  /* ---------------- Save user settings ---------------- */
-  const saveSettings = async (partial) => {
-    if (!supabase || !user) return;
-
-    const next = { ...settings, ...partial };
-    setSettings(next);
-    setSettingsSaving(true);
-    setErrorMsg("");
-
-    // Desktop Notification permission (optional)
-    if (partial?.notifications_desktop && typeof window !== "undefined" && "Notification" in window) {
-      try {
-        if (Notification.permission === "default") {
-          await Notification.requestPermission();
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    const payload = { ...next, user_id: user.id };
-
-    const { error } = await supabase.from("user_settings").upsert(payload, { onConflict: "user_id" });
-
-    setSettingsSaving(false);
-    if (error) {
-      console.warn("Settings save error:", error);
-      setErrorMsg(error.message || "Einstellungen konnten nicht gespeichert werden.");
-    }
-  };
-
-  /* ---------------- Load core data ---------------- */
-  const reloadAll = async () => {
-    if (!supabase || !user) return;
-
-    setLoading(true);
-    setErrorMsg("");
-
-    try {
-      // Areas
-      const { data: a, error: aErr } = await supabase
-        .from("areas")
-        .select("*")
-        .order("name", { ascending: true });
-
-      if (aErr) throw aErr;
-      setAreas(a || []);
-
-      // Tasks
-      const { data: t, error: tErr } = await supabase
-        .from("tasks")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (tErr) throw tErr;
-      setTasks(t || []);
-
-      // Subtasks
-      const { data: st, error: stErr } = await supabase
-        .from("subtasks")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      // subtasks table may not exist yet -> don't crash
-      if (!stErr) setSubtasks(st || []);
-
-      // Calendar source: prefer view v_tasks_calendar if exists; else tasks_calendar
-      let calData = [];
-      let calErr = null;
-
-      const tryView = await supabase.from("v_tasks_calendar").select("*").order("due_at", { ascending: true });
-      if (!tryView.error) {
-        calData = tryView.data || [];
-      } else {
-        const tryTable = await supabase.from("tasks_calendar").select("*").order("due_at", { ascending: true });
-        if (tryTable.error) calErr = tryTable.error;
-        else calData = tryTable.data || [];
-      }
-
-      if (calErr) {
-        // not fatal
-        console.warn("Calendar load error:", calErr);
-        setCalendarItems([]);
-      } else {
-        setCalendarItems(calData);
-      }
-
-      // Guides
-      const { data: g, error: gErr } = await supabase
-        .from("guides")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (!gErr) setGuides(g || []);
-
-      const { data: gf, error: gfErr } = await supabase
-        .from("guide_files")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (!gfErr) setGuideFiles(gf || []);
-    } catch (e) {
-      setErrorMsg(e?.message || "Fehler beim Laden.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  /* ---------------- Effects: Load all data when logged in ---------------- */
   useEffect(() => {
     if (!user) return;
-    reloadAll();
+    (async () => {
+      setGlobalError("");
+      await Promise.all([
+        loadAreas(),
+        loadGuides(),
+        loadTasks(),
+        loadCalendar(),
+        loadSubtasks(),
+        loadUserSettings(),
+      ]);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, supabase]);
+  }, [user]);
 
-  /* ---------------- Auth actions ---------------- */
-  const doLogin = async () => {
-    if (!supabase) return;
-    setErrorMsg("");
-    setAuthLoading(true);
+  /* ---------------- Effects: reload tasks when filters change ---------------- */
+  useEffect(() => {
+    if (!user) return;
+    loadTasks();
+    loadCalendar(); // calendar uses due_at; keep in sync
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterAreaId, filterDueBucket, search]);
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+  /* ---------------- Data Loaders ---------------- */
+  const loadAreas = async () => {
+    setGlobalError("");
+    const { data, error } = await supabase
+      .from("areas")
+      .select("*")
+      .order("name", { ascending: true });
 
-    setAuthLoading(false);
-    if (error) setErrorMsg(error.message);
+    if (error) {
+      setGlobalError(`Bereiche laden fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    setAreas(data || []);
+    // set default area for create form if empty
+    if (!newAreaId && (data || []).length > 0) setNewAreaId(data[0].id);
   };
 
-  const doRegister = async () => {
-    if (!supabase) return;
-    setErrorMsg("");
-    setAuthLoading(true);
+  const loadTasks = async () => {
+    setGlobalError("");
 
-    const { error } = await supabase.auth.signUp({ email, password });
+    // base query
+    let query = supabase
+      .from("tasks")
+      .select(
+        "id,title,status,area_id,due_at,due_day,is_series,repeat_enabled,guide_id,created_at,areas(name)"
+      )
+      .order("due_at", { ascending: true, nullsFirst: false })
+      .order("created_at", { ascending: false });
 
-    setAuthLoading(false);
-    if (error) setErrorMsg(error.message);
+    // area filter
+    if (filterAreaId) query = query.eq("area_id", filterAreaId);
+
+    // due bucket filter (uses due_at)
+    if (filterDueBucket === "heute") {
+      query = query
+        .gte("due_at", startOfToday().toISOString())
+        .lte("due_at", endOfToday().toISOString());
+    }
+    if (filterDueBucket === "diese_woche") {
+      query = query
+        .gte("due_at", startOfWeek().toISOString())
+        .lte("due_at", endOfWeek().toISOString());
+    }
+
+    // search
+    if (search?.trim()) query = query.ilike("title", `%${search.trim()}%`);
+
+    const { data, error } = await query;
+
+    if (error) {
+      setGlobalError(`Aufgaben laden fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    setTasks(data || []);
   };
 
-  const doLogout = async () => {
-    if (!supabase) return;
-    setErrorMsg("");
-    await supabase.auth.signOut();
-    setActiveTab("board");
+  const loadCalendar = async () => {
+    setGlobalError("");
+
+    // simplest: calendar reads from tasks (due_at not null)
+    let query = supabase
+      .from("tasks")
+      .select("id,title,area_id,due_at,status,areas(name)")
+      .not("due_at", "is", null)
+      .order("due_at", { ascending: true });
+
+    if (filterAreaId) query = query.eq("area_id", filterAreaId);
+
+    // same bucket filter, so calendar matches left filter
+    if (filterDueBucket === "heute") {
+      query = query
+        .gte("due_at", startOfToday().toISOString())
+        .lte("due_at", endOfToday().toISOString());
+    }
+    if (filterDueBucket === "diese_woche") {
+      query = query
+        .gte("due_at", startOfWeek().toISOString())
+        .lte("due_at", endOfWeek().toISOString());
+    }
+
+    if (search?.trim()) query = query.ilike("title", `%${search.trim()}%`);
+
+    const { data, error } = await query;
+
+    if (error) {
+      setGlobalError(`Kalender laden fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    setCalendarItems(data || []);
   };
 
-  /* ---------------- Data actions ---------------- */
+  const loadGuides = async () => {
+    setGlobalError("");
+    const { data, error } = await supabase
+      .from("guides")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setGlobalError(`Anleitungen laden fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    setGuides(data || []);
+  };
+
+  const loadGuideFiles = async (gid) => {
+    if (!gid) {
+      setGuideFiles([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from("guide_files")
+      .select("*")
+      .eq("guide_id", gid)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setGlobalError(`Guide-Dateien laden fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    setGuideFiles(data || []);
+  };
+
+  const loadSubtasks = async () => {
+    setGlobalError("");
+    const { data, error } = await supabase
+      .from("subtasks")
+      .select("id,title,task_id,guide_id,done,created_at,tasks(title)")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setGlobalError(`Unteraufgaben laden fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    setSubtasks(data || []);
+  };
+
+  const loadUserSettings = async () => {
+    // safe approach: select first, then apply; no upsert needed
+    const { data, error } = await supabase
+      .from("user_settings")
+      .select("*")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (error) return; // keep local settings
+
+    if (data) {
+      if (data.theme) setTheme(data.theme);
+      if (data.background) setBackground(data.background);
+      if (data.accent) setAccent(data.accent);
+    }
+  };
+
+  /* ---------------- Mutations ---------------- */
   const createTask = async () => {
-    if (!supabase || !user) return;
-    setErrorMsg("");
+    setGlobalError("");
+    const title = newTitle.trim();
+    if (!title) return;
 
-    const title = (newTitle || "").trim();
-    if (!title) return setErrorMsg("Bitte Titel eingeben.");
+    // determine due_at from bucket
+    let dueAtIso = toISO(newDueAtLocal);
 
-    if (!newAreaId) return setErrorMsg("Bitte Bereich wählen.");
-
-    const dueAt = newDueAt ? new Date(newDueAt).toISOString() : null;
-
-    // Status muss zu CHECK (todo|done) passen
-    const status = STATUS_VALUES.includes(newStatus) ? newStatus : "todo";
+    // if bucket is "Heute" but date not set, keep now
+    if (!dueAtIso) dueAtIso = new Date().toISOString();
 
     const payload = {
       title,
-      area_id: newAreaId,
-      status,
-      due_at: dueAt,
-      due_bucket: newDueBucket || newPeriod || "Heute",
-      period: newPeriod || newDueBucket || "Heute",
-      created_by: user.id,
+      area_id: newAreaId || null,
+      due_at: dueAtIso,
+      status: newStatus === "done" ? "done" : "open",
+      user_id: user.id,
+      guide_id: newGuideId || null,
+      // keep due_day for your views if used
+      due_day: dueAtIso ? new Date(dueAtIso).toISOString().slice(0, 10) : null,
     };
 
-    const { error } = await supabase.from("tasks").insert(payload);
+    const { error } = await supabase.from("tasks").insert([payload]);
 
     if (error) {
-      setErrorMsg(error.message);
+      setGlobalError(`Aufgabe anlegen fehlgeschlagen: ${error.message}`);
       return;
     }
 
     setNewTitle("");
-    await reloadAll();
+    await Promise.all([loadTasks(), loadCalendar()]);
   };
 
-  const updateTaskStatus = async (taskId, nextStatus) => {
-    if (!supabase || !user) return;
-    setErrorMsg("");
-
-    const status = STATUS_VALUES.includes(nextStatus) ? nextStatus : "todo";
-
-    const { error } = await supabase.from("tasks").update({ status }).eq("id", taskId);
+  const setTaskStatus = async (taskId, status) => {
+    setGlobalError("");
+    const next = status === "done" ? "done" : "open";
+    const { error } = await supabase
+      .from("tasks")
+      .update({ status: next })
+      .eq("id", taskId);
 
     if (error) {
-      setErrorMsg(error.message);
+      setGlobalError(`Status ändern fehlgeschlagen: ${error.message}`);
       return;
     }
-
-    await reloadAll();
+    await Promise.all([loadTasks(), loadCalendar()]);
   };
 
   const deleteTask = async (taskId) => {
-    if (!supabase || !user) return;
-    setErrorMsg("");
-
-    // Delete subtasks first (if table exists)
-    await supabase.from("subtasks").delete().eq("task_id", taskId);
+    setGlobalError("");
     const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-
     if (error) {
-      setErrorMsg(error.message);
+      setGlobalError(`Aufgabe löschen fehlgeschlagen: ${error.message}`);
       return;
     }
-
-    await reloadAll();
-  };
-
-  const createSubtask = async () => {
-    if (!supabase || !user) return;
-    setErrorMsg("");
-
-    const t = (subtaskTitle || "").trim();
-    if (!t) return setErrorMsg("Bitte Unteraufgabe eingeben.");
-    if (!subtaskTaskId) return setErrorMsg("Bitte Hauptaufgabe wählen.");
-
-    const payload = { task_id: subtaskTaskId, title: t, created_by: user.id };
-
-    const { error } = await supabase.from("subtasks").insert(payload);
-    if (error) {
-      setErrorMsg(error.message);
-      return;
-    }
-
-    setSubtaskTitle("");
-    await reloadAll();
+    await Promise.all([loadTasks(), loadCalendar(), loadSubtasks()]);
   };
 
   const createArea = async () => {
-    if (!supabase || !user) return;
-    setErrorMsg("");
+    setGlobalError("");
+    const name = newAreaName.trim();
+    if (!name) return;
 
-    const name = (newAreaName || "").trim();
-    if (!name) return setErrorMsg("Bitte Bereichname eingeben.");
-
-    const { error } = await supabase.from("areas").insert({ name });
-
+    const { error } = await supabase.from("areas").insert([{ name }]);
     if (error) {
-      setErrorMsg(error.message);
+      setGlobalError(`Bereich anlegen fehlgeschlagen: ${error.message}`);
       return;
     }
-
     setNewAreaName("");
-    await reloadAll();
+    await loadAreas();
   };
 
   const deleteArea = async (areaId) => {
-    if (!supabase || !user) return;
-    setErrorMsg("");
+    setGlobalError("");
+
+    // protect: if tasks exist -> block
+    const { count, error: cntErr } = await supabase
+      .from("tasks")
+      .select("id", { count: "exact", head: true })
+      .eq("area_id", areaId);
+
+    if (cntErr) {
+      setGlobalError(`Bereich prüfen fehlgeschlagen: ${cntErr.message}`);
+      return;
+    }
+    if ((count || 0) > 0) {
+      setGlobalError("Bereich kann nicht gelöscht werden, solange Aufgaben darin existieren.");
+      return;
+    }
 
     const { error } = await supabase.from("areas").delete().eq("id", areaId);
-
     if (error) {
-      setErrorMsg(error.message);
+      setGlobalError(`Bereich löschen fehlgeschlagen: ${error.message}`);
       return;
     }
-
-    await reloadAll();
+    if (filterAreaId === areaId) setFilterAreaId("");
+    await loadAreas();
   };
 
-  /* ---------------- Guide actions ---------------- */
-  const createGuide = async () => {
-    if (!supabase || !user) return;
-    setErrorMsg("");
+  const saveGuide = async () => {
+    setGlobalError("");
+    const title = guideTitle.trim();
+    if (!title) return;
 
-    const title = (newGuideTitle || "").trim();
-    if (!title) return setErrorMsg("Bitte Titel für Anleitung eingeben.");
+    const payload = {
+      title,
+      content: guideContent || null,
+      user_id: user.id,
+    };
 
-    const body = (newGuideBody || "").trim();
-
-    const { data, error } = await supabase
-      .from("guides")
-      .insert({ title, body, created_by: user.id })
-      .select("*")
-      .single();
+    const { data, error } = await supabase.from("guides").insert([payload]).select("*").single();
 
     if (error) {
-      setErrorMsg(error.message);
+      setGlobalError(`Anleitung speichern fehlgeschlagen: ${error.message}`);
       return;
     }
 
-    setNewGuideTitle("");
-    setNewGuideBody("");
-    setSelectedGuideId(data?.id || "");
-    await reloadAll();
+    setGuideTitle("");
+    setGuideContent("");
+    await loadGuides();
+
+    // auto select new guide
+    if (data?.id) {
+      setSelectedGuideId(data.id);
+      await loadGuideFiles(data.id);
+    }
+  };
+
+  const onSelectGuide = async (gid) => {
+    setSelectedGuideId(gid);
+    await loadGuideFiles(gid);
   };
 
   const uploadGuideFile = async (file) => {
-    if (!supabase || !user) return;
-    setErrorMsg("");
+    if (!file || !selectedGuideId) return;
+    setGlobalError("");
+    setUploadingGuideFile(true);
+    try {
+      // store file in bucket: guides
+      const ext = file.name.split(".").pop();
+      const safeName = file.name.replace(/[^\w.\-]+/g, "_");
+      const path = `${selectedGuideId}/${Date.now()}_${safeName}`;
 
-    if (!selectedGuideId) return setErrorMsg("Bitte zuerst eine Anleitung auswählen oder erstellen.");
+      const { error: upErr } = await supabase.storage
+        .from("guides")
+        .upload(path, file, { upsert: false });
 
-    const safeName = file.name.replace(/[^\w.\-()+ ]+/g, "_");
-    const path = `${user.id}/${selectedGuideId}/${Date.now()}-${safeName}`;
+      if (upErr) {
+        setGlobalError(`Upload fehlgeschlagen: ${upErr.message}`);
+        return;
+      }
 
-    const { error: upErr } = await supabase.storage.from(GUIDE_BUCKET).upload(path, file, {
-      cacheControl: "3600",
-      upsert: false,
-    });
+      // record in guide_files
+      const { error: dbErr } = await supabase.from("guide_files").insert([
+        {
+          guide_id: selectedGuideId,
+          path,
+          filename: file.name,
+          mime_type: file.type || null,
+          user_id: user.id,
+        },
+      ]);
 
-    if (upErr) {
-      setErrorMsg(upErr.message);
-      return;
+      if (dbErr) {
+        setGlobalError(`Datei speichern fehlgeschlagen: ${dbErr.message}`);
+        return;
+      }
+
+      await loadGuideFiles(selectedGuideId);
+    } finally {
+      setUploadingGuideFile(false);
     }
-
-    // public url (bucket can be private too; then you'd use signed urls later)
-    const { data: pub } = supabase.storage.from(GUIDE_BUCKET).getPublicUrl(path);
-
-    const { error: metaErr } = await supabase.from("guide_files").insert({
-      guide_id: selectedGuideId,
-      file_name: file.name,
-      file_path: path,
-      public_url: pub?.publicUrl || null,
-      created_by: user.id,
-    });
-
-    if (metaErr) {
-      setErrorMsg(metaErr.message);
-      return;
-    }
-
-    await reloadAll();
   };
 
-  const guideFilesForSelected = useMemo(() => {
-    if (!selectedGuideId) return [];
-    return (guideFiles || []).filter((f) => f.guide_id === selectedGuideId);
-  }, [guideFiles, selectedGuideId]);
+  const getGuideFileUrl = (path) => {
+    if (!path) return "";
+    const { data } = supabase.storage.from("guides").getPublicUrl(path);
+    return data?.publicUrl || "";
+  };
 
-  /* ---------------- Derived lists ---------------- */
-  const areaNameById = useMemo(() => {
-    const m = new Map();
-    (areas || []).forEach((a) => m.set(a.id, a.name));
-    return m;
-  }, [areas]);
+  const deleteGuideFile = async (fileRow) => {
+    if (!fileRow?.id) return;
+    setGlobalError("");
 
-  const filteredTasks = useMemo(() => {
-    let list = [...(tasks || [])];
+    const path = fileRow.path;
 
-    if (areaFilter) list = list.filter((t) => t.area_id === areaFilter);
-    if (bucketFilter && bucketFilter !== "Alle") list = list.filter((t) => (t.due_bucket || t.period) === bucketFilter);
-
-    if (search.trim()) {
-      const s = search.trim().toLowerCase();
-      list = list.filter((t) => (t.title || "").toLowerCase().includes(s));
+    // remove storage file first (best effort)
+    if (path) {
+      await supabase.storage.from("guides").remove([path]);
     }
 
-    return list;
-  }, [tasks, areaFilter, bucketFilter, search]);
+    const { error } = await supabase.from("guide_files").delete().eq("id", fileRow.id);
+    if (error) {
+      setGlobalError(`Datei löschen fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    await loadGuideFiles(selectedGuideId);
+  };
 
-  const boardTodo = useMemo(() => filteredTasks.filter((t) => t.status === "todo"), [filteredTasks]);
-  const boardDone = useMemo(() => filteredTasks.filter((t) => t.status === "done"), [filteredTasks]);
+  const createSubtask = async () => {
+    setGlobalError("");
+    const t = subtaskTitle.trim();
+    if (!t || !subtaskTaskId) return;
 
-  const stats = useMemo(() => {
-    const now = new Date();
-    const t0 = startOfToday();
-    const t1 = endOfToday();
+    const payload = {
+      task_id: subtaskTaskId,
+      title: t,
+      guide_id: subtaskGuideId || null,
+      done: false,
+      user_id: user.id,
+    };
 
-    const today = (tasks || []).filter((t) => {
-      if (!t.due_at) return false;
-      const d = new Date(t.due_at);
-      return d >= t0 && d <= t1;
-    });
+    const { error } = await supabase.from("subtasks").insert([payload]);
+    if (error) {
+      setGlobalError(`Unteraufgabe anlegen fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    setSubtaskTitle("");
+    await loadSubtasks();
+  };
 
-    const week = (tasks || []).filter((t) => {
-      if (!t.due_at) return false;
-      const d = new Date(t.due_at);
-      return isSameWeek(d, now);
-    });
+  const toggleSubtaskDone = async (sid, done) => {
+    setGlobalError("");
+    const { error } = await supabase.from("subtasks").update({ done: !!done }).eq("id", sid);
+    if (error) {
+      setGlobalError(`Unteraufgabe Status ändern fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    await loadSubtasks();
+  };
 
-    const open = (tasks || []).filter((t) => t.status === "todo");
-    return { today: today.length, week: week.length, open: open.length };
+  const deleteSubtask = async (sid) => {
+    setGlobalError("");
+    const { error } = await supabase.from("subtasks").delete().eq("id", sid);
+    if (error) {
+      setGlobalError(`Unteraufgabe löschen fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    await loadSubtasks();
+  };
+
+  const saveUserSettings = async () => {
+    setGlobalError("");
+    // safe approach: select -> insert or update (no upsert / ON CONFLICT)
+    const { data, error } = await supabase
+      .from("user_settings")
+      .select("*")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (error) {
+      setGlobalError(`Einstellungen lesen fehlgeschlagen: ${error.message}`);
+      return;
+    }
+
+    const payload = {
+      user_id: user.id,
+      theme,
+      background,
+      accent,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (data?.user_id) {
+      const { error: upErr } = await supabase
+        .from("user_settings")
+        .update(payload)
+        .eq("user_id", user.id);
+      if (upErr) {
+        setGlobalError(`Einstellungen speichern fehlgeschlagen: ${upErr.message}`);
+        return;
+      }
+    } else {
+      const { error: insErr } = await supabase.from("user_settings").insert([payload]);
+      if (insErr) {
+        setGlobalError(`Einstellungen speichern fehlgeschlagen: ${insErr.message}`);
+        return;
+      }
+    }
+  };
+
+  /* ---------------- Auth UI Actions ---------------- */
+  const signOut = async () => {
+    setGlobalError("");
+    await supabase.auth.signOut();
+  };
+
+  /* ---------------- Derived ---------------- */
+  const accentColor = useMemo(() => {
+    // simple mapping
+    switch (accent) {
+      case "blue":
+        return "#2563eb";
+      case "orange":
+        return "#f97316";
+      case "purple":
+        return "#7c3aed";
+      case "gray":
+        return "#374151";
+      case "green":
+      default:
+        return "#0a7a1e";
+    }
+  }, [accent]);
+
+  const ui = useMemo(() => {
+    const isDark = theme === "dunkel";
+
+    const bg = (() => {
+      if (background === "clear") return isDark ? "#0b1220" : "#f6f7fb";
+      if (background === "neutral") return isDark ? "#0f172a" : "#f2f4f7";
+      return isDark ? "#0c1526" : "#eef2ff"; // soft
+    })();
+
+    const card = isDark ? "#0f1b33" : "#ffffff";
+    const text = isDark ? "#e5e7eb" : "#111827";
+    const sub = isDark ? "#9ca3af" : "#6b7280";
+    const border = isDark ? "rgba(255,255,255,0.10)" : "rgba(17,24,39,0.10)";
+
+    return { isDark, bg, card, text, sub, border };
+  }, [theme, background]);
+
+  const counts = useMemo(() => {
+    const todayFrom = startOfToday().toISOString();
+    const todayTo = endOfToday().toISOString();
+    const weekFrom = startOfWeek().toISOString();
+    const weekTo = endOfWeek().toISOString();
+
+    const inRange = (t, from, to) => t?.due_at && t.due_at >= from && t.due_at <= to;
+
+    const tasksToday = tasks.filter((t) => inRange(t, todayFrom, todayTo));
+    const tasksWeek = tasks.filter((t) => inRange(t, weekFrom, weekTo));
+    const open = tasks.filter((t) => (t.status || "open") !== "done");
+
+    return {
+      today: tasksToday.length,
+      week: tasksWeek.length,
+      open: open.length,
+    };
   }, [tasks]);
 
-  const calendarGrouped = useMemo(() => {
-    // group by date (DD.MM.YYYY)
-    const items = [...(calendarItems || [])];
+  const boardOpen = useMemo(() => tasks.filter((t) => (t.status || "open") !== "done"), [tasks]);
+  const boardDone = useMemo(() => tasks.filter((t) => (t.status || "open") === "done"), [tasks]);
 
-    // apply filters
-    const filtered = items.filter((it) => {
-      if (areaFilter && it.area_id !== areaFilter) return false;
-      if (bucketFilter && bucketFilter !== "Alle" && (it.due_bucket || it.period) !== bucketFilter) return false;
-      if (search.trim()) {
-        const s = search.trim().toLowerCase();
-        if (!String(it.title || "").toLowerCase().includes(s)) return false;
-      }
-      return true;
-    });
-
-    const groups = new Map();
-    filtered.forEach((it) => {
-      const key = it.due_at ? fmtDateDE(it.due_at).split(",")[0] : "Ohne Datum";
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(it);
-    });
-
-    // sort groups by date if possible
-    const entries = Array.from(groups.entries()).map(([k, v]) => ({ dateLabel: k, items: v }));
-    return entries;
-  }, [calendarItems, areaFilter, bucketFilter, search]);
-
-  const timelineItems = useMemo(() => {
-    // minimal: sort by due_at asc, show filtered tasks
-    const list = [...filteredTasks];
-    list.sort((a, b) => {
-      const da = a.due_at ? new Date(a.due_at).getTime() : 0;
-      const db = b.due_at ? new Date(b.due_at).getTime() : 0;
-      return da - db;
-    });
-    return list.slice(0, 40);
-  }, [filteredTasks]);
-
-  /* ---------------- Notification (optional, minimal) ---------------- */
-  useEffect(() => {
-    if (!settings?.notifications_enabled) return;
-    if (!settings?.notifications_desktop) return;
-    if (typeof window === "undefined") return;
-    if (!("Notification" in window)) return;
-
-    // Example: notify once when there are overdue todos (very minimal)
-    const overdue = (tasks || []).some((t) => t.status === "todo" && t.due_at && new Date(t.due_at) < new Date());
-    if (!overdue) return;
-
-    // avoid spamming
-    const key = "dash_notified_overdue_v1";
-    const already = localStorage.getItem(key);
-    if (already === "1") return;
-
-    if (Notification.permission === "granted") {
-      try {
-        // eslint-disable-next-line no-new
-        new Notification("Armaturenbrett", { body: "Es gibt überfällige Aufgaben." });
-        localStorage.setItem(key, "1");
-      } catch {
-        // ignore
-      }
+  const subtasksByTask = useMemo(() => {
+    const map = new Map();
+    for (const s of subtasks) {
+      const key = s.task_id;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(s);
     }
-  }, [settings, tasks]);
+    return map;
+  }, [subtasks]);
 
-  /* =========================================================
-     UI: Auth screen
-     ========================================================= */
-  if (!supabase) {
-    return (
-      <div style={{ ...baseFont, padding: 24 }}>
-        <div style={{ maxWidth: 720 }}>
-          <h2>Konfiguration fehlt</h2>
-          <p>
-            Bitte in Vercel (Project Settings → Environment Variables) setzen:
-            <br />
-            NEXT_PUBLIC_SUPABASE_URL
-            <br />
-            NEXT_PUBLIC_SUPABASE_ANON_KEY
-          </p>
-        </div>
-      </div>
-    );
-  }
+  /* ---------------- Styles ---------------- */
+  const styles = {
+    page: {
+      minHeight: "100vh",
+      background: ui.bg,
+      color: ui.text,
+      fontFamily:
+        '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif',
+    },
+    container: { maxWidth: 1280, margin: "0 auto", padding: 18 },
+    grid: {
+      display: "grid",
+      gridTemplateColumns: "320px 1fr",
+      gap: 18,
+      alignItems: "start",
+    },
+    card: {
+      background: ui.card,
+      border: `1px solid ${ui.border}`,
+      borderRadius: 16,
+      padding: 16,
+      boxShadow: ui.isDark ? "none" : "0 10px 30px rgba(0,0,0,0.06)",
+    },
+    h: { margin: 0, fontSize: 18, fontWeight: 600 },
+    small: { color: ui.sub, fontSize: 13 },
+    btn: {
+      background: accentColor,
+      color: "#fff",
+      border: "none",
+      padding: "10px 14px",
+      borderRadius: 12,
+      cursor: "pointer",
+      fontWeight: 600,
+      whiteSpace: "nowrap",
+    },
+    btnGhost: {
+      background: "transparent",
+      color: ui.text,
+      border: `1px solid ${ui.border}`,
+      padding: "10px 14px",
+      borderRadius: 12,
+      cursor: "pointer",
+      fontWeight: 600,
+      whiteSpace: "nowrap",
+    },
+    input: {
+      width: "100%",
+      padding: "10px 12px",
+      borderRadius: 12,
+      border: `1px solid ${ui.border}`,
+      background: ui.isDark ? "#0b1427" : "#ffffff",
+      color: ui.text,
+      outline: "none",
+    },
+    select: {
+      width: "100%",
+      padding: "10px 12px",
+      borderRadius: 12,
+      border: `1px solid ${ui.border}`,
+      background: ui.isDark ? "#0b1427" : "#ffffff",
+      color: ui.text,
+      outline: "none",
+    },
+    tabs: { display: "flex", gap: 10, flexWrap: "wrap" },
+    tab: (active) => ({
+      padding: "8px 12px",
+      borderRadius: 999,
+      border: `1px solid ${ui.border}`,
+      background: active ? accentColor : ui.card,
+      color: active ? "#fff" : ui.text,
+      cursor: "pointer",
+      fontWeight: 600,
+      fontSize: 13,
+    }),
+    row: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+    pill: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "6px 10px",
+      borderRadius: 999,
+      border: `1px solid ${ui.border}`,
+      fontSize: 13,
+      color: ui.sub,
+    },
+    danger: {
+      background: "transparent",
+      color: "#ef4444",
+      border: "1px solid rgba(239,68,68,0.35)",
+      padding: "8px 12px",
+      borderRadius: 12,
+      cursor: "pointer",
+      fontWeight: 600,
+    },
+    hr: { border: 0, borderTop: `1px solid ${ui.border}`, margin: "14px 0" },
+  };
 
-  if (authLoading) {
-    return (
-      <div style={{ ...backgroundCSS(settings), ...baseFont, padding: 24 }}>
-        <div style={{ maxWidth: 520, margin: "0 auto", paddingTop: 80 }}>
-          <div style={{ ...cardStyle(settings), padding: 22 }}>Lade…</div>
-        </div>
-      </div>
-    );
-  }
-
+  /* ---------------- Login Screen ---------------- */
   if (!user) {
     return (
-      <div style={{ ...backgroundCSS(settings), ...baseFont, padding: 24 }}>
-        <div style={{ maxWidth: 560, margin: "0 auto", paddingTop: 80 }}>
-          <div style={{ ...cardStyle(settings), padding: 22 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-              <div>
-                <div style={{ fontSize: 22, marginBottom: 6 }}>Anmeldung</div>
-                <div style={{ opacity: 0.75, fontSize: 13 }}>Armaturenbrett</div>
+      <div style={styles.page}>
+        <div style={{ ...styles.container, maxWidth: 760, paddingTop: 70 }}>
+          <div style={{ ...styles.card, padding: 22 }}>
+            <div style={styles.row}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>
+                  Anmeldung
+                </div>
+                <div style={styles.small}>Armaturenbrett</div>
               </div>
-              <div style={{ fontSize: 12, opacity: 0.7 }}>Design ist bereits wählbar</div>
+              <div style={styles.small}>Design ist bereits wählbar</div>
             </div>
 
-            {errorMsg ? (
-              <div
-                style={{
-                  marginTop: 12,
-                  padding: 12,
-                  borderRadius: 12,
-                  border: "1px solid rgba(239,68,68,0.35)",
-                  background: "rgba(239,68,68,0.12)",
-                  color: settings?.theme_mode === "dark" ? "#fecaca" : "#991b1b",
-                }}
-              >
-                {errorMsg}
-              </div>
-            ) : null}
+            <LoginBox
+              supabase={supabase}
+              styles={styles}
+              accentColor={accentColor}
+              theme={theme}
+              setTheme={setTheme}
+              background={background}
+              setBackground={setBackground}
+              accent={accent}
+              setAccent={setAccent}
+            />
 
-            <div style={{ marginTop: 14 }}>
-              <div style={{ display: "grid", gap: 10 }}>
-                <input
-                  style={inputStyle(settings)}
-                  placeholder="E-Mail"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  autoComplete="email"
-                />
-                <input
-                  style={inputStyle(settings)}
-                  placeholder="Passwort"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  autoComplete={authMode === "login" ? "current-password" : "new-password"}
-                />
-              </div>
-
-              <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-                {authMode === "login" ? (
-                  <>
-                    <button style={buttonStyle(settings, "primary")} onClick={doLogin}>
-                      Anmelden
-                    </button>
-                    <button style={buttonStyle(settings, "secondary")} onClick={() => setAuthMode("register")}>
-                      Neues Konto erstellen
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button style={buttonStyle(settings, "primary")} onClick={doRegister}>
-                      Registrieren
-                    </button>
-                    <button style={buttonStyle(settings, "secondary")} onClick={() => setAuthMode("login")}>
-                      Zurück zur Anmeldung
-                    </button>
-                  </>
-                )}
-              </div>
-
-              <div style={{ marginTop: 18, borderTop: "1px solid rgba(15,23,42,0.10)", paddingTop: 14 }}>
-                <div style={{ fontSize: 14, marginBottom: 10 }}>Design</div>
-
-                <div style={{ display: "grid", gap: 10 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center" }}>
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>Theme</div>
-                    <select
-                      style={inputStyle(settings)}
-                      value={settings.theme_mode}
-                      onChange={(e) => saveSettings({ theme_mode: e.target.value })}
-                    >
-                      <option value="light">Hell</option>
-                      <option value="dark">Dunkel</option>
-                    </select>
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center" }}>
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>Hintergrund</div>
-                    <select
-                      style={inputStyle(settings)}
-                      value={settings.background}
-                      onChange={(e) => saveSettings({ background: e.target.value })}
-                    >
-                      <option value="standard">Standard</option>
-                      <option value="soft">Soft</option>
-                      <option value="grid">Grid</option>
-                      <option value="waves">Waves</option>
-                      <option value="clean">Clean</option>
-                      <option value="custom">Eigenes Bild (URL)</option>
-                    </select>
-                  </div>
-
-                  {settings.background === "custom" ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center" }}>
-                      <div style={{ fontSize: 12, opacity: 0.75 }}>Bild-URL</div>
-                      <input
-                        style={inputStyle(settings)}
-                        placeholder="https://…"
-                        value={settings.background_custom_url || ""}
-                        onChange={(e) => saveSettings({ background_custom_url: e.target.value })}
-                      />
-                    </div>
-                  ) : null}
-
-                  <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center" }}>
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>Akzent</div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <input
-                        type="color"
-                        value={settings.accent}
-                        onChange={(e) => saveSettings({ accent: e.target.value })}
-                        style={{ width: 52, height: 34, border: "none", background: "transparent" }}
-                      />
-                      <div style={{ fontSize: 12, opacity: 0.75 }}>{settings.accent}</div>
-                    </div>
-                  </div>
-
-                  {settingsSaving ? <div style={{ fontSize: 12, opacity: 0.7 }}>Speichere…</div> : null}
-                </div>
-              </div>
+            <div style={{ marginTop: 14, ...styles.small }}>
+              Hinweis: Nach Login werden Einstellungen zusätzlich in der DB gespeichert.
             </div>
           </div>
         </div>
@@ -976,736 +867,885 @@ export default function DashboardPage() {
     );
   }
 
-  /* =========================================================
-     UI: App
-     ========================================================= */
+  /* ---------------- App Shell ---------------- */
   return (
-    <div style={{ ...backgroundCSS(settings), ...baseFont }}>
-      {/* Header */}
-      <div
-        style={{
-          padding: "22px 24px",
-          borderBottom:
-            settings?.theme_mode === "dark"
-              ? "1px solid rgba(255,255,255,0.10)"
-              : "1px solid rgba(15,23,42,0.10)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-        }}
-      >
-        <div>
-          <div style={{ fontSize: 28 }}>Armaturenbrett</div>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>
-            Angemeldet als: {user.email}
-            <br />
-            Aktuell: {fmtDateDE(new Date().toISOString())}
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button style={buttonStyle(settings, "secondary")} onClick={reloadAll} disabled={loading}>
-            Neu laden
-          </button>
-          <button style={buttonStyle(settings, "secondary")} onClick={doLogout}>
-            Abmelden
-          </button>
-        </div>
-      </div>
-
-      {/* Layout */}
-      <div style={{ padding: 24, display: "grid", gridTemplateColumns: "320px 1fr", gap: 18, alignItems: "start" }}>
-        {/* Left column */}
-        <div style={{ display: "grid", gap: 16 }}>
-          {/* Übersicht */}
-          <div style={{ ...cardStyle(settings), padding: 16 }}>
-            <div style={{ fontSize: 16, marginBottom: 10 }}>Übersicht</div>
-            <div style={{ display: "grid", gap: 10 }}>
-              <div style={{ ...cardStyle(settings), padding: 12, background: "transparent", boxShadow: "none" }}>
-                <div style={{ fontSize: 12, opacity: 0.75 }}>Aufgaben heute</div>
-                <div style={{ fontSize: 26 }}>{stats.today}</div>
-              </div>
-              <div style={{ ...cardStyle(settings), padding: 12, background: "transparent", boxShadow: "none" }}>
-                <div style={{ fontSize: 12, opacity: 0.75 }}>Diese Woche</div>
-                <div style={{ fontSize: 26 }}>{stats.week}</div>
-              </div>
-              <div style={{ ...cardStyle(settings), padding: 12, background: "transparent", boxShadow: "none" }}>
-                <div style={{ fontSize: 12, opacity: 0.75 }}>Offen</div>
-                <div style={{ fontSize: 26 }}>{stats.open}</div>
-              </div>
-            </div>
+    <div style={styles.page}>
+      <div style={styles.container}>
+        {/* Top Tabs */}
+        <div style={{ ...styles.row, justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={styles.tabs}>
+            {TABS.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setActiveTab(t.key)}
+                style={styles.tab(activeTab === t.key)}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
 
-          {/* Navigation */}
-          <div style={{ ...cardStyle(settings), padding: 16 }}>
-            <div style={{ fontSize: 16, marginBottom: 10 }}>Navigation</div>
-            <div style={{ display: "grid", gap: 8 }}>
-              <button style={buttonStyle(settings, activeTab === "board" ? "primary" : "secondary")} onClick={() => setActiveTab("board")}>
-                Board
-              </button>
-              <button style={buttonStyle(settings, activeTab === "list" ? "primary" : "secondary")} onClick={() => setActiveTab("list")}>
-                Liste
-              </button>
-              <button style={buttonStyle(settings, activeTab === "calendar" ? "primary" : "secondary")} onClick={() => setActiveTab("calendar")}>
-                Kalender
-              </button>
-              <button style={buttonStyle(settings, activeTab === "timeline" ? "primary" : "secondary")} onClick={() => setActiveTab("timeline")}>
-                Timeline
-              </button>
-              <button style={buttonStyle(settings, activeTab === "areas" ? "primary" : "secondary")} onClick={() => setActiveTab("areas")}>
-                Bereiche
-              </button>
-              <button style={buttonStyle(settings, activeTab === "guide" ? "primary" : "secondary")} onClick={() => setActiveTab("guide")}>
-                Anleitung
-              </button>
-              <button style={buttonStyle(settings, activeTab === "settings" ? "primary" : "secondary")} onClick={() => setActiveTab("settings")}>
-                Einstellungen
-              </button>
-            </div>
-          </div>
-
-          {/* Filter */}
-          <div style={{ ...cardStyle(settings), padding: 16 }}>
-            <div style={{ fontSize: 16, marginBottom: 10 }}>Filter</div>
-            <div style={{ display: "grid", gap: 10 }}>
-              <select style={inputStyle(settings)} value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)}>
-                <option value="">Alle Bereiche</option>
-                {(areas || []).map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-
-              <select style={inputStyle(settings)} value={bucketFilter} onChange={(e) => setBucketFilter(e.target.value)}>
-                <option value="Alle">Alle Zeiträume</option>
-                <option value="Heute">Heute</option>
-                <option value="Diese Woche">Diese Woche</option>
-                <option value="Jahr">Jahr</option>
-                <option value="Serie">Serie</option>
-              </select>
-
-              <input style={inputStyle(settings)} placeholder="Suche…" value={search} onChange={(e) => setSearch(e.target.value)} />
-            </div>
+          <div style={styles.row}>
+            <span style={styles.pill}>{user.email}</span>
+            <button type="button" style={styles.btnGhost} onClick={signOut}>
+              Abmelden
+            </button>
           </div>
         </div>
 
-        {/* Right column */}
-        <div style={{ display: "grid", gap: 16 }}>
-          {/* Top Tabs row (visual) */}
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button style={pillStyle(settings, activeTab === "board")} onClick={() => setActiveTab("board")}>
-              Board
-            </button>
-            <button style={pillStyle(settings, activeTab === "list")} onClick={() => setActiveTab("list")}>
-              Liste
-            </button>
-            <button style={pillStyle(settings, activeTab === "calendar")} onClick={() => setActiveTab("calendar")}>
-              Kalender
-            </button>
-            <button style={pillStyle(settings, activeTab === "timeline")} onClick={() => setActiveTab("timeline")}>
-              Timeline
-            </button>
-            <button style={pillStyle(settings, activeTab === "areas")} onClick={() => setActiveTab("areas")}>
-              Bereiche
-            </button>
-            <button style={pillStyle(settings, activeTab === "guide")} onClick={() => setActiveTab("guide")}>
-              Anleitung
-            </button>
-            <button style={pillStyle(settings, activeTab === "settings")} onClick={() => setActiveTab("settings")}>
-              Einstellungen
-            </button>
+        {globalError ? (
+          <div
+            style={{
+              ...styles.card,
+              borderColor: "rgba(239,68,68,0.4)",
+              background: ui.isDark ? "rgba(239,68,68,0.08)" : "rgba(239,68,68,0.06)",
+              color: ui.text,
+              marginBottom: 12,
+            }}
+          >
+            {globalError}
           </div>
+        ) : null}
 
-          {/* Error banner */}
-          {errorMsg ? (
-            <div
-              style={{
-                ...cardStyle(settings),
-                padding: 14,
-                border: "1px solid rgba(239,68,68,0.35)",
-                background: settings?.theme_mode === "dark" ? "rgba(239,68,68,0.12)" : "rgba(239,68,68,0.10)",
-                color: settings?.theme_mode === "dark" ? "#fecaca" : "#991b1b",
-              }}
-            >
-              {errorMsg}
-            </div>
-          ) : null}
-
-          {/* Create Task */}
-          <div style={{ ...cardStyle(settings), padding: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
-              <div style={{ fontSize: 16 }}>Aufgabe anlegen</div>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>Kalender nutzt due_at, due_bucket ist Filter.</div>
-            </div>
-
-            <div
-              style={{
-                marginTop: 12,
-                display: "grid",
-                gridTemplateColumns: "1.4fr 0.9fr 1fr 0.7fr 0.8fr 120px",
-                gap: 10,
-                alignItems: "center",
-              }}
-            >
-              <input style={inputStyle(settings)} placeholder="Titel" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} />
-
-              <select style={inputStyle(settings)} value={newAreaId} onChange={(e) => setNewAreaId(e.target.value)}>
-                <option value="">Bereich</option>
-                {(areas || []).map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-
-              <input
-                style={inputStyle(settings)}
-                type="datetime-local"
-                value={newDueAt}
-                onChange={(e) => setNewDueAt(e.target.value)}
-              />
-
-              <select style={inputStyle(settings)} value={newDueBucket} onChange={(e) => setNewDueBucket(e.target.value)}>
-                <option value="Heute">Heute</option>
-                <option value="Diese Woche">Diese Woche</option>
-                <option value="Jahr">Jahr</option>
-                <option value="Serie">Serie</option>
-              </select>
-
-              <select style={inputStyle(settings)} value={newStatus} onChange={(e) => setNewStatus(e.target.value)}>
-                <option value="todo">Zu erledigen</option>
-                <option value="done">Erledigt</option>
-              </select>
-
-              <button style={buttonStyle(settings, "primary")} onClick={createTask}>
-                Anlegen
-              </button>
-            </div>
-          </div>
-
-          {/* Main content */}
-          {activeTab === "board" ? (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-              <div style={{ ...cardStyle(settings), padding: 16 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <div style={{ fontSize: 16 }}>Zu erledigen</div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>{boardTodo.length}</div>
-                </div>
-                <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                  {boardTodo.length === 0 ? <div style={{ opacity: 0.7 }}>Keine Aufgaben</div> : null}
-                  {boardTodo.map((t) => (
-                    <TaskCard
-                      key={t.id}
-                      t={t}
-                      areaName={areaNameById.get(t.area_id) || "—"}
-                      settings={settings}
-                      onStatus={(s) => updateTaskStatus(t.id, s)}
-                      onDelete={() => deleteTask(t.id)}
-                      compact
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div style={{ ...cardStyle(settings), padding: 16 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <div style={{ fontSize: 16 }}>Erledigt</div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>{boardDone.length}</div>
-                </div>
-                <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                  {boardDone.length === 0 ? <div style={{ opacity: 0.7 }}>Keine Aufgaben</div> : null}
-                  {boardDone.map((t) => (
-                    <TaskCard
-                      key={t.id}
-                      t={t}
-                      areaName={areaNameById.get(t.area_id) || "—"}
-                      settings={settings}
-                      onStatus={(s) => updateTaskStatus(t.id, s)}
-                      onDelete={() => deleteTask(t.id)}
-                      compact
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {activeTab === "list" ? (
-            <div style={{ ...cardStyle(settings), padding: 16 }}>
-              <div style={{ fontSize: 16, marginBottom: 10 }}>Liste</div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 10px" }}>
-                  <thead>
-                    <tr style={{ textAlign: "left", fontSize: 12, opacity: 0.75 }}>
-                      <th style={{ padding: "0 10px" }}>Aufgabe</th>
-                      <th style={{ padding: "0 10px" }}>Bereich</th>
-                      <th style={{ padding: "0 10px" }}>Datum/Uhrzeit</th>
-                      <th style={{ padding: "0 10px" }}>Zeitraum</th>
-                      <th style={{ padding: "0 10px" }}>Status</th>
-                      <th style={{ padding: "0 10px" }}></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredTasks.map((t) => (
-                      <tr key={t.id} style={{ ...cardStyle(settings) }}>
-                        <td style={{ padding: "12px 10px" }}>{t.title}</td>
-                        <td style={{ padding: "12px 10px" }}>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                            <span
-                              style={{
-                                width: 10,
-                                height: 10,
-                                borderRadius: 999,
-                                background: settings.accent,
-                                opacity: 0.45,
-                              }}
-                            />
-                            {areaNameById.get(t.area_id) || "—"}
-                          </span>
-                        </td>
-                        <td style={{ padding: "12px 10px" }}>{fmtDateDE(t.due_at)}</td>
-                        <td style={{ padding: "12px 10px" }}>{t.due_bucket || t.period || "—"}</td>
-                        <td style={{ padding: "12px 10px" }}>
-                          <select
-                            style={{ ...inputStyle(settings), maxWidth: 160 }}
-                            value={t.status || "todo"}
-                            onChange={(e) => updateTaskStatus(t.id, e.target.value)}
-                          >
-                            <option value="todo">Zu erledigen</option>
-                            <option value="done">Erledigt</option>
-                          </select>
-                        </td>
-                        <td style={{ padding: "12px 10px" }}>
-                          <button style={buttonStyle(settings, "secondary")} onClick={() => deleteTask(t.id)}>
-                            ×
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                    {filteredTasks.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} style={{ padding: 12, opacity: 0.7 }}>
-                          Keine Aufgaben
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ) : null}
-
-          {activeTab === "calendar" ? (
-            <div style={{ ...cardStyle(settings), padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                <div style={{ fontSize: 16 }}>Kalender</div>
-                <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  Quelle: v_tasks_calendar oder tasks_calendar
-                </div>
-              </div>
-
-              {calendarGrouped.length === 0 ? (
-                <div style={{ marginTop: 10, opacity: 0.7 }}>Keine Kalender-Einträge (Tabelle/View ist leer).</div>
-              ) : (
-                <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-                  {calendarGrouped.map((g) => (
-                    <div key={g.dateLabel} style={{ ...cardStyle(settings), padding: 14, background: "transparent", boxShadow: "none" }}>
-                      <div style={{ fontSize: 14, marginBottom: 8 }}>{g.dateLabel}</div>
-                      <div style={{ display: "grid", gap: 10 }}>
-                        {g.items.map((it) => (
-                          <div
-                            key={it.cal_id || it.id}
-                            style={{
-                              ...cardStyle(settings),
-                              padding: 12,
-                              display: "flex",
-                              justifyContent: "space-between",
-                              gap: 12,
-                              alignItems: "center",
-                            }}
-                          >
-                            <div>
-                              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                <span
-                                  style={{
-                                    width: 10,
-                                    height: 10,
-                                    borderRadius: 999,
-                                    background: settings.accent,
-                                    opacity: 0.9,
-                                  }}
-                                />
-                                <div style={{ fontSize: 14 }}>{it.title || "—"}</div>
-                              </div>
-                              <div style={{ fontSize: 12, opacity: 0.75, marginTop: 3 }}>
-                                {(areaNameById.get(it.area_id) || "—") + " · " + (it.status || "todo") + " · " + (it.due_bucket || it.period || "—")}
-                              </div>
-                            </div>
-                            <div style={{ fontSize: 12, opacity: 0.8 }}>{fmtDateDE(it.due_at)}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : null}
-
-          {activeTab === "timeline" ? (
-            <div style={{ ...cardStyle(settings), padding: 16 }}>
-              <div style={{ fontSize: 16, marginBottom: 10 }}>Timeline (minimal)</div>
+        <div style={styles.grid}>
+          {/* Left Column */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={styles.card}>
+              <div style={{ ...styles.h, marginBottom: 10 }}>Übersicht</div>
               <div style={{ display: "grid", gap: 10 }}>
-                {timelineItems.length === 0 ? <div style={{ opacity: 0.7 }}>Keine Aufgaben</div> : null}
-                {timelineItems.map((t) => (
-                  <div key={t.id} style={{ ...cardStyle(settings), padding: 12, display: "flex", justifyContent: "space-between", gap: 12 }}>
-                    <div>
-                      <div style={{ fontSize: 14 }}>{t.title}</div>
-                      <div style={{ fontSize: 12, opacity: 0.75, marginTop: 3 }}>
-                        {areaNameById.get(t.area_id) || "—"} · {t.status || "todo"} · {t.due_bucket || t.period || "—"}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 12, opacity: 0.8 }}>{fmtDateDE(t.due_at)}</div>
-                  </div>
+                <MiniStat label="Aufgaben heute" value={counts.today} styles={styles} />
+                <MiniStat label="Diese Woche" value={counts.week} styles={styles} />
+                <MiniStat label="Offen" value={counts.open} styles={styles} />
+              </div>
+            </div>
+
+            <div style={styles.card}>
+              <div style={{ ...styles.h, marginBottom: 10 }}>Navigation</div>
+              <div style={{ display: "grid", gap: 10 }}>
+                {TABS.map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    style={{
+                      ...styles.btnGhost,
+                      background: activeTab === t.key ? accentColor : "transparent",
+                      color: activeTab === t.key ? "#fff" : ui.text,
+                    }}
+                    onClick={() => setActiveTab(t.key)}
+                  >
+                    {t.label}
+                  </button>
                 ))}
               </div>
             </div>
-          ) : null}
 
-          {activeTab === "areas" ? (
-            <div style={{ ...cardStyle(settings), padding: 16 }}>
-              <div style={{ fontSize: 16, marginBottom: 10 }}>Bereiche</div>
+            <div style={styles.card}>
+              <div style={{ ...styles.h, marginBottom: 10 }}>Filter</div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10 }}>
+              <div style={{ display: "grid", gap: 10 }}>
+                <select
+                  style={styles.select}
+                  value={filterAreaId}
+                  onChange={(e) => setFilterAreaId(e.target.value)}
+                >
+                  <option value="">Alle Bereiche</option>
+                  {areas.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  style={styles.select}
+                  value={filterDueBucket}
+                  onChange={(e) => setFilterDueBucket(e.target.value)}
+                >
+                  {DUE_BUCKETS.map((b) => (
+                    <option key={b.value} value={b.value}>
+                      {b.label}
+                    </option>
+                  ))}
+                </select>
+
                 <input
-                  style={inputStyle(settings)}
-                  placeholder="Neuer Bereichname…"
-                  value={newAreaName}
-                  onChange={(e) => setNewAreaName(e.target.value)}
+                  style={styles.input}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Suche..."
                 />
-                <button style={buttonStyle(settings, "primary")} onClick={createArea}>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* Create Task */}
+            <div style={styles.card}>
+              <div style={{ ...styles.h, marginBottom: 10 }}>Aufgabe anlegen</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 220px 180px 170px 140px", gap: 10 }}>
+                <input
+                  style={styles.input}
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="Titel"
+                />
+
+                <select
+                  style={styles.select}
+                  value={newAreaId}
+                  onChange={(e) => setNewAreaId(e.target.value)}
+                >
+                  <option value="">Bereich wählen...</option>
+                  {areas.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+
+                <input
+                  style={styles.input}
+                  type="datetime-local"
+                  value={newDueAtLocal}
+                  onChange={(e) => setNewDueAtLocal(e.target.value)}
+                />
+
+                <select
+                  style={styles.select}
+                  value={newDueBucket}
+                  onChange={(e) => setNewDueBucket(e.target.value)}
+                >
+                  {DUE_BUCKETS.map((b) => (
+                    <option key={b.value} value={b.value}>
+                      {b.label}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  style={styles.select}
+                  value={newStatus}
+                  onChange={(e) => setNewStatus(e.target.value)}
+                >
+                  <option value="open">Zu erledigen</option>
+                  <option value="done">Erledigt</option>
+                </select>
+
+                <button type="button" style={styles.btn} onClick={createTask}>
                   Anlegen
                 </button>
               </div>
 
-              <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
-                {(areas || []).map((a) => (
-                  <div
-                    key={a.id}
-                    style={{ ...cardStyle(settings), padding: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: 999, background: settings.accent, opacity: 0.5 }} />
-                      <div>{a.name}</div>
+              <div style={{ marginTop: 10, maxWidth: 420 }}>
+                <select
+                  style={styles.select}
+                  value={newGuideId}
+                  onChange={(e) => setNewGuideId(e.target.value)}
+                >
+                  <option value="">Anleitung verknüpfen (optional)</option>
+                  {guides.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ marginTop: 8, ...styles.small }}>
+                Kalender nutzt due_at. Filter nutzt Bereich und Zeitraum.
+              </div>
+            </div>
+
+            {/* Active Tab Content */}
+            {activeTab === "board" && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div style={styles.card}>
+                  <div style={{ ...styles.h, marginBottom: 10 }}>Zu erledigen</div>
+                  {boardOpen.length === 0 ? (
+                    <div style={styles.small}>Keine Aufgaben</div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {boardOpen.map((t) => (
+                        <TaskCard
+                          key={t.id}
+                          t={t}
+                          styles={styles}
+                          accentColor={accentColor}
+                          onDone={() => setTaskStatus(t.id, "done")}
+                          onOpen={() => setTaskStatus(t.id, "open")}
+                          onDelete={() => deleteTask(t.id)}
+                          subtasks={subtasksByTask.get(t.id) || []}
+                          guides={guides}
+                        />
+                      ))}
                     </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button style={buttonStyle(settings, "danger")} onClick={() => deleteArea(a.id)}>
+                  )}
+                </div>
+
+                <div style={styles.card}>
+                  <div style={{ ...styles.h, marginBottom: 10 }}>Erledigt</div>
+                  {boardDone.length === 0 ? (
+                    <div style={styles.small}>Keine Aufgaben</div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {boardDone.map((t) => (
+                        <TaskCard
+                          key={t.id}
+                          t={t}
+                          styles={styles}
+                          accentColor={accentColor}
+                          onDone={() => setTaskStatus(t.id, "done")}
+                          onOpen={() => setTaskStatus(t.id, "open")}
+                          onDelete={() => deleteTask(t.id)}
+                          subtasks={subtasksByTask.get(t.id) || []}
+                          guides={guides}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {activeTab === "list" && (
+              <div style={styles.card}>
+                <div style={{ ...styles.h, marginBottom: 10 }}>Liste</div>
+                {tasks.length === 0 ? (
+                  <div style={styles.small}>Keine Aufgaben</div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", color: ui.sub }}>
+                          <th style={{ padding: "10px 8px" }}>Aufgabe</th>
+                          <th style={{ padding: "10px 8px" }}>Bereich</th>
+                          <th style={{ padding: "10px 8px" }}>Datum/Uhrzeit</th>
+                          <th style={{ padding: "10px 8px" }}>Status</th>
+                          <th style={{ padding: "10px 8px" }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tasks.map((t) => (
+                          <tr key={t.id} style={{ borderTop: `1px solid ${ui.border}` }}>
+                            <td style={{ padding: "10px 8px" }}>{t.title}</td>
+                            <td style={{ padding: "10px 8px" }}>
+                              {t.areas?.name || ""}
+                            </td>
+                            <td style={{ padding: "10px 8px" }}>
+                              {fmtDateTime(t.due_at)}
+                            </td>
+                            <td style={{ padding: "10px 8px" }}>
+                              {(t.status || "open") === "done" ? "Erledigt" : "Zu erledigen"}
+                            </td>
+                            <td style={{ padding: "10px 8px", textAlign: "right" }}>
+                              {(t.status || "open") === "done" ? (
+                                <button
+                                  style={styles.btnGhost}
+                                  type="button"
+                                  onClick={() => setTaskStatus(t.id, "open")}
+                                >
+                                  Wieder öffnen
+                                </button>
+                              ) : (
+                                <button
+                                  style={styles.btn}
+                                  type="button"
+                                  onClick={() => setTaskStatus(t.id, "done")}
+                                >
+                                  Erledigt
+                                </button>
+                              )}
+                              <span style={{ marginLeft: 10 }}>
+                                <button
+                                  style={styles.danger}
+                                  type="button"
+                                  onClick={() => deleteTask(t.id)}
+                                >
+                                  Löschen
+                                </button>
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === "calendar" && (
+              <div style={styles.card}>
+                <div style={{ ...styles.h, marginBottom: 10 }}>Kalender</div>
+                {calendarItems.length === 0 ? (
+                  <div style={styles.small}>
+                    Keine Kalender-Einträge (keine Aufgaben mit due_at im aktuellen Filter).
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {calendarItems.map((c) => (
+                      <div
+                        key={c.id}
+                        style={{
+                          border: `1px solid ${ui.border}`,
+                          borderRadius: 14,
+                          padding: 12,
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          <div style={{ fontWeight: 700 }}>{c.title}</div>
+                          <div style={styles.small}>{fmtDateTime(c.due_at)}</div>
+                        </div>
+                        <div style={{ marginTop: 6, ...styles.small }}>
+                          Bereich: {c.areas?.name || "-"} · Status:{" "}
+                          {(c.status || "open") === "done" ? "Erledigt" : "Zu erledigen"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === "timeline" && (
+              <div style={styles.card}>
+                <div style={{ ...styles.h, marginBottom: 10 }}>Timeline</div>
+                <div style={styles.small}>
+                  Aktuell einfache Darstellung nach due_at. Später können wir hier eine echte Zeitachse bauen.
+                </div>
+                <div style={styles.hr} />
+                {calendarItems.length === 0 ? (
+                  <div style={styles.small}>Keine Einträge</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {calendarItems.map((c) => (
+                      <div
+                        key={c.id}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 10,
+                          border: `1px solid ${ui.border}`,
+                          borderRadius: 14,
+                          padding: 12,
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 700 }}>{c.title}</div>
+                          <div style={styles.small}>{c.areas?.name || "-"}</div>
+                        </div>
+                        <div style={styles.small}>{fmtDateTime(c.due_at)}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === "areas" && (
+              <div style={styles.card}>
+                <div style={{ ...styles.h, marginBottom: 10 }}>Bereiche</div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <input
+                    style={styles.input}
+                    value={newAreaName}
+                    onChange={(e) => setNewAreaName(e.target.value)}
+                    placeholder="Neuer Bereichname..."
+                  />
+                  <button type="button" style={styles.btn} onClick={createArea}>
+                    Anlegen
+                  </button>
+                </div>
+
+                <div style={styles.hr} />
+
+                <div style={{ display: "grid", gap: 10 }}>
+                  {areas.map((a) => (
+                    <div
+                      key={a.id}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 10,
+                        border: `1px solid ${ui.border}`,
+                        borderRadius: 14,
+                        padding: 12,
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span
+                          style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: 999,
+                            background: accentColor,
+                            display: "inline-block",
+                          }}
+                        />
+                        <div>{a.name}</div>
+                      </div>
+
+                      <button
+                        type="button"
+                        style={styles.danger}
+                        onClick={() => deleteArea(a.id)}
+                      >
                         Löschen
                       </button>
                     </div>
-                  </div>
-                ))}
-                {(areas || []).length === 0 ? <div style={{ opacity: 0.7 }}>Keine Bereiche</div> : null}
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : null}
+            )}
 
-          {activeTab === "settings" ? (
-            <div style={{ ...cardStyle(settings), padding: 16 }}>
-              <div style={{ fontSize: 16, marginBottom: 10 }}>Einstellungen</div>
+            {activeTab === "guides" && (
+              <div style={styles.card}>
+                <div style={{ ...styles.h, marginBottom: 10 }}>Anleitung</div>
 
-              <div style={{ display: "grid", gap: 12, maxWidth: 720 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
-                  <div style={{ fontSize: 12, opacity: 0.75 }}>Theme</div>
-                  <select
-                    style={inputStyle(settings)}
-                    value={settings.theme_mode}
-                    onChange={(e) => saveSettings({ theme_mode: e.target.value })}
-                  >
-                    <option value="light">Hell</option>
-                    <option value="dark">Dunkel</option>
-                  </select>
-                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 14 }}>
+                  {/* Create + select */}
+                  <div style={{ border: `1px solid ${ui.border}`, borderRadius: 16, padding: 14 }}>
+                    <div style={{ fontWeight: 700, marginBottom: 10 }}>Anleitung anlegen</div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
-                  <div style={{ fontSize: 12, opacity: 0.75 }}>Hintergrund</div>
-                  <select
-                    style={inputStyle(settings)}
-                    value={settings.background}
-                    onChange={(e) => saveSettings({ background: e.target.value })}
-                  >
-                    <option value="standard">Standard</option>
-                    <option value="soft">Soft</option>
-                    <option value="grid">Grid</option>
-                    <option value="waves">Waves</option>
-                    <option value="clean">Clean</option>
-                    <option value="custom">Eigenes Bild (URL)</option>
-                  </select>
-                </div>
-
-                {settings.background === "custom" ? (
-                  <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>Bild-URL</div>
                     <input
-                      style={inputStyle(settings)}
-                      placeholder="https://…"
-                      value={settings.background_custom_url || ""}
-                      onChange={(e) => saveSettings({ background_custom_url: e.target.value })}
-                    />
-                  </div>
-                ) : null}
-
-                <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
-                  <div style={{ fontSize: 12, opacity: 0.75 }}>Akzent</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <input
-                      type="color"
-                      value={settings.accent}
-                      onChange={(e) => saveSettings({ accent: e.target.value })}
-                      style={{ width: 56, height: 36, border: "none", background: "transparent" }}
-                    />
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>{settings.accent}</div>
-                  </div>
-                </div>
-
-                <div style={{ borderTop: "1px solid rgba(15,23,42,0.10)", paddingTop: 12 }}>
-                  <div style={{ fontSize: 14, marginBottom: 8 }}>Benachrichtigungen</div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                    <input
-                      type="checkbox"
-                      checked={!!settings.notifications_enabled}
-                      onChange={(e) => saveSettings({ notifications_enabled: e.target.checked })}
-                    />
-                    Aktiviert
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                    <input
-                      type="checkbox"
-                      checked={!!settings.notifications_desktop}
-                      onChange={(e) => saveSettings({ notifications_desktop: e.target.checked })}
-                    />
-                    Desktop
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <input
-                      type="checkbox"
-                      checked={!!settings.notifications_email}
-                      onChange={(e) => saveSettings({ notifications_email: e.target.checked })}
-                    />
-                    E-Mail
-                  </label>
-                </div>
-
-                {settingsSaving ? <div style={{ fontSize: 12, opacity: 0.7 }}>Speichere…</div> : null}
-              </div>
-            </div>
-          ) : null}
-
-          {activeTab === "guide" ? (
-            <div style={{ ...cardStyle(settings), padding: 16 }}>
-              <div style={{ fontSize: 16, marginBottom: 10 }}>Anleitung</div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                {/* Left: create/select */}
-                <div style={{ ...cardStyle(settings), padding: 14, background: "transparent", boxShadow: "none" }}>
-                  <div style={{ fontSize: 14, marginBottom: 10 }}>Anleitung anlegen</div>
-                  <div style={{ display: "grid", gap: 10 }}>
-                    <input
-                      style={inputStyle(settings)}
+                      style={styles.input}
+                      value={guideTitle}
+                      onChange={(e) => setGuideTitle(e.target.value)}
                       placeholder="Titel (z. B. Twence anmelden)"
-                      value={newGuideTitle}
-                      onChange={(e) => setNewGuideTitle(e.target.value)}
                     />
+
+                    <div style={{ height: 10 }} />
+
                     <textarea
-                      style={{ ...inputStyle(settings), minHeight: 110, resize: "vertical" }}
-                      placeholder="Inhalt / Hinweis / Ansprechpartner / Link…"
-                      value={newGuideBody}
-                      onChange={(e) => setNewGuideBody(e.target.value)}
+                      style={{ ...styles.input, minHeight: 140, resize: "vertical" }}
+                      value={guideContent}
+                      onChange={(e) => setGuideContent(e.target.value)}
+                      placeholder="Inhalt / Hinweis / Ansprechpartner / Link..."
                     />
-                    <button style={buttonStyle(settings, "primary")} onClick={createGuide}>
+
+                    <div style={{ height: 10 }} />
+
+                    <button type="button" style={{ ...styles.btn, width: "100%" }} onClick={saveGuide}>
                       Anleitung speichern
                     </button>
-                  </div>
 
-                  <div style={{ marginTop: 14, fontSize: 14, marginBottom: 8 }}>Vorhandene Anleitungen</div>
-                  <select style={inputStyle(settings)} value={selectedGuideId} onChange={(e) => setSelectedGuideId(e.target.value)}>
-                    <option value="">— auswählen —</option>
-                    {(guides || []).map((g) => (
-                      <option key={g.id} value={g.id}>
-                        {g.title}
-                      </option>
-                    ))}
-                  </select>
+                    <div style={styles.hr} />
 
-                  <div style={{ marginTop: 12, fontSize: 12, opacity: 0.75 }}>
-                    Zielbild: Hauptaufgabe → Unteraufgabe → Verweis zur Anleitung.
-                    <br />
-                    Die Verknüpfung bauen wir als nächstes (guide_id an Task/Subtask).
-                  </div>
-                </div>
-
-                {/* Right: details + upload */}
-                <div style={{ ...cardStyle(settings), padding: 14, background: "transparent", boxShadow: "none" }}>
-                  <div style={{ fontSize: 14, marginBottom: 10 }}>Dateien hochladen</div>
-
-                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                    <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) uploadGuideFile(f);
-                      if (fileInputRef.current) fileInputRef.current.value = "";
-                    }} />
-                    <button
-                      style={buttonStyle(settings, "primary")}
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={!selectedGuideId}
+                    <div style={{ fontWeight: 700, marginBottom: 8 }}>Vorhandene Anleitungen</div>
+                    <select
+                      style={styles.select}
+                      value={selectedGuideId}
+                      onChange={(e) => onSelectGuide(e.target.value)}
                     >
-                      Datei auswählen
-                    </button>
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>
-                      Bucket: {GUIDE_BUCKET}
+                      <option value="">— auswählen —</option>
+                      {guides.map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {g.title}
+                        </option>
+                      ))}
+                    </select>
+
+                    <div style={{ marginTop: 10, ...styles.small }}>
+                      Zielbild: Hauptaufgabe → Unteraufgabe → Verweis zur Anleitung.
+                      Die Verknüpfung ist bereits über guide_id möglich.
                     </div>
                   </div>
 
-                  <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: 14, marginBottom: 8 }}>Dateien zur ausgewählten Anleitung</div>
-                    {selectedGuideId ? (
-                      guideFilesForSelected.length === 0 ? (
-                        <div style={{ opacity: 0.7 }}>Noch keine Dateien</div>
-                      ) : (
-                        <div style={{ display: "grid", gap: 10 }}>
-                          {guideFilesForSelected.map((f) => (
-                            <div key={f.id} style={{ ...cardStyle(settings), padding: 12, display: "flex", justifyContent: "space-between", gap: 10 }}>
-                              <div>
-                                <div style={{ fontSize: 13 }}>{f.file_name}</div>
-                                <div style={{ fontSize: 12, opacity: 0.75 }}>{fmtDateDE(f.created_at)}</div>
-                              </div>
-                              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                {f.public_url ? (
+                  {/* Upload + list */}
+                  <div style={{ border: `1px solid ${ui.border}`, borderRadius: 16, padding: 14 }}>
+                    <div style={{ fontWeight: 700, marginBottom: 10 }}>Dateien hochladen</div>
+
+                    <div style={styles.small}>Bucket: guides</div>
+                    <div style={{ height: 8 }} />
+
+                    <input
+                      type="file"
+                      disabled={!selectedGuideId || uploadingGuideFile}
+                      onChange={(e) => uploadGuideFile(e.target.files?.[0])}
+                    />
+
+                    <div style={{ marginTop: 10, ...styles.small }}>
+                      {selectedGuideId ? "Dateien zur ausgewählten Anleitung:" : "Bitte Anleitung auswählen."}
+                    </div>
+
+                    <div style={{ height: 10 }} />
+
+                    {guideFiles.length === 0 ? (
+                      <div style={styles.small}>Keine Dateien</div>
+                    ) : (
+                      <div style={{ display: "grid", gap: 10 }}>
+                        {guideFiles.map((f) => {
+                          const url = getGuideFileUrl(f.path);
+                          return (
+                            <div
+                              key={f.id}
+                              style={{
+                                border: `1px solid ${ui.border}`,
+                                borderRadius: 14,
+                                padding: 12,
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                gap: 10,
+                              }}
+                            >
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis" }}>
+                                  {f.filename || f.path}
+                                </div>
+                                {url ? (
                                   <a
-                                    href={f.public_url}
+                                    href={url}
                                     target="_blank"
                                     rel="noreferrer"
-                                    style={{
-                                      ...buttonStyle(settings, "secondary"),
-                                      textDecoration: "none",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                    }}
+                                    style={{ ...styles.small, color: accentColor, textDecoration: "none" }}
                                   >
                                     Öffnen
                                   </a>
                                 ) : (
-                                  <div style={{ fontSize: 12, opacity: 0.7 }}>private</div>
+                                  <div style={styles.small}>Kein Public-URL verfügbar</div>
                                 )}
                               </div>
+                              <button type="button" style={styles.danger} onClick={() => deleteGuideFile(f)}>
+                                Löschen
+                              </button>
                             </div>
-                          ))}
-                        </div>
-                      )
-                    ) : (
-                      <div style={{ opacity: 0.7 }}>Bitte Anleitung auswählen.</div>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
                 </div>
-              </div>
 
-              {/* Subtask creation (kept) */}
-              <div style={{ marginTop: 14, ...cardStyle(settings), padding: 16 }}>
-                <div style={{ fontSize: 14, marginBottom: 10 }}>Unteraufgabe anlegen</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 120px", gap: 10 }}>
-                  <select style={inputStyle(settings)} value={subtaskTaskId} onChange={(e) => setSubtaskTaskId(e.target.value)}>
-                    <option value="">Hauptaufgabe wählen…</option>
-                    {(tasks || []).slice(0, 200).map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.title}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    style={inputStyle(settings)}
-                    placeholder="Unteraufgabe…"
-                    value={subtaskTitle}
-                    onChange={(e) => setSubtaskTitle(e.target.value)}
-                  />
-                  <button style={buttonStyle(settings, "primary")} onClick={createSubtask}>
-                    Anlegen
-                  </button>
-                </div>
-                <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-                  Verknüpfung Unteraufgabe → Anleitung: kommt als nächstes (guide_id Feld).
+                <div style={styles.hr} />
+
+                {/* Subtasks */}
+                <div style={{ border: `1px solid ${ui.border}`, borderRadius: 16, padding: 14 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 10 }}>Unteraufgabe anlegen</div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "320px 1fr 280px 140px", gap: 10 }}>
+                    <select
+                      style={styles.select}
+                      value={subtaskTaskId}
+                      onChange={(e) => setSubtaskTaskId(e.target.value)}
+                    >
+                      <option value="">Hauptaufgabe wählen...</option>
+                      {tasks.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.title}
+                        </option>
+                      ))}
+                    </select>
+
+                    <input
+                      style={styles.input}
+                      value={subtaskTitle}
+                      onChange={(e) => setSubtaskTitle(e.target.value)}
+                      placeholder="Unteraufgabe..."
+                    />
+
+                    <select
+                      style={styles.select}
+                      value={subtaskGuideId}
+                      onChange={(e) => setSubtaskGuideId(e.target.value)}
+                    >
+                      <option value="">Anleitung verknüpfen (optional)</option>
+                      {guides.map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {g.title}
+                        </option>
+                      ))}
+                    </select>
+
+                    <button type="button" style={styles.btn} onClick={createSubtask}>
+                      Anlegen
+                    </button>
+                  </div>
+
+                  <div style={{ marginTop: 12, ...styles.small }}>
+                    Verknüpfung Unteraufgabe → Anleitung läuft über guide_id in subtasks.
+                  </div>
+
+                  <div style={styles.hr} />
+
+                  <div style={{ fontWeight: 700, marginBottom: 8 }}>Vorhandene Unteraufgaben</div>
+                  {subtasks.length === 0 ? (
+                    <div style={styles.small}>Keine Unteraufgaben</div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {subtasks.map((s) => (
+                        <div
+                          key={s.id}
+                          style={{
+                            border: `1px solid ${ui.border}`,
+                            borderRadius: 14,
+                            padding: 12,
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 10,
+                          }}
+                        >
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 700 }}>
+                              {s.done ? "✓ " : ""}{s.title}
+                            </div>
+                            <div style={styles.small}>
+                              Hauptaufgabe: {s.tasks?.title || "-"}
+                            </div>
+                          </div>
+                          <div style={styles.row}>
+                            <button
+                              type="button"
+                              style={styles.btnGhost}
+                              onClick={() => toggleSubtaskDone(s.id, !s.done)}
+                            >
+                              {s.done ? "Offen" : "Erledigt"}
+                            </button>
+                            <button type="button" style={styles.danger} onClick={() => deleteSubtask(s.id)}>
+                              Löschen
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
-            </div>
-          ) : null}
+            )}
 
-          {/* Loading hint */}
-          {loading ? <div style={{ fontSize: 12, opacity: 0.7 }}>Lade…</div> : null}
+            {activeTab === "settings" && (
+              <div style={styles.card}>
+                <div style={{ ...styles.h, marginBottom: 10 }}>Einstellungen</div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "260px 260px 260px 160px", gap: 10 }}>
+                  <div>
+                    <div style={styles.small}>Theme</div>
+                    <select style={styles.select} value={theme} onChange={(e) => setTheme(e.target.value)}>
+                      {THEMES.map((t) => (
+                        <option key={t.value} value={t.value}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <div style={styles.small}>Hintergrund</div>
+                    <select
+                      style={styles.select}
+                      value={background}
+                      onChange={(e) => setBackground(e.target.value)}
+                    >
+                      {BACKGROUNDS.map((b) => (
+                        <option key={b.value} value={b.value}>
+                          {b.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <div style={styles.small}>Akzent</div>
+                    <select style={styles.select} value={accent} onChange={(e) => setAccent(e.target.value)}>
+                      {ACCENTS.map((a) => (
+                        <option key={a.value} value={a.value}>
+                          {a.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "flex-end" }}>
+                    <button type="button" style={styles.btn} onClick={saveUserSettings}>
+                      Speichern
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 12, ...styles.small }}>
+                  Benachrichtigungen bauen wir als nächsten Schritt (pro User ein/aus).
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-/* =========================================================
-   Components
-   ========================================================= */
-function TaskCard({ t, areaName, settings, onStatus, onDelete, compact }) {
-  const isDark = settings?.theme_mode === "dark";
+/* ---------------- Subcomponents ---------------- */
+function MiniStat({ label, value, styles }) {
+  return (
+    <div style={{ ...styles.card, padding: 12, borderRadius: 14 }}>
+      <div style={styles.small}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 800, marginTop: 4 }}>{value}</div>
+    </div>
+  );
+}
+
+function TaskCard({ t, styles, onDone, onOpen, onDelete, subtasks, guides }) {
+  const isDone = (t.status || "open") === "done";
+  const guideTitle = t.guide_id ? guides.find((g) => g.id === t.guide_id)?.title : "";
+
   return (
     <div
       style={{
-        ...cardStyle(settings),
+        border: `1px solid ${styles.card.border || "rgba(0,0,0,0.08)"}`,
+        borderRadius: 14,
         padding: 12,
-        display: "grid",
-        gridTemplateColumns: "1fr auto",
-        gap: 10,
-        alignItems: "center",
       }}
     >
-      <div>
-        <div style={{ fontSize: 14, marginBottom: 4 }}>{t.title}</div>
-        <div style={{ fontSize: 12, opacity: 0.75 }}>
-          {areaName} · {t.due_bucket || t.period || "—"} · {fmtDateDE(t.due_at)}
-        </div>
-        {!compact ? (
-          <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
-            Status: {t.status || "todo"}
-          </div>
-        ) : null}
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+        <div style={{ fontWeight: 800 }}>{t.title}</div>
+        <div style={styles.small}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <select
-          value={t.status || "todo"}
-          onChange={(e) => onStatus?.(e.target.value)}
-          style={{
-            padding: "8px 10px",
-            borderRadius: 12,
-            border: isDark ? "1px solid rgba(255,255,255,0.14)" : "1px solid rgba(15,23,42,0.12)",
-            background: isDark ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.9)",
-            color: isDark ? "#eef2ff" : "#0f172a",
-          }}
-        >
-          <option value="todo">Zu erledigen</option>
-          <option value="done">Erledigt</option>
-        </select>
+      <div style={{ marginTop: 6, ...styles.small }}>
+        Bereich: {t.areas?.name || "-"} · Status: {isDone ? "Erledigt" : "Zu erledigen"}
+        {guideTitle ? ` · Anleitung: ${guideTitle}` : ""}
+      </div>
+
+      {subtasks?.length ? (
+        <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+          {subtasks.slice(0, 4).map((s) => (
+            <div key={s.id} style={styles.small}>
+              {s.done ? "✓ " : "• "}
+              {s.title}
+            </div>
+          ))}
+          {subtasks.length > 4 ? <div style={styles.small}>…</div> : null}
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: 10, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        {isDone ? (
+          <button type="button" style={styles.btnGhost} onClick={onOpen}>
+            Wieder öffnen
+          </button>
+        ) : (
+          <button type="button" style={styles.btn} onClick={onDone}>
+            Erledigt
+          </button>
+        )}
+        <button type="button" style={styles.danger} onClick={onDelete}>
+          Löschen
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LoginBox({
+  supabase,
+  styles,
+  theme,
+  setTheme,
+  background,
+  setBackground,
+  accent,
+  setAccent,
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [mode, setMode] = useState("login"); // login | signup
+  const [msg, setMsg] = useState("");
+
+  const onSubmit = async () => {
+    setMsg("");
+    const e = email.trim();
+    const p = password;
+    if (!e || !p) return;
+
+    if (mode === "login") {
+      const { error } = await supabase.auth.signInWithPassword({ email: e, password: p });
+      if (error) setMsg(error.message);
+    } else {
+      const { error } = await supabase.auth.signUp({ email: e, password: p });
+      if (error) setMsg(error.message);
+      else setMsg("Konto erstellt. Falls E-Mail-Bestätigung aktiv ist: bitte bestätigen.");
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <input
+          style={styles.input}
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="E-Mail"
+        />
+        <input
+          style={styles.input}
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Passwort"
+        />
+
+        <button type="button" style={{ ...styles.btn, width: "100%" }} onClick={onSubmit}>
+          {mode === "login" ? "Anmelden" : "Neues Konto erstellen"}
+        </button>
 
         <button
-          onClick={onDelete}
-          style={{
-            borderRadius: 12,
-            padding: "8px 10px",
-            border: isDark ? "1px solid rgba(255,255,255,0.12)" : "1px solid rgba(15,23,42,0.10)",
-            background: isDark ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.75)",
-            color: isDark ? "#eef2ff" : "#0f172a",
-            cursor: "pointer",
-          }}
-          title="Löschen"
+          type="button"
+          style={{ ...styles.btnGhost, width: "100%" }}
+          onClick={() => setMode((m) => (m === "login" ? "signup" : "login"))}
         >
-          ×
+          {mode === "login" ? "Neues Konto erstellen" : "Zur Anmeldung"}
         </button>
+
+        {msg ? <div style={{ ...styles.small, color: "#ef4444" }}>{msg}</div> : null}
+
+        <div style={styles.hr} />
+
+        <div style={styles.small}>Design</div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.small}>Theme</div>
+            <select style={styles.select} value={theme} onChange={(e) => setTheme(e.target.value)}>
+              {THEMES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <div style={styles.small}>Hintergrund</div>
+            <select
+              style={styles.select}
+              value={background}
+              onChange={(e) => setBackground(e.target.value)}
+            >
+              {BACKGROUNDS.map((b) => (
+                <option key={b.value} value={b.value}>
+                  {b.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ gridColumn: "1 / -1" }}>
+            <div style={styles.small}>Akzent</div>
+            <select style={styles.select} value={accent} onChange={(e) => setAccent(e.target.value)}>
+              {ACCENTS.map((a) => (
+                <option key={a.value} value={a.value}>
+                  {a.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
       </div>
     </div>
   );
