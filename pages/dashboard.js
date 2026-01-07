@@ -44,6 +44,16 @@ const toISO = (value) => {
   return d.toISOString();
 };
 
+const STATUS_MAP_UI_TO_DB = {
+  "Zu erledigen": "todo",
+  "Erledigt": "done",
+};
+
+const STATUS_MAP_DB_TO_UI = {
+  todo: "Zu erledigen",
+  done: "Erledigt",
+};
+
 const startOfToday = () => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -434,13 +444,13 @@ export default function DashboardPage() {
     let dueAtIso = toISO(newDueAtLocal);
     if (!dueAtIso) dueAtIso = new Date().toISOString();
 
-    const payload = {
+  const payload = {
   title,
-  area_id: newAreaId || null,
+  area_id: areaId || null,
   due_at: dueAtIso,
-  status: newStatus === "done" ? "done" : "open",
+  status: STATUS_MAP_UI_TO_DB[selectedStatus] ?? "todo",
   user_id: user.id,
-  guide_id: newGuideId || null,
+  guide_id: guideId || null,
 };
 
 
