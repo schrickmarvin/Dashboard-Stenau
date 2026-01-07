@@ -1,25 +1,45 @@
-// dashboard.js
+// pages/dashboard.js
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Supabase ---------------- */
-const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL;
-const SUPABASE_ANON = process.env.REACT_APP_SUPABASE_ANON_KEY;
+/*
+  Next.js + Supabase (wichtig):
+  - Supabase Client nur im Browser initialisieren (typeof window !== "undefined")
+  - ENV Variablen in Vercel/Next.js:
+      NEXT_PUBLIC_SUPABASE_URL
+      NEXT_PUBLIC_SUPABASE_ANON_KEY
+*/
 
-if (!SUPABASE_URL || !SUPABASE_ANON) {
-  // eslint-disable-next-line no-console
-  console.error(
-    "Missing Supabase env vars. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY"
-  );
+function getSupabaseClient() {
+  if (typeof window === "undefined") return null;
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.warn(
+      "Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY"
+    );
+    return null;
+  }
+
+  if (!window.__supabase__) {
+    window.__supabase__ = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    });
+  }
+
+  return window.__supabase__;
 }
-
-const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON || "");
 
 /* ---------------- Helpers ---------------- */
 const toISO = (value) => {
   if (!value) return null;
-  // value can be "YYYY-MM-DDTHH:mm" (from input[type=datetime-local])
-  const d = new Date(value);
+  const d = new Date(value); // from input[type=datetime-local]
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
 };
@@ -39,9 +59,8 @@ const endOfToday = () => {
 const startOfWeek = () => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  // Monday as first day
   const day = d.getDay(); // 0 Sun, 1 Mon ...
-  const diff = (day === 0 ? -6 : 1 - day);
+  const diff = day === 0 ? -6 : 1 - day; // Monday start
   d.setDate(d.getDate() + diff);
   return d;
 };
@@ -69,12 +88,9 @@ const fmtDateTime = (iso) => {
 const makeLocalDateTimeValue = () => {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  const mm = pad(d.getMonth() + 1);
-  const dd = pad(d.getDate());
-  const hh = pad(d.getHours());
-  const mi = pad(d.getMinutes());
-  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}`;
 };
 
 /* ---------------- UI Constants ---------------- */
@@ -114,24 +130,28 @@ const ACCENTS = [
 ];
 
 /* ---------------- Main Component ---------------- */
-export default function Dashboard() {
+export default function DashboardPage() {
+  const [supabase, setSupabase] = useState(null);
+
   /* ---------- Auth ---------- */
   const [session, setSession] = useState(null);
   const user = session?.user || null;
 
-  /* ---------- Global UI State ---------- */
+  /* ---------- UI ---------- */
   const [activeTab, setActiveTab] = useState("board");
   const [globalError, setGlobalError] = useState("");
 
-  /* ---------- Design (local + DB) ---------- */
+  /* ---------- Design ---------- */
   const [theme, setTheme] = useState(
-    localStorage.getItem("ui_theme") || "hell"
+    typeof window !== "undefined" ? localStorage.getItem("ui_theme") || "hell" : "hell"
   );
   const [background, setBackground] = useState(
-    localStorage.getItem("ui_background") || "soft"
+    typeof window !== "undefined"
+      ? localStorage.getItem("ui_background") || "soft"
+      : "soft"
   );
   const [accent, setAccent] = useState(
-    localStorage.getItem("ui_accent") || "green"
+    typeof window !== "undefined" ? localStorage.getItem("ui_accent") || "green" : "green"
   );
 
   /* ---------- Filters ---------- */
@@ -150,7 +170,6 @@ export default function Dashboard() {
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
   const [newDueAtLocal, setNewDueAtLocal] = useState(makeLocalDateTimeValue());
-  const [newDueBucket, setNewDueBucket] = useState("heute");
   const [newStatus, setNewStatus] = useState("open"); // open | done
   const [newGuideId, setNewGuideId] = useState("");
 
@@ -169,8 +188,16 @@ export default function Dashboard() {
   const [subtaskTitle, setSubtaskTitle] = useState("");
   const [subtaskGuideId, setSubtaskGuideId] = useState("");
 
-  /* ---------------- Effects: Auth ---------------- */
+  /* ---------------- Init supabase client (browser only) ---------------- */
   useEffect(() => {
+    const client = getSupabaseClient();
+    setSupabase(client);
+  }, []);
+
+  /* ---------------- Auth: session + listener ---------------- */
+  useEffect(() => {
+    if (!supabase) return;
+
     let mounted = true;
 
     supabase.auth.getSession().then(({ data }) => {
@@ -186,22 +213,28 @@ export default function Dashboard() {
       mounted = false;
       sub?.subscription?.unsubscribe?.();
     };
-  }, []);
+  }, [supabase]);
 
-  /* ---------------- Effects: Persist Design Local ---------------- */
+  /* ---------------- Persist Design Local ---------------- */
   useEffect(() => {
+    if (typeof window === "undefined") return;
     localStorage.setItem("ui_theme", theme);
   }, [theme]);
+
   useEffect(() => {
+    if (typeof window === "undefined") return;
     localStorage.setItem("ui_background", background);
   }, [background]);
+
   useEffect(() => {
+    if (typeof window === "undefined") return;
     localStorage.setItem("ui_accent", accent);
   }, [accent]);
 
-  /* ---------------- Effects: Load all data when logged in ---------------- */
+  /* ---------------- Load all data when logged in ---------------- */
   useEffect(() => {
-    if (!user) return;
+    if (!supabase || !user) return;
+
     (async () => {
       setGlobalError("");
       await Promise.all([
@@ -214,19 +247,21 @@ export default function Dashboard() {
       ]);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+  }, [supabase, user]);
 
-  /* ---------------- Effects: reload tasks when filters change ---------------- */
+  /* ---------------- reload when filters change ---------------- */
   useEffect(() => {
-    if (!user) return;
+    if (!supabase || !user) return;
     loadTasks();
-    loadCalendar(); // calendar uses due_at; keep in sync
+    loadCalendar();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterAreaId, filterDueBucket, search]);
+  }, [supabase, user, filterAreaId, filterDueBucket, search]);
 
   /* ---------------- Data Loaders ---------------- */
   const loadAreas = async () => {
+    if (!supabase) return;
     setGlobalError("");
+
     const { data, error } = await supabase
       .from("areas")
       .select("*")
@@ -236,39 +271,54 @@ export default function Dashboard() {
       setGlobalError(`Bereiche laden fehlgeschlagen: ${error.message}`);
       return;
     }
-    setAreas(data || []);
-    // set default area for create form if empty
-    if (!newAreaId && (data || []).length > 0) setNewAreaId(data[0].id);
+
+    const rows = data || [];
+    setAreas(rows);
+
+    if (!newAreaId && rows.length > 0) setNewAreaId(rows[0].id);
+  };
+
+  const loadGuides = async () => {
+    if (!supabase) return;
+    setGlobalError("");
+
+    const { data, error } = await supabase
+      .from("guides")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setGlobalError(`Anleitungen laden fehlgeschlagen: ${error.message}`);
+      return;
+    }
+
+    setGuides(data || []);
   };
 
   const loadTasks = async () => {
+    if (!supabase) return;
     setGlobalError("");
 
-    // base query
     let query = supabase
       .from("tasks")
-      .select(
-        "id,title,status,area_id,due_at,due_day,is_series,repeat_enabled,guide_id,created_at,areas(name)"
-      )
+      .select("id,title,status,area_id,due_at,due_day,guide_id,created_at,areas(name)")
       .order("due_at", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: false });
 
-    // area filter
     if (filterAreaId) query = query.eq("area_id", filterAreaId);
 
-    // due bucket filter (uses due_at)
     if (filterDueBucket === "heute") {
       query = query
         .gte("due_at", startOfToday().toISOString())
         .lte("due_at", endOfToday().toISOString());
     }
+
     if (filterDueBucket === "diese_woche") {
       query = query
         .gte("due_at", startOfWeek().toISOString())
         .lte("due_at", endOfWeek().toISOString());
     }
 
-    // search
     if (search?.trim()) query = query.ilike("title", `%${search.trim()}%`);
 
     const { data, error } = await query;
@@ -277,13 +327,14 @@ export default function Dashboard() {
       setGlobalError(`Aufgaben laden fehlgeschlagen: ${error.message}`);
       return;
     }
+
     setTasks(data || []);
   };
 
   const loadCalendar = async () => {
+    if (!supabase) return;
     setGlobalError("");
 
-    // simplest: calendar reads from tasks (due_at not null)
     let query = supabase
       .from("tasks")
       .select("id,title,area_id,due_at,status,areas(name)")
@@ -292,12 +343,12 @@ export default function Dashboard() {
 
     if (filterAreaId) query = query.eq("area_id", filterAreaId);
 
-    // same bucket filter, so calendar matches left filter
     if (filterDueBucket === "heute") {
       query = query
         .gte("due_at", startOfToday().toISOString())
         .lte("due_at", endOfToday().toISOString());
     }
+
     if (filterDueBucket === "diese_woche") {
       query = query
         .gte("due_at", startOfWeek().toISOString())
@@ -312,28 +363,52 @@ export default function Dashboard() {
       setGlobalError(`Kalender laden fehlgeschlagen: ${error.message}`);
       return;
     }
+
     setCalendarItems(data || []);
   };
 
-  const loadGuides = async () => {
+  const loadSubtasks = async () => {
+    if (!supabase) return;
     setGlobalError("");
+
     const { data, error } = await supabase
-      .from("guides")
-      .select("*")
+      .from("subtasks")
+      .select("id,title,task_id,guide_id,done,created_at,tasks(title)")
       .order("created_at", { ascending: false });
 
     if (error) {
-      setGlobalError(`Anleitungen laden fehlgeschlagen: ${error.message}`);
+      setGlobalError(`Unteraufgaben laden fehlgeschlagen: ${error.message}`);
       return;
     }
-    setGuides(data || []);
+
+    setSubtasks(data || []);
+  };
+
+  const loadUserSettings = async () => {
+    if (!supabase || !user) return;
+
+    const { data, error } = await supabase
+      .from("user_settings")
+      .select("*")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (error) return;
+
+    if (data) {
+      if (data.theme) setTheme(data.theme);
+      if (data.background) setBackground(data.background);
+      if (data.accent) setAccent(data.accent);
+    }
   };
 
   const loadGuideFiles = async (gid) => {
+    if (!supabase) return;
     if (!gid) {
       setGuideFiles([]);
       return;
     }
+
     const { data, error } = await supabase
       .from("guide_files")
       .select("*")
@@ -344,61 +419,29 @@ export default function Dashboard() {
       setGlobalError(`Guide-Dateien laden fehlgeschlagen: ${error.message}`);
       return;
     }
+
     setGuideFiles(data || []);
-  };
-
-  const loadSubtasks = async () => {
-    setGlobalError("");
-    const { data, error } = await supabase
-      .from("subtasks")
-      .select("id,title,task_id,guide_id,done,created_at,tasks(title)")
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      setGlobalError(`Unteraufgaben laden fehlgeschlagen: ${error.message}`);
-      return;
-    }
-    setSubtasks(data || []);
-  };
-
-  const loadUserSettings = async () => {
-    // safe approach: select first, then apply; no upsert needed
-    const { data, error } = await supabase
-      .from("user_settings")
-      .select("*")
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if (error) return; // keep local settings
-
-    if (data) {
-      if (data.theme) setTheme(data.theme);
-      if (data.background) setBackground(data.background);
-      if (data.accent) setAccent(data.accent);
-    }
   };
 
   /* ---------------- Mutations ---------------- */
   const createTask = async () => {
+    if (!supabase || !user) return;
     setGlobalError("");
+
     const title = newTitle.trim();
     if (!title) return;
 
-    // determine due_at from bucket
     let dueAtIso = toISO(newDueAtLocal);
-
-    // if bucket is "Heute" but date not set, keep now
     if (!dueAtIso) dueAtIso = new Date().toISOString();
 
     const payload = {
       title,
       area_id: newAreaId || null,
       due_at: dueAtIso,
+      due_day: dueAtIso ? dueAtIso.slice(0, 10) : null,
       status: newStatus === "done" ? "done" : "open",
       user_id: user.id,
       guide_id: newGuideId || null,
-      // keep due_day for your views if used
-      due_day: dueAtIso ? new Date(dueAtIso).toISOString().slice(0, 10) : null,
     };
 
     const { error } = await supabase.from("tasks").insert([payload]);
@@ -413,32 +456,37 @@ export default function Dashboard() {
   };
 
   const setTaskStatus = async (taskId, status) => {
+    if (!supabase) return;
     setGlobalError("");
+
     const next = status === "done" ? "done" : "open";
-    const { error } = await supabase
-      .from("tasks")
-      .update({ status: next })
-      .eq("id", taskId);
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", taskId);
 
     if (error) {
       setGlobalError(`Status ändern fehlgeschlagen: ${error.message}`);
       return;
     }
+
     await Promise.all([loadTasks(), loadCalendar()]);
   };
 
   const deleteTask = async (taskId) => {
+    if (!supabase) return;
     setGlobalError("");
+
     const { error } = await supabase.from("tasks").delete().eq("id", taskId);
     if (error) {
       setGlobalError(`Aufgabe löschen fehlgeschlagen: ${error.message}`);
       return;
     }
+
     await Promise.all([loadTasks(), loadCalendar(), loadSubtasks()]);
   };
 
   const createArea = async () => {
+    if (!supabase) return;
     setGlobalError("");
+
     const name = newAreaName.trim();
     if (!name) return;
 
@@ -447,14 +495,15 @@ export default function Dashboard() {
       setGlobalError(`Bereich anlegen fehlgeschlagen: ${error.message}`);
       return;
     }
+
     setNewAreaName("");
     await loadAreas();
   };
 
   const deleteArea = async (areaId) => {
+    if (!supabase) return;
     setGlobalError("");
 
-    // protect: if tasks exist -> block
     const { count, error: cntErr } = await supabase
       .from("tasks")
       .select("id", { count: "exact", head: true })
@@ -464,6 +513,7 @@ export default function Dashboard() {
       setGlobalError(`Bereich prüfen fehlgeschlagen: ${cntErr.message}`);
       return;
     }
+
     if ((count || 0) > 0) {
       setGlobalError("Bereich kann nicht gelöscht werden, solange Aufgaben darin existieren.");
       return;
@@ -474,12 +524,15 @@ export default function Dashboard() {
       setGlobalError(`Bereich löschen fehlgeschlagen: ${error.message}`);
       return;
     }
+
     if (filterAreaId === areaId) setFilterAreaId("");
     await loadAreas();
   };
 
   const saveGuide = async () => {
+    if (!supabase || !user) return;
     setGlobalError("");
+
     const title = guideTitle.trim();
     if (!title) return;
 
@@ -500,7 +553,6 @@ export default function Dashboard() {
     setGuideContent("");
     await loadGuides();
 
-    // auto select new guide
     if (data?.id) {
       setSelectedGuideId(data.id);
       await loadGuideFiles(data.id);
@@ -513,25 +565,25 @@ export default function Dashboard() {
   };
 
   const uploadGuideFile = async (file) => {
+    if (!supabase || !user) return;
     if (!file || !selectedGuideId) return;
+
     setGlobalError("");
     setUploadingGuideFile(true);
+
     try {
-      // store file in bucket: guides
-      const ext = file.name.split(".").pop();
       const safeName = file.name.replace(/[^\w.\-]+/g, "_");
       const path = `${selectedGuideId}/${Date.now()}_${safeName}`;
 
-      const { error: upErr } = await supabase.storage
-        .from("guides")
-        .upload(path, file, { upsert: false });
+      const { error: upErr } = await supabase.storage.from("guides").upload(path, file, {
+        upsert: false,
+      });
 
       if (upErr) {
         setGlobalError(`Upload fehlgeschlagen: ${upErr.message}`);
         return;
       }
 
-      // record in guide_files
       const { error: dbErr } = await supabase.from("guide_files").insert([
         {
           guide_id: selectedGuideId,
@@ -554,20 +606,19 @@ export default function Dashboard() {
   };
 
   const getGuideFileUrl = (path) => {
-    if (!path) return "";
+    if (!supabase || !path) return "";
     const { data } = supabase.storage.from("guides").getPublicUrl(path);
     return data?.publicUrl || "";
   };
 
   const deleteGuideFile = async (fileRow) => {
+    if (!supabase) return;
     if (!fileRow?.id) return;
+
     setGlobalError("");
 
-    const path = fileRow.path;
-
-    // remove storage file first (best effort)
-    if (path) {
-      await supabase.storage.from("guides").remove([path]);
+    if (fileRow.path) {
+      await supabase.storage.from("guides").remove([fileRow.path]);
     }
 
     const { error } = await supabase.from("guide_files").delete().eq("id", fileRow.id);
@@ -575,11 +626,14 @@ export default function Dashboard() {
       setGlobalError(`Datei löschen fehlgeschlagen: ${error.message}`);
       return;
     }
+
     await loadGuideFiles(selectedGuideId);
   };
 
   const createSubtask = async () => {
+    if (!supabase || !user) return;
     setGlobalError("");
+
     const t = subtaskTitle.trim();
     if (!t || !subtaskTaskId) return;
 
@@ -596,33 +650,41 @@ export default function Dashboard() {
       setGlobalError(`Unteraufgabe anlegen fehlgeschlagen: ${error.message}`);
       return;
     }
+
     setSubtaskTitle("");
     await loadSubtasks();
   };
 
   const toggleSubtaskDone = async (sid, done) => {
+    if (!supabase) return;
     setGlobalError("");
+
     const { error } = await supabase.from("subtasks").update({ done: !!done }).eq("id", sid);
     if (error) {
       setGlobalError(`Unteraufgabe Status ändern fehlgeschlagen: ${error.message}`);
       return;
     }
+
     await loadSubtasks();
   };
 
   const deleteSubtask = async (sid) => {
+    if (!supabase) return;
     setGlobalError("");
+
     const { error } = await supabase.from("subtasks").delete().eq("id", sid);
     if (error) {
       setGlobalError(`Unteraufgabe löschen fehlgeschlagen: ${error.message}`);
       return;
     }
+
     await loadSubtasks();
   };
 
   const saveUserSettings = async () => {
+    if (!supabase || !user) return;
     setGlobalError("");
-    // safe approach: select -> insert or update (no upsert / ON CONFLICT)
+
     const { data, error } = await supabase
       .from("user_settings")
       .select("*")
@@ -647,6 +709,7 @@ export default function Dashboard() {
         .from("user_settings")
         .update(payload)
         .eq("user_id", user.id);
+
       if (upErr) {
         setGlobalError(`Einstellungen speichern fehlgeschlagen: ${upErr.message}`);
         return;
@@ -660,15 +723,14 @@ export default function Dashboard() {
     }
   };
 
-  /* ---------------- Auth UI Actions ---------------- */
   const signOut = async () => {
+    if (!supabase) return;
     setGlobalError("");
     await supabase.auth.signOut();
   };
 
   /* ---------------- Derived ---------------- */
   const accentColor = useMemo(() => {
-    // simple mapping
     switch (accent) {
       case "blue":
         return "#2563eb";
@@ -690,7 +752,7 @@ export default function Dashboard() {
     const bg = (() => {
       if (background === "clear") return isDark ? "#0b1220" : "#f6f7fb";
       if (background === "neutral") return isDark ? "#0f172a" : "#f2f4f7";
-      return isDark ? "#0c1526" : "#eef2ff"; // soft
+      return isDark ? "#0c1526" : "#eef2ff";
     })();
 
     const card = isDark ? "#0f1b33" : "#ffffff";
@@ -700,6 +762,114 @@ export default function Dashboard() {
 
     return { isDark, bg, card, text, sub, border };
   }, [theme, background]);
+
+  const styles = useMemo(() => {
+    return {
+      page: {
+        minHeight: "100vh",
+        background: ui.bg,
+        color: ui.text,
+        fontFamily:
+          '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif',
+      },
+      container: { maxWidth: 1280, margin: "0 auto", padding: 18 },
+      grid: {
+        display: "grid",
+        gridTemplateColumns: "320px 1fr",
+        gap: 18,
+        alignItems: "start",
+      },
+      card: {
+        background: ui.card,
+        border: `1px solid ${ui.border}`,
+        borderRadius: 16,
+        padding: 16,
+        boxShadow: ui.isDark ? "none" : "0 10px 30px rgba(0,0,0,0.06)",
+      },
+      h: { margin: 0, fontSize: 18, fontWeight: 600 },
+      small: { color: ui.sub, fontSize: 13 },
+      btn: {
+        background: accentColor,
+        color: "#fff",
+        border: "none",
+        padding: "10px 14px",
+        borderRadius: 12,
+        cursor: "pointer",
+        fontWeight: 600,
+        whiteSpace: "nowrap",
+      },
+      btnGhost: {
+        background: "transparent",
+        color: ui.text,
+        border: `1px solid ${ui.border}`,
+        padding: "10px 14px",
+        borderRadius: 12,
+        cursor: "pointer",
+        fontWeight: 600,
+        whiteSpace: "nowrap",
+      },
+      input: {
+        width: "100%",
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: `1px solid ${ui.border}`,
+        background: ui.isDark ? "#0b1427" : "#ffffff",
+        color: ui.text,
+        outline: "none",
+      },
+      select: {
+        width: "100%",
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: `1px solid ${ui.border}`,
+        background: ui.isDark ? "#0b1427" : "#ffffff",
+        color: ui.text,
+        outline: "none",
+      },
+      tabs: { display: "flex", gap: 10, flexWrap: "wrap" },
+      tab: (active) => ({
+        padding: "8px 12px",
+        borderRadius: 999,
+        border: `1px solid ${ui.border}`,
+        background: active ? accentColor : ui.card,
+        color: active ? "#fff" : ui.text,
+        cursor: "pointer",
+        fontWeight: 600,
+        fontSize: 13,
+      }),
+      row: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+      pill: {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 10px",
+        borderRadius: 999,
+        border: `1px solid ${ui.border}`,
+        fontSize: 13,
+        color: ui.sub,
+      },
+      danger: {
+        background: "transparent",
+        color: "#ef4444",
+        border: "1px solid rgba(239,68,68,0.35)",
+        padding: "8px 12px",
+        borderRadius: 12,
+        cursor: "pointer",
+        fontWeight: 600,
+      },
+      hr: { border: 0, borderTop: `1px solid ${ui.border}`, margin: "14px 0" },
+    };
+  }, [ui, accentColor]);
+
+  const subtasksByTask = useMemo(() => {
+    const map = new Map();
+    for (const s of subtasks) {
+      const key = s.task_id;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(s);
+    }
+    return map;
+  }, [subtasks]);
 
   const counts = useMemo(() => {
     const todayFrom = startOfToday().toISOString();
@@ -713,122 +883,27 @@ export default function Dashboard() {
     const tasksWeek = tasks.filter((t) => inRange(t, weekFrom, weekTo));
     const open = tasks.filter((t) => (t.status || "open") !== "done");
 
-    return {
-      today: tasksToday.length,
-      week: tasksWeek.length,
-      open: open.length,
-    };
+    return { today: tasksToday.length, week: tasksWeek.length, open: open.length };
   }, [tasks]);
 
-  const boardOpen = useMemo(() => tasks.filter((t) => (t.status || "open") !== "done"), [tasks]);
-  const boardDone = useMemo(() => tasks.filter((t) => (t.status || "open") === "done"), [tasks]);
+  const boardOpen = useMemo(
+    () => tasks.filter((t) => (t.status || "open") !== "done"),
+    [tasks]
+  );
+  const boardDone = useMemo(
+    () => tasks.filter((t) => (t.status || "open") === "done"),
+    [tasks]
+  );
 
-  const subtasksByTask = useMemo(() => {
-    const map = new Map();
-    for (const s of subtasks) {
-      const key = s.task_id;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(s);
-    }
-    return map;
-  }, [subtasks]);
-
-  /* ---------------- Styles ---------------- */
-  const styles = {
-    page: {
-      minHeight: "100vh",
-      background: ui.bg,
-      color: ui.text,
-      fontFamily:
-        '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif',
-    },
-    container: { maxWidth: 1280, margin: "0 auto", padding: 18 },
-    grid: {
-      display: "grid",
-      gridTemplateColumns: "320px 1fr",
-      gap: 18,
-      alignItems: "start",
-    },
-    card: {
-      background: ui.card,
-      border: `1px solid ${ui.border}`,
-      borderRadius: 16,
-      padding: 16,
-      boxShadow: ui.isDark ? "none" : "0 10px 30px rgba(0,0,0,0.06)",
-    },
-    h: { margin: 0, fontSize: 18, fontWeight: 600 },
-    small: { color: ui.sub, fontSize: 13 },
-    btn: {
-      background: accentColor,
-      color: "#fff",
-      border: "none",
-      padding: "10px 14px",
-      borderRadius: 12,
-      cursor: "pointer",
-      fontWeight: 600,
-      whiteSpace: "nowrap",
-    },
-    btnGhost: {
-      background: "transparent",
-      color: ui.text,
-      border: `1px solid ${ui.border}`,
-      padding: "10px 14px",
-      borderRadius: 12,
-      cursor: "pointer",
-      fontWeight: 600,
-      whiteSpace: "nowrap",
-    },
-    input: {
-      width: "100%",
-      padding: "10px 12px",
-      borderRadius: 12,
-      border: `1px solid ${ui.border}`,
-      background: ui.isDark ? "#0b1427" : "#ffffff",
-      color: ui.text,
-      outline: "none",
-    },
-    select: {
-      width: "100%",
-      padding: "10px 12px",
-      borderRadius: 12,
-      border: `1px solid ${ui.border}`,
-      background: ui.isDark ? "#0b1427" : "#ffffff",
-      color: ui.text,
-      outline: "none",
-    },
-    tabs: { display: "flex", gap: 10, flexWrap: "wrap" },
-    tab: (active) => ({
-      padding: "8px 12px",
-      borderRadius: 999,
-      border: `1px solid ${ui.border}`,
-      background: active ? accentColor : ui.card,
-      color: active ? "#fff" : ui.text,
-      cursor: "pointer",
-      fontWeight: 600,
-      fontSize: 13,
-    }),
-    row: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
-    pill: {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "6px 10px",
-      borderRadius: 999,
-      border: `1px solid ${ui.border}`,
-      fontSize: 13,
-      color: ui.sub,
-    },
-    danger: {
-      background: "transparent",
-      color: "#ef4444",
-      border: "1px solid rgba(239,68,68,0.35)",
-      padding: "8px 12px",
-      borderRadius: 12,
-      cursor: "pointer",
-      fontWeight: 600,
-    },
-    hr: { border: 0, borderTop: `1px solid ${ui.border}`, margin: "14px 0" },
-  };
+  /* ---------------- Loading/No ENV hint ---------------- */
+  if (!supabase) {
+    return (
+      <div style={{ minHeight: "100vh", padding: 24, fontFamily: "Arial, sans-serif" }}>
+        Supabase Client ist nicht initialisiert. Prüfe bitte:
+        NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel.
+      </div>
+    );
+  }
 
   /* ---------------- Login Screen ---------------- */
   if (!user) {
@@ -849,7 +924,6 @@ export default function Dashboard() {
             <LoginBox
               supabase={supabase}
               styles={styles}
-              accentColor={accentColor}
               theme={theme}
               setTheme={setTheme}
               background={background}
@@ -857,10 +931,6 @@ export default function Dashboard() {
               accent={accent}
               setAccent={setAccent}
             />
-
-            <div style={{ marginTop: 14, ...styles.small }}>
-              Hinweis: Nach Login werden Einstellungen zusätzlich in der DB gespeichert.
-            </div>
           </div>
         </div>
       </div>
@@ -871,7 +941,6 @@ export default function Dashboard() {
   return (
     <div style={styles.page}>
       <div style={styles.container}>
-        {/* Top Tabs */}
         <div style={{ ...styles.row, justifyContent: "space-between", marginBottom: 12 }}>
           <div style={styles.tabs}>
             {TABS.map((t) => (
@@ -909,7 +978,6 @@ export default function Dashboard() {
         ) : null}
 
         <div style={styles.grid}>
-          {/* Left Column */}
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div style={styles.card}>
               <div style={{ ...styles.h, marginBottom: 10 }}>Übersicht</div>
@@ -942,7 +1010,6 @@ export default function Dashboard() {
 
             <div style={styles.card}>
               <div style={{ ...styles.h, marginBottom: 10 }}>Filter</div>
-
               <div style={{ display: "grid", gap: 10 }}>
                 <select
                   style={styles.select}
@@ -979,12 +1046,17 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Right Column */}
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {/* Create Task */}
             <div style={styles.card}>
               <div style={{ ...styles.h, marginBottom: 10 }}>Aufgabe anlegen</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 220px 180px 170px 140px", gap: 10 }}>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 240px 220px 200px 160px",
+                  gap: 10,
+                }}
+              >
                 <input
                   style={styles.input}
                   value={newTitle}
@@ -1014,18 +1086,6 @@ export default function Dashboard() {
 
                 <select
                   style={styles.select}
-                  value={newDueBucket}
-                  onChange={(e) => setNewDueBucket(e.target.value)}
-                >
-                  {DUE_BUCKETS.map((b) => (
-                    <option key={b.value} value={b.value}>
-                      {b.label}
-                    </option>
-                  ))}
-                </select>
-
-                <select
-                  style={styles.select}
                   value={newStatus}
                   onChange={(e) => setNewStatus(e.target.value)}
                 >
@@ -1038,7 +1098,7 @@ export default function Dashboard() {
                 </button>
               </div>
 
-              <div style={{ marginTop: 10, maxWidth: 420 }}>
+              <div style={{ marginTop: 10, maxWidth: 520 }}>
                 <select
                   style={styles.select}
                   value={newGuideId}
@@ -1052,13 +1112,8 @@ export default function Dashboard() {
                   ))}
                 </select>
               </div>
-
-              <div style={{ marginTop: 8, ...styles.small }}>
-                Kalender nutzt due_at. Filter nutzt Bereich und Zeitraum.
-              </div>
             </div>
 
-            {/* Active Tab Content */}
             {activeTab === "board" && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 <div style={styles.card}>
@@ -1071,8 +1126,8 @@ export default function Dashboard() {
                         <TaskCard
                           key={t.id}
                           t={t}
+                          ui={ui}
                           styles={styles}
-                          accentColor={accentColor}
                           onDone={() => setTaskStatus(t.id, "done")}
                           onOpen={() => setTaskStatus(t.id, "open")}
                           onDelete={() => deleteTask(t.id)}
@@ -1094,8 +1149,8 @@ export default function Dashboard() {
                         <TaskCard
                           key={t.id}
                           t={t}
+                          ui={ui}
                           styles={styles}
-                          accentColor={accentColor}
                           onDone={() => setTaskStatus(t.id, "done")}
                           onOpen={() => setTaskStatus(t.id, "open")}
                           onDelete={() => deleteTask(t.id)}
@@ -1112,6 +1167,7 @@ export default function Dashboard() {
             {activeTab === "list" && (
               <div style={styles.card}>
                 <div style={{ ...styles.h, marginBottom: 10 }}>Liste</div>
+
                 {tasks.length === 0 ? (
                   <div style={styles.small}>Keine Aufgaben</div>
                 ) : (
@@ -1130,12 +1186,8 @@ export default function Dashboard() {
                         {tasks.map((t) => (
                           <tr key={t.id} style={{ borderTop: `1px solid ${ui.border}` }}>
                             <td style={{ padding: "10px 8px" }}>{t.title}</td>
-                            <td style={{ padding: "10px 8px" }}>
-                              {t.areas?.name || ""}
-                            </td>
-                            <td style={{ padding: "10px 8px" }}>
-                              {fmtDateTime(t.due_at)}
-                            </td>
+                            <td style={{ padding: "10px 8px" }}>{t.areas?.name || ""}</td>
+                            <td style={{ padding: "10px 8px" }}>{fmtDateTime(t.due_at)}</td>
                             <td style={{ padding: "10px 8px" }}>
                               {(t.status || "open") === "done" ? "Erledigt" : "Zu erledigen"}
                             </td>
@@ -1158,11 +1210,7 @@ export default function Dashboard() {
                                 </button>
                               )}
                               <span style={{ marginLeft: 10 }}>
-                                <button
-                                  style={styles.danger}
-                                  type="button"
-                                  onClick={() => deleteTask(t.id)}
-                                >
+                                <button style={styles.danger} type="button" onClick={() => deleteTask(t.id)}>
                                   Löschen
                                 </button>
                               </span>
@@ -1179,6 +1227,7 @@ export default function Dashboard() {
             {activeTab === "calendar" && (
               <div style={styles.card}>
                 <div style={{ ...styles.h, marginBottom: 10 }}>Kalender</div>
+
                 {calendarItems.length === 0 ? (
                   <div style={styles.small}>
                     Keine Kalender-Einträge (keine Aufgaben mit due_at im aktuellen Filter).
@@ -1212,10 +1261,13 @@ export default function Dashboard() {
             {activeTab === "timeline" && (
               <div style={styles.card}>
                 <div style={{ ...styles.h, marginBottom: 10 }}>Timeline</div>
+
                 <div style={styles.small}>
-                  Aktuell einfache Darstellung nach due_at. Später können wir hier eine echte Zeitachse bauen.
+                  Einfache Darstellung nach due_at. Später können wir hier eine echte Zeitachse bauen.
                 </div>
+
                 <div style={styles.hr} />
+
                 {calendarItems.length === 0 ? (
                   <div style={styles.small}>Keine Einträge</div>
                 ) : (
@@ -1290,11 +1342,7 @@ export default function Dashboard() {
                         <div>{a.name}</div>
                       </div>
 
-                      <button
-                        type="button"
-                        style={styles.danger}
-                        onClick={() => deleteArea(a.id)}
-                      >
+                      <button type="button" style={styles.danger} onClick={() => deleteArea(a.id)}>
                         Löschen
                       </button>
                     </div>
@@ -1308,7 +1356,6 @@ export default function Dashboard() {
                 <div style={{ ...styles.h, marginBottom: 10 }}>Anleitung</div>
 
                 <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 14 }}>
-                  {/* Create + select */}
                   <div style={{ border: `1px solid ${ui.border}`, borderRadius: 16, padding: 14 }}>
                     <div style={{ fontWeight: 700, marginBottom: 10 }}>Anleitung anlegen</div>
 
@@ -1349,18 +1396,12 @@ export default function Dashboard() {
                         </option>
                       ))}
                     </select>
-
-                    <div style={{ marginTop: 10, ...styles.small }}>
-                      Zielbild: Hauptaufgabe → Unteraufgabe → Verweis zur Anleitung.
-                      Die Verknüpfung ist bereits über guide_id möglich.
-                    </div>
                   </div>
 
-                  {/* Upload + list */}
                   <div style={{ border: `1px solid ${ui.border}`, borderRadius: 16, padding: 14 }}>
                     <div style={{ fontWeight: 700, marginBottom: 10 }}>Dateien hochladen</div>
-
                     <div style={styles.small}>Bucket: guides</div>
+
                     <div style={{ height: 8 }} />
 
                     <input
@@ -1424,7 +1465,6 @@ export default function Dashboard() {
 
                 <div style={styles.hr} />
 
-                {/* Subtasks */}
                 <div style={{ border: `1px solid ${ui.border}`, borderRadius: 16, padding: 14 }}>
                   <div style={{ fontWeight: 700, marginBottom: 10 }}>Unteraufgabe anlegen</div>
 
@@ -1467,10 +1507,6 @@ export default function Dashboard() {
                     </button>
                   </div>
 
-                  <div style={{ marginTop: 12, ...styles.small }}>
-                    Verknüpfung Unteraufgabe → Anleitung läuft über guide_id in subtasks.
-                  </div>
-
                   <div style={styles.hr} />
 
                   <div style={{ fontWeight: 700, marginBottom: 8 }}>Vorhandene Unteraufgaben</div>
@@ -1495,9 +1531,7 @@ export default function Dashboard() {
                             <div style={{ fontWeight: 700 }}>
                               {s.done ? "✓ " : ""}{s.title}
                             </div>
-                            <div style={styles.small}>
-                              Hauptaufgabe: {s.tasks?.title || "-"}
-                            </div>
+                            <div style={styles.small}>Hauptaufgabe: {s.tasks?.title || "-"}</div>
                           </div>
                           <div style={styles.row}>
                             <button
@@ -1590,14 +1624,14 @@ function MiniStat({ label, value, styles }) {
   );
 }
 
-function TaskCard({ t, styles, onDone, onOpen, onDelete, subtasks, guides }) {
+function TaskCard({ t, ui, styles, onDone, onOpen, onDelete, subtasks, guides }) {
   const isDone = (t.status || "open") === "done";
   const guideTitle = t.guide_id ? guides.find((g) => g.id === t.guide_id)?.title : "";
 
   return (
     <div
       style={{
-        border: `1px solid ${styles.card.border || "rgba(0,0,0,0.08)"}`,
+        border: `1px solid ${ui.border}`,
         borderRadius: 14,
         padding: 12,
       }}
@@ -1642,16 +1676,7 @@ function TaskCard({ t, styles, onDone, onOpen, onDelete, subtasks, guides }) {
   );
 }
 
-function LoginBox({
-  supabase,
-  styles,
-  theme,
-  setTheme,
-  background,
-  setBackground,
-  accent,
-  setAccent,
-}) {
+function LoginBox({ supabase, styles, theme, setTheme, background, setBackground, accent, setAccent }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mode, setMode] = useState("login"); // login | signup
@@ -1722,11 +1747,7 @@ function LoginBox({
 
           <div>
             <div style={styles.small}>Hintergrund</div>
-            <select
-              style={styles.select}
-              value={background}
-              onChange={(e) => setBackground(e.target.value)}
-            >
+            <select style={styles.select} value={background} onChange={(e) => setBackground(e.target.value)}>
               {BACKGROUNDS.map((b) => (
                 <option key={b.value} value={b.value}>
                   {b.label}
