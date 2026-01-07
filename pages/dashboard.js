@@ -435,14 +435,14 @@ export default function DashboardPage() {
     if (!dueAtIso) dueAtIso = new Date().toISOString();
 
     const payload = {
-      title,
-      area_id: newAreaId || null,
-      due_at: dueAtIso,
-      due_day: dueAtIso ? dueAtIso.slice(0, 10) : null,
-      status: newStatus === "done" ? "done" : "open",
-      user_id: user.id,
-      guide_id: newGuideId || null,
-    };
+  title,
+  area_id: newAreaId || null,
+  due_at: dueAtIso,
+  status: newStatus === "done" ? "done" : "open",
+  user_id: user.id,
+  guide_id: newGuideId || null,
+};
+
 
     const { error } = await supabase.from("tasks").insert([payload]);
 
