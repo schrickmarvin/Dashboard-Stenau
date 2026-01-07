@@ -444,14 +444,15 @@ export default function DashboardPage() {
     let dueAtIso = toISO(newDueAtLocal);
     if (!dueAtIso) dueAtIso = new Date().toISOString();
 
-  const payload = {
+const payload = {
   title,
   area_id: areaId || null,
   due_at: dueAtIso,
-  status: STATUS_MAP_UI_TO_DB[selectedStatus] ?? "todo",
+  status: selectedStatus === "Erledigt" ? "done" : "todo",
   user_id: user.id,
   guide_id: guideId || null,
 };
+
 
 
     const { error } = await supabase.from("tasks").insert([payload]);
