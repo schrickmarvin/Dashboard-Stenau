@@ -389,7 +389,7 @@ export default function DashboardPage() {
 
     const { data, error } = await supabase
       .from("subtasks")
-      .select("id,title,task_id,guide_id,done,created_at,tasks(title)")
+      .select("id,title,task_id,guide_id,is_done,status,created_at,tasks(title),guides(title)")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -658,8 +658,8 @@ const payload = {
       task_id: subtaskTaskId,
       title: t,
       guide_id: subtaskGuideId || null,
-      done: false,
-      user_id: user.id,
+      is_done: false,
+      status: "todo",
     };
 
     const { error } = await supabase.from("subtasks").insert([payload]);
@@ -676,7 +676,7 @@ const payload = {
     if (!supabase) return;
     setGlobalError("");
 
-    const { error } = await supabase.from("subtasks").update({ done: !!done }).eq("id", sid);
+    const { error } = await supabase.from("subtasks").update({ is_done: !!done, status: !!done ? "done" : "todo" }).eq("id", sid);
     if (error) {
       setGlobalError(`Unteraufgabe Status ändern fehlgeschlagen: ${error.message}`);
       return;
@@ -684,7 +684,6 @@ const payload = {
 
     await loadSubtasks();
   };
-
   // Inline-Helfer: Unteraufgabe direkt aus dem Board anlegen (ohne globale Eingabefelder)
   const createSubtaskInline = async (taskId, title, guideId = null) => {
     if (!supabase || !user) return;
@@ -698,36 +697,16 @@ const payload = {
       title: t,
       guide_id: guideId || null,
       is_done: false,
+      status: "todo",
     };
 
-  const toggleExpandedSubtasks = (taskId) => {
-    setExpandedSubtasksByTask((prev) => ({
-      ...prev,
-      [taskId]: !prev?.[taskId],
-    }));
-  };
+    let res = await supabase.from("subtasks").insert([payload]).select("id");
 
-
-    const res = await callRpcOrFallback(
-      supabase,
-      DB.rpcCreateSubtask,
-      { task_id: taskId, title: t, guide_id: guideId || null },
-      async () => {
-        // 1) Versuch mit guide_id
-        let out = await supabase.from(DB.subtasks).insert([payload]).select();
-        if (
-          out.error &&
-          String(out.error.message || "")
-            .toLowerCase()
-            .includes("guide_id")
-        ) {
-          // 2) Fallback ohne guide_id (wenn Spalte noch fehlt)
-          const { guide_id, ...payloadNoGuide } = payload;
-          out = await supabase.from(DB.subtasks).insert([payloadNoGuide]).select();
-        }
-        return out;
-      }
-    );
+    // Falls guide_id in DB/Schema/RLS noch nicht sauber ist: erneut ohne guide_id versuchen
+    if (res.error && /guide_id/i.test(res.error.message || "")) {
+      const payload2 = { task_id: taskId, title: t, is_done: false, status: "todo" };
+      res = await supabase.from("subtasks").insert([payload2]).select("id");
+    }
 
     if (res.error) {
       setGlobalError(`Unteraufgabe anlegen fehlgeschlagen: ${res.error.message}`);
@@ -737,6 +716,14 @@ const payload = {
     await loadSubtasks();
   };
 
+  const toggleExpandedSubtasks = (taskId) => {
+    setExpandedSubtasks((prev) => {
+      const next = new Set(prev);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  };
 
   const deleteSubtask = async (sid) => {
     if (!supabase) return;
@@ -1603,7 +1590,7 @@ const payload = {
                         >
                           <div style={{ minWidth: 0 }}>
                             <div style={{ fontWeight: 700 }}>
-                              {s.done ? "✓ " : ""}{s.title}
+                              {s.is_done ? "✓ " : ""}{s.title}
                             </div>
                             <div style={styles.small}>Hauptaufgabe: {s.tasks?.title || "-"}</div>
                           </div>
@@ -1611,9 +1598,9 @@ const payload = {
                             <button
                               type="button"
                               style={styles.btnGhost}
-                              onClick={() => toggleSubtaskDone(s.id, !s.done)}
+                              onClick={() => toggleSubtaskDone(s.id, !s.is_done)}
                             >
-                              {s.done ? "Offen" : "Erledigt"}
+                              {s.is_done ? "Offen" : "Erledigt"}
                             </button>
                             <button type="button" style={styles.danger} onClick={() => deleteSubtask(s.id)}>
                               Löschen
@@ -1698,144 +1685,114 @@ function MiniStat({ label, value, styles }) {
   );
 }
 
-function TaskCard({ t, ui, styles, onDone, onOpen, onDelete, subtasks, guides, expanded, onToggleExpanded, onCreateSubtaskInline, onToggleSubtaskDone }) {
-  const isDone = (t.status || "open") === "done";
+function TaskCard({
+  t,
+  guides,
+  areas,
+  subtasks,
+  styles,
+  onToggleTaskStatus,
+  expanded,
+  onToggleExpanded,
+  onCreateSubtaskInline,
+  onToggleSubtaskDone,
+  onDeleteTask,
+}) {
+  const isDone = (t.status || "todo") === "done";
+  const areaName = t.area_id ? areas.find((a) => a.id === t.area_id)?.name : "";
   const guideTitle = t.guide_id ? guides.find((g) => g.id === t.guide_id)?.title : "";
 
+  const st = subtasks || [];
+  const stDoneCount = st.filter((s) => (s.is_done ?? s.done) === true).length;
+  const stTotal = st.length;
+  const stSorted = [...st].sort((a, b) => {
+    const ad = (a.is_done ?? a.done) ? 1 : 0;
+    const bd = (b.is_done ?? b.done) ? 1 : 0;
+    if (ad !== bd) return ad - bd; // offen zuerst
+    const at = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const bt = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return bt - at; // neuere oben
+  });
+
   return (
-    <div
-      style={{
-        border: `1px solid ${ui.border}`,
-        borderRadius: 14,
-        padding: 12,
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-        <div style={{ fontWeight: 800 }}>{t.title}</div>
-        <div style={styles.small}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
-      </div>
-
-      <div style={{ marginTop: 6, ...styles.small }}>
-        Bereich: {t.areas?.name || "-"} · Status: {isDone ? "Erledigt" : "Zu erledigen"}
-        {guideTitle ? ` · Anleitung: ${guideTitle}` : ""}
-      </div>
-
-      {typeof subtasks !== "undefined" ? (
-        <div style={{ marginTop: 10 }}>
-          <button
-            type="button"
-            onClick={onToggleExpanded}
-            style={{
-              ...styles.smallBtn,
-              background: expanded ? "#0f172a" : "#e2e8f0",
-              color: expanded ? "#fff" : "#0f172a",
-            }}
-          >
-            Unteraufgaben ({(subtasks || []).filter((s) => (s.done ?? s.is_done) === true).length}/{(subtasks || []).length})
-          </button>
-
-          {expanded ? (
-            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-              {(subtasks || []).length ? (
-                (subtasks || []).map((s) => {
-                  const isDone = (s.done ?? s.is_done) === true;
-                  return (
-                    <div
-                      key={s.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        padding: "8px 10px",
-                        borderRadius: 12,
-                        background: "#f8fafc",
-                        border: "1px solid #e2e8f0",
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isDone}
-                        onChange={() => onToggleSubtaskDone(s.id, isDone)}
-                      />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 13, lineHeight: 1.2 }}>
-                          {s.title}
-                        </div>
-                        {s.guide_title ? (
-                          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
-                            Anleitung: {s.guide_title}
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div style={styles.small}>Keine Unteraufgaben</div>
-              )}
-
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <input
-                  placeholder="Neue Unteraufgabe"
-                  value={ui.subtaskTitleByTask[t.id] || ""}
-                  onChange={(e) =>
-                    ui.setSubtaskTitleByTask((prev) => ({
-                      ...prev,
-                      [t.id]: e.target.value,
-                    }))
-                  }
-                  style={{ ...styles.input, flex: 1 }}
-                />
-                <select
-                  value={ui.subtaskGuideByTask[t.id] || ""}
-                  onChange={(e) =>
-                    ui.setSubtaskGuideByTask((prev) => ({
-                      ...prev,
-                      [t.id]: e.target.value,
-                    }))
-                  }
-                  style={styles.select}
-                >
-                  <option value="">Anleitung (optional)</option>
-                  {(guides || []).map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.title}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const title = (ui.subtaskTitleByTask[t.id] || "").trim();
-                    const gid = ui.subtaskGuideByTask[t.id] || null;
-                    onCreateSubtaskInline(t.id, title, gid);
-                    ui.setSubtaskTitleByTask((prev) => ({ ...prev, [t.id]: "" }));
-                    ui.setSubtaskGuideByTask((prev) => ({ ...prev, [t.id]: "" }));
-                  }}
-                  style={styles.primaryBtn}
-                >
-                  +
-                </button>
-              </div>
-            </div>
-          ) : null}
+    <div style={styles.card}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <div style={{ fontWeight: 800, display: "flex", gap: 8, alignItems: "center" }}>
+            <span>{t.title}</span>
+            {stTotal ? <span style={{ fontSize: 12, color: "#64748b" }}>{stDoneCount}/{stTotal}</span> : null}
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 6, flexWrap: "wrap" }}>
+            {areaName ? <span style={styles.badge}>{areaName}</span> : null}
+            {guideTitle ? <span style={styles.badge}>Anleitung: {guideTitle}</span> : null}
+            {t.due_at ? <span style={styles.badge}>Fällig: {formatDateTime(t.due_at)}</span> : null}
+          </div>
         </div>
-      ) : null}
 
-      <div style={{ marginTop: 10, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        {isDone ? (
-          <button type="button" style={styles.btnGhost} onClick={onOpen}>
-            Wieder öffnen
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <button type="button" style={styles.btn} onClick={() => onToggleTaskStatus(t.id, t.status)}>
+            {isDone ? "Wieder offen" : "Erledigt"}
           </button>
-        ) : (
-          <button type="button" style={styles.btn} onClick={onDone}>
-            Erledigt
+          <button type="button" style={styles.btnGhost} onClick={() => onDeleteTask(t.id)}>
+            Löschen
           </button>
-        )}
-        <button type="button" style={styles.danger} onClick={onDelete}>
-          Löschen
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button type="button" style={styles.btnGhost} onClick={() => onToggleExpanded(t.id)}>
+          {expanded ? "Unteraufgaben schließen" : `Unteraufgaben (${stDoneCount}/${stTotal})`}
         </button>
       </div>
+
+      {expanded ? (
+        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+          <SubtaskInlineForm
+            guides={guides}
+            styles={styles}
+            onCreate={(title, guideId) => onCreateSubtaskInline(t.id, title, guideId)}
+          />
+
+          <div style={{ display: "grid", gap: 6 }}>
+            {stTotal ? (
+              stSorted.map((s) => {
+                const sDone = (s.is_done ?? s.done) === true;
+                return (
+                  <div
+                    key={s.id}
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      alignItems: "center",
+                      padding: "8px 10px",
+                      border: `1px solid ${styles.border}`,
+                      borderRadius: 12,
+                      background: styles.cardBg,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={sDone}
+                      onChange={() => onToggleSubtaskDone(s.id, !sDone)}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ textDecoration: sDone ? "line-through" : "none" }}>{s.title}</div>
+                      {s.guides?.title ? (
+                        <div style={{ fontSize: 12, opacity: 0.75 }}>Anleitung: {s.guides.title}</div>
+                      ) : null}
+                    </div>
+                    <button type="button" style={styles.btnGhost} onClick={() => onDeleteSubtask(s.id)}>
+                      Löschen
+                    </button>
+                  </div>
+                );
+              })
+            ) : (
+              <div style={styles.small}>Keine Unteraufgaben</div>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
