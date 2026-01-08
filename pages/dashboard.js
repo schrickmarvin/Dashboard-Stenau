@@ -180,7 +180,7 @@ export default function DashboardPage() {
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
   const [newDueAtLocal, setNewDueAtLocal] = useState(makeLocalDateTimeValue());
-  const [newStatus, setNewStatus] = useState("todo"); // todo | done
+  const [newStatus, setNewStatus] = useState("open"); // open | done
   const [newGuideId, setNewGuideId] = useState("");
 
   /* ---------- Areas ---------- */
@@ -197,6 +197,12 @@ export default function DashboardPage() {
   const [subtaskTaskId, setSubtaskTaskId] = useState("");
   const [subtaskTitle, setSubtaskTitle] = useState("");
   const [subtaskGuideId, setSubtaskGuideId] = useState("");
+
+  // Board-Unteraufgaben (pro Task) – lokale Eingaben je Karte
+  const [subtaskTitleByTask, setSubtaskTitleByTask] = useState({});
+  const [subtaskGuideByTask, setSubtaskGuideByTask] = useState({});
+  const [expandedSubtasksByTask, setExpandedSubtasksByTask] = useState({});
+
 
   /* ---------------- Init supabase client (browser only) ---------------- */
   useEffect(() => {
@@ -383,8 +389,7 @@ export default function DashboardPage() {
 
     const { data, error } = await supabase
       .from("subtasks")
-      // subtasks Tabelle: is_done (boolean) + optional guide_id
-      .select("id,title,task_id,is_done,status,guide_id,created_at,updated_at,tasks(title)")
+      .select("id,title,task_id,guide_id,done,created_at,tasks(title)")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -392,9 +397,7 @@ export default function DashboardPage() {
       return;
     }
 
-    // UI erwartet Feld "done" -> aus is_done ableiten
-    const rows = (data || []).map((s) => ({ ...s, done: !!s.is_done }));
-    setSubtasks(rows);
+    setSubtasks(data || []);
   };
 
   const loadUserSettings = async () => {
@@ -447,15 +450,14 @@ export default function DashboardPage() {
     let dueAtIso = toISO(newDueAtLocal);
     if (!dueAtIso) dueAtIso = new Date().toISOString();
 
-    // Status muss dem DB-Check entsprechen: todo | done
-    const payload = {
-      title,
-      area_id: newAreaId || null,
-      due_at: dueAtIso,
-      status: newStatus === "done" ? "done" : "todo",
-      user_id: user.id,
-      guide_id: newGuideId || null,
-    };
+const payload = {
+  title,
+  area_id: areaId || null,
+  due_at: dueAtIso,
+  status: selectedStatus === "Erledigt" ? "done" : "todo",
+  user_id: user.id,
+  guide_id: guideId || null,
+};
 
 
 
@@ -470,11 +472,11 @@ export default function DashboardPage() {
     await Promise.all([loadTasks(), loadCalendar()]);
   };
 
-  const setTaskStatus = async (taskId, nextStatus) => {
+  const setTaskStatus = async (taskId, status) => {
     if (!supabase) return;
     setGlobalError("");
 
-    const next = nextStatus === "done" ? "done" : "todo";
+    const next = status === "done" ? "done" : "open";
     const { error } = await supabase.from("tasks").update({ status: next }).eq("id", taskId);
 
     if (error) {
@@ -683,6 +685,59 @@ export default function DashboardPage() {
     await loadSubtasks();
   };
 
+  // Inline-Helfer: Unteraufgabe direkt aus dem Board anlegen (ohne globale Eingabefelder)
+  const createSubtaskInline = async (taskId, title, guideId = null) => {
+    if (!supabase || !user) return;
+    setGlobalError("");
+
+    const t = (title || "").trim();
+    if (!t || !taskId) return;
+
+    const payload = {
+      task_id: taskId,
+      title: t,
+      guide_id: guideId || null,
+      is_done: false,
+    };
+
+  const toggleExpandedSubtasks = (taskId) => {
+    setExpandedSubtasksByTask((prev) => ({
+      ...prev,
+      [taskId]: !prev?.[taskId],
+    }));
+  };
+
+
+    const res = await callRpcOrFallback(
+      supabase,
+      DB.rpcCreateSubtask,
+      { task_id: taskId, title: t, guide_id: guideId || null },
+      async () => {
+        // 1) Versuch mit guide_id
+        let out = await supabase.from(DB.subtasks).insert([payload]).select();
+        if (
+          out.error &&
+          String(out.error.message || "")
+            .toLowerCase()
+            .includes("guide_id")
+        ) {
+          // 2) Fallback ohne guide_id (wenn Spalte noch fehlt)
+          const { guide_id, ...payloadNoGuide } = payload;
+          out = await supabase.from(DB.subtasks).insert([payloadNoGuide]).select();
+        }
+        return out;
+      }
+    );
+
+    if (res.error) {
+      setGlobalError(`Unteraufgabe anlegen fehlgeschlagen: ${res.error.message}`);
+      return;
+    }
+
+    await loadSubtasks();
+  };
+
+
   const deleteSubtask = async (sid) => {
     if (!supabase) return;
     setGlobalError("");
@@ -775,8 +830,8 @@ export default function DashboardPage() {
     const sub = isDark ? "#9ca3af" : "#6b7280";
     const border = isDark ? "rgba(255,255,255,0.10)" : "rgba(17,24,39,0.10)";
 
-    return { isDark, bg, card, text, sub, border };
-  }, [theme, background]);
+    return { isDark, bg, card, text, sub, border, subtaskTitleByTask, setSubtaskTitleByTask, subtaskGuideByTask, setSubtaskGuideByTask };
+  }, [theme, background, subtaskTitleByTask, subtaskGuideByTask]);
 
   const styles = useMemo(() => {
     return {
@@ -896,17 +951,17 @@ export default function DashboardPage() {
 
     const tasksToday = tasks.filter((t) => inRange(t, todayFrom, todayTo));
     const tasksWeek = tasks.filter((t) => inRange(t, weekFrom, weekTo));
-    const open = tasks.filter((t) => (t.status || "todo") !== "done");
+    const open = tasks.filter((t) => (t.status || "open") !== "done");
 
     return { today: tasksToday.length, week: tasksWeek.length, open: open.length };
   }, [tasks]);
 
   const boardOpen = useMemo(
-    () => tasks.filter((t) => (t.status || "todo") !== "done"),
+    () => tasks.filter((t) => (t.status || "open") !== "done"),
     [tasks]
   );
   const boardDone = useMemo(
-    () => tasks.filter((t) => (t.status || "todo") === "done"),
+    () => tasks.filter((t) => (t.status || "open") === "done"),
     [tasks]
   );
 
@@ -1104,7 +1159,7 @@ export default function DashboardPage() {
                   value={newStatus}
                   onChange={(e) => setNewStatus(e.target.value)}
                 >
-                  <option value="todo">Zu erledigen</option>
+                  <option value="open">Zu erledigen</option>
                   <option value="done">Erledigt</option>
                 </select>
 
@@ -1144,10 +1199,14 @@ export default function DashboardPage() {
                           ui={ui}
                           styles={styles}
                           onDone={() => setTaskStatus(t.id, "done")}
-                          onOpen={() => setTaskStatus(t.id, "todo")}
+                          onOpen={() => setTaskStatus(t.id, "open")}
                           onDelete={() => deleteTask(t.id)}
                           subtasks={subtasksByTask.get(t.id) || []}
                           guides={guides}
+                          expanded={!!expandedSubtasksByTask?.[t.id]}
+                          onToggleExpanded={() => toggleExpandedSubtasks(t.id)}
+                          onCreateSubtaskInline={createSubtaskInline}
+                          onToggleSubtaskDone={toggleSubtaskDone}
                         />
                       ))}
                     </div>
@@ -1167,7 +1226,7 @@ export default function DashboardPage() {
                           ui={ui}
                           styles={styles}
                           onDone={() => setTaskStatus(t.id, "done")}
-                          onOpen={() => setTaskStatus(t.id, "todo")}
+                          onOpen={() => setTaskStatus(t.id, "open")}
                           onDelete={() => deleteTask(t.id)}
                           subtasks={subtasksByTask.get(t.id) || []}
                           guides={guides}
@@ -1204,14 +1263,14 @@ export default function DashboardPage() {
                             <td style={{ padding: "10px 8px" }}>{t.areas?.name || ""}</td>
                             <td style={{ padding: "10px 8px" }}>{fmtDateTime(t.due_at)}</td>
                             <td style={{ padding: "10px 8px" }}>
-                              {(t.status || "todo") === "done" ? "Erledigt" : "Zu erledigen"}
+                              {(t.status || "open") === "done" ? "Erledigt" : "Zu erledigen"}
                             </td>
                             <td style={{ padding: "10px 8px", textAlign: "right" }}>
-                              {(t.status || "todo") === "done" ? (
+                              {(t.status || "open") === "done" ? (
                                 <button
                                   style={styles.btnGhost}
                                   type="button"
-                                  onClick={() => setTaskStatus(t.id, "todo")}
+                                  onClick={() => setTaskStatus(t.id, "open")}
                                 >
                                   Wieder öffnen
                                 </button>
@@ -1264,7 +1323,7 @@ export default function DashboardPage() {
                         </div>
                         <div style={{ marginTop: 6, ...styles.small }}>
                           Bereich: {c.areas?.name || "-"} · Status:{" "}
-                          {(c.status || "todo") === "done" ? "Erledigt" : "Zu erledigen"}
+                          {(c.status || "open") === "done" ? "Erledigt" : "Zu erledigen"}
                         </div>
                       </div>
                     ))}
@@ -1639,8 +1698,8 @@ function MiniStat({ label, value, styles }) {
   );
 }
 
-function TaskCard({ t, ui, styles, onDone, onOpen, onDelete, subtasks, guides }) {
-  const isDone = (t.status || "todo") === "done";
+function TaskCard({ t, ui, styles, onDone, onOpen, onDelete, subtasks, guides, expanded, onToggleExpanded, onCreateSubtaskInline, onToggleSubtaskDone }) {
+  const isDone = (t.status || "open") === "done";
   const guideTitle = t.guide_id ? guides.find((g) => g.id === t.guide_id)?.title : "";
 
   return (
@@ -1661,15 +1720,105 @@ function TaskCard({ t, ui, styles, onDone, onOpen, onDelete, subtasks, guides })
         {guideTitle ? ` · Anleitung: ${guideTitle}` : ""}
       </div>
 
-      {subtasks?.length ? (
-        <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-          {subtasks.slice(0, 4).map((s) => (
-            <div key={s.id} style={styles.small}>
-              {s.done ? "✓ " : "• "}
-              {s.title}
+      {typeof subtasks !== "undefined" ? (
+        <div style={{ marginTop: 10 }}>
+          <button
+            type="button"
+            onClick={onToggleExpanded}
+            style={{
+              ...styles.smallBtn,
+              background: expanded ? "#0f172a" : "#e2e8f0",
+              color: expanded ? "#fff" : "#0f172a",
+            }}
+          >
+            Unteraufgaben ({(subtasks || []).filter((s) => (s.done ?? s.is_done) === true).length}/{(subtasks || []).length})
+          </button>
+
+          {expanded ? (
+            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+              {(subtasks || []).length ? (
+                (subtasks || []).map((s) => {
+                  const isDone = (s.done ?? s.is_done) === true;
+                  return (
+                    <div
+                      key={s.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "8px 10px",
+                        borderRadius: 12,
+                        background: "#f8fafc",
+                        border: "1px solid #e2e8f0",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isDone}
+                        onChange={() => onToggleSubtaskDone(s.id, isDone)}
+                      />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, lineHeight: 1.2 }}>
+                          {s.title}
+                        </div>
+                        {s.guide_title ? (
+                          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                            Anleitung: {s.guide_title}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div style={styles.small}>Keine Unteraufgaben</div>
+              )}
+
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  placeholder="Neue Unteraufgabe"
+                  value={ui.subtaskTitleByTask[t.id] || ""}
+                  onChange={(e) =>
+                    ui.setSubtaskTitleByTask((prev) => ({
+                      ...prev,
+                      [t.id]: e.target.value,
+                    }))
+                  }
+                  style={{ ...styles.input, flex: 1 }}
+                />
+                <select
+                  value={ui.subtaskGuideByTask[t.id] || ""}
+                  onChange={(e) =>
+                    ui.setSubtaskGuideByTask((prev) => ({
+                      ...prev,
+                      [t.id]: e.target.value,
+                    }))
+                  }
+                  style={styles.select}
+                >
+                  <option value="">Anleitung (optional)</option>
+                  {(guides || []).map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.title}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const title = (ui.subtaskTitleByTask[t.id] || "").trim();
+                    const gid = ui.subtaskGuideByTask[t.id] || null;
+                    onCreateSubtaskInline(t.id, title, gid);
+                    ui.setSubtaskTitleByTask((prev) => ({ ...prev, [t.id]: "" }));
+                    ui.setSubtaskGuideByTask((prev) => ({ ...prev, [t.id]: "" }));
+                  }}
+                  style={styles.primaryBtn}
+                >
+                  +
+                </button>
+              </div>
             </div>
-          ))}
-          {subtasks.length > 4 ? <div style={styles.small}>…</div> : null}
+          ) : null}
         </div>
       ) : null}
 
