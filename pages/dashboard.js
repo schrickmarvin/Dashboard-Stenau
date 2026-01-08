@@ -1698,11 +1698,16 @@ function TaskCard({
   onToggleSubtaskDone,
   onDeleteTask,
 }) {
-  const isDone = (t.status || "todo") === "done";
-  const areaName = t.area_id ? areas.find((a) => a.id === t.area_id)?.name : "";
-  const guideTitle = t.guide_id ? guides.find((g) => g.id === t.guide_id)?.title : "";
+  // Guards: props can be briefly undefined during initial render / hydration
+  const safeGuides = Array.isArray(guides) ? guides : [];
+  const safeAreas = Array.isArray(areas) ? areas : [];
+  const safeSubtasks = Array.isArray(subtasks) ? subtasks : [];
 
-  const st = subtasks || [];
+  const isDone = (t.status || "todo") === "done";
+  const areaName = t.area_id ? safeAreas.find((a) => a.id === t.area_id)?.name : "";
+  const guideTitle = t.guide_id ? safeGuides.find((g) => g.id === t.guide_id)?.title : "";
+
+  const st = safeSubtasks;
   const stDoneCount = st.filter((s) => (s.is_done ?? s.done) === true).length;
   const stTotal = st.length;
   const stSorted = [...st].sort((a, b) => {
