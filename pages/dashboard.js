@@ -61,6 +61,7 @@ export default function DashboardPage() {
   const [toast, setToast] = useState("");
 
   /* Create Task */
+  const [isSavingTask, setIsSavingTask] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
   const [newDueAt, setNewDueAt] = useState("");
@@ -164,33 +165,42 @@ export default function DashboardPage() {
   /* ---------------- Create Task ---------------- */
   const createTask = async () => {
     setError("");
-    if (!supabase || !user) return;
+    if (!supabase || !user) return showError("Nicht eingeloggt oder Supabase nicht bereit.", "createTask");
     if (!newTitle.trim()) return;
 
-    const payload = {
-      title: newTitle.trim(),
-      area_id: newAreaId || null,
-      due_at: toISO(newDueAt),
-      status: newStatus,
-      user_id: user.id,
-      guide_id: newGuideId || null,
-    };
+    try {
+      setIsSavingTask(true);
 
-    const { data, error: e } = await supabase.from("tasks").insert([payload]).select("id").single();
-    if (e) return showError(e, "CREATE TASK ERROR");
+      const payload = {
+        title: newTitle.trim(),
+        area_id: newAreaId || null,
+        due_at: toISO(newDueAt) || null,
+        status: newStatus, // todo | done
+        user_id: user.id,  // RLS
+        guide_id: newGuideId || null,
+      };
 
-    setNewTitle("");
-    setNewAreaId("");
-    setNewDueAt("");
-    setNewStatus("todo");
-    setNewGuideId("");
+      const { data, error } = await supabase
+        .from("tasks")
+        .insert([payload])
+        .select("id")
+        .single();
 
-    if (data?.id) setExpandedTaskIds((m) => ({ ...m, [data.id]: true }));
+      if (error) return showError(error, "createTask insert");
+      if (!data?.id) return showError("Insert ok, aber keine ID zurückgegeben (RLS/Trigger prüfen).", "createTask");
 
-    await loadTasksAndSubtasks();
-    setToast("Aufgabe angelegt");
-    window.clearTimeout(window.__toastTimer__);
-    window.__toastTimer__ = window.setTimeout(() => setToast(""), 2500);
+      setNewTitle("");
+      setNewDueAt("");
+      setNewAreaId("");
+      setNewGuideId("");
+
+      setToast("Aufgabe angelegt ✅");
+      await loadAll();
+    } catch (e) {
+      showError(e, "createTask catch");
+    } finally {
+      setIsSavingTask(false);
+    }
   };
 
   /* ---------------- Task status toggle ---------------- */
@@ -296,8 +306,8 @@ export default function DashboardPage() {
             {(guides || []).map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
           </select>
 
-          <button onClick={createTask} style={btnPrimary} disabled={loading}>
-            {loading ? "..." : "Anlegen"}
+          <button onClick={createTask} style={btnPrimary} disabled={loading || isSavingTask}>
+            {(loading || isSavingTask) ? "..." : "Anlegen"}
           </button>
         </div>
       </div>
