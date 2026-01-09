@@ -195,7 +195,7 @@ export default function DashboardPage() {
       setNewGuideId("");
 
       setToast("Aufgabe angelegt ✅");
-      await loadAll();
+      await await loadTasks(); await loadSubtasks();();
     } catch (e) {
       showError(e, "createTask catch");
     } finally {
