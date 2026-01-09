@@ -2,1898 +2,588 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/*
-  Next.js + Supabase (wichtig):
-  - Supabase Client nur im Browser initialisieren (typeof window !== "undefined")
-  - ENV Variablen in Vercel/Next.js:
-      NEXT_PUBLIC_SUPABASE_URL
-      NEXT_PUBLIC_SUPABASE_ANON_KEY
-*/
-
+/* ---------------- Supabase Client (browser-only singleton) ---------------- */
 function getSupabaseClient() {
   if (typeof window === "undefined") return null;
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  if (!supabaseUrl || !supabaseAnonKey) {
-    console.warn(
-      "Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY"
-    );
+  if (!url || !key) {
+    console.warn("Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY");
     return null;
   }
 
   if (!window.__supabase__) {
-    window.__supabase__ = createClient(supabaseUrl, supabaseAnonKey, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true,
-      },
+    window.__supabase__ = createClient(url, key, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
     });
   }
-
   return window.__supabase__;
 }
 
 /* ---------------- Helpers ---------------- */
-const toISO = (value) => {
-  if (!value) return null;
-  const d = new Date(value); // from input[type=datetime-local]
+const toISO = (v) => {
+  if (!v) return null;
+  const d = new Date(v);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
 };
 
-const STATUS_MAP_UI_TO_DB = {
-  "Zu erledigen": "todo",
-  "Erledigt": "done",
-};
-
-const STATUS_MAP_DB_TO_UI = {
-  todo: "Zu erledigen",
-  done: "Erledigt",
-};
-
-const startOfToday = () => {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
-};
-
-const endOfToday = () => {
-  const d = new Date();
-  d.setHours(23, 59, 59, 999);
-  return d;
-};
-
-const startOfWeek = () => {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  const day = d.getDay(); // 0 Sun, 1 Mon ...
-  const diff = day === 0 ? -6 : 1 - day; // Monday start
-  d.setDate(d.getDate() + diff);
-  return d;
-};
-
-const endOfWeek = () => {
-  const d = startOfWeek();
-  d.setDate(d.getDate() + 6);
-  d.setHours(23, 59, 59, 999);
-  return d;
-};
-
-const fmtDateTime = (iso) => {
+function fmtDateTime(iso) {
   if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString("de-DE", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString();
+  } catch {
+    return "";
+  }
+}
 
-const makeLocalDateTimeValue = () => {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
-    d.getHours()
-  )}:${pad(d.getMinutes())}`;
-};
-
-/* ---------------- UI Constants ---------------- */
-const TABS = [
-  { key: "board", label: "Board" },
-  { key: "list", label: "Liste" },
-  { key: "calendar", label: "Kalender" },
-  { key: "timeline", label: "Timeline" },
-  { key: "areas", label: "Bereiche" },
-  { key: "guides", label: "Anleitung" },
-  { key: "settings", label: "Einstellungen" },
-];
-
-const DUE_BUCKETS = [
-  { value: "heute", label: "Heute" },
-  { value: "diese_woche", label: "Diese Woche" },
-  { value: "alle", label: "Alle" },
-];
-
-const THEMES = [
-  { value: "hell", label: "Hell" },
-  { value: "dunkel", label: "Dunkel" },
-];
-
-const BACKGROUNDS = [
-  { value: "soft", label: "Soft" },
-  { value: "neutral", label: "Neutral" },
-  { value: "clear", label: "Clear" },
-];
-
-const ACCENTS = [
-  { value: "green", label: "green" },
-  { value: "blue", label: "blue" },
-  { value: "orange", label: "orange" },
-  { value: "purple", label: "purple" },
-  { value: "gray", label: "gray" },
-];
-
-/* ---------------- Main Component ---------------- */
+/* ---------------- Main ---------------- */
 export default function DashboardPage() {
   const [supabase, setSupabase] = useState(null);
-
-  /* ---------- Auth ---------- */
   const [session, setSession] = useState(null);
   const user = session?.user || null;
 
-  /* ---------- UI ---------- */
-  const [activeTab, setActiveTab] = useState("board");
-  const [globalError, setGlobalError] = useState("");
+  const [activeTab, setActiveTab] = useState("board"); // board | list
+  const [loading, setLoading] = useState(false);
 
-  /* ---------- Design ---------- */
-  const [theme, setTheme] = useState(
-    typeof window !== "undefined" ? localStorage.getItem("ui_theme") || "hell" : "hell"
-  );
-  const [background, setBackground] = useState(
-    typeof window !== "undefined"
-      ? localStorage.getItem("ui_background") || "soft"
-      : "soft"
-  );
-  const [accent, setAccent] = useState(
-    typeof window !== "undefined" ? localStorage.getItem("ui_accent") || "green" : "green"
-  );
-
-  /* ---------- Filters ---------- */
-  const [filterAreaId, setFilterAreaId] = useState("");
-  const [filterDueBucket, setFilterDueBucket] = useState("heute");
-  const [search, setSearch] = useState("");
-
-  /* ---------- Data ---------- */
-  const [areas, setAreas] = useState([]);
   const [tasks, setTasks] = useState([]);
-  const [calendarItems, setCalendarItems] = useState([]);
+  const [subtasksByTask, setSubtasksByTask] = useState({});
+  const [areas, setAreas] = useState([]);
   const [guides, setGuides] = useState([]);
-  const [subtasks, setSubtasks] = useState([]);
 
-  /* ---------- Create Task ---------- */
+  const [expandedTaskIds, setExpandedTaskIds] = useState({});
+  const [inlineSubtaskTitle, setInlineSubtaskTitle] = useState({});
+
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
+
+  /* Create Task */
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
-  const [newDueAtLocal, setNewDueAtLocal] = useState(makeLocalDateTimeValue());
-  const [newStatus, setNewStatus] = useState("open"); // open | done
+  const [newDueAt, setNewDueAt] = useState("");
+  const [newStatus, setNewStatus] = useState("todo"); // must be 'todo'|'done'
   const [newGuideId, setNewGuideId] = useState("");
 
-  /* ---------- Areas ---------- */
-  const [newAreaName, setNewAreaName] = useState("");
-
-  /* ---------- Guides ---------- */
-  const [guideTitle, setGuideTitle] = useState("");
-  const [guideContent, setGuideContent] = useState("");
-  const [selectedGuideId, setSelectedGuideId] = useState("");
-  const [uploadingGuideFile, setUploadingGuideFile] = useState(false);
-  const [guideFiles, setGuideFiles] = useState([]);
-
-  /* ---------- Subtasks ---------- */
-  const [subtaskTaskId, setSubtaskTaskId] = useState("");
-  const [subtaskTitle, setSubtaskTitle] = useState("");
-  const [subtaskGuideId, setSubtaskGuideId] = useState("");
-
-  // Board-Unteraufgaben (pro Task) – lokale Eingaben je Karte
-  const [subtaskTitleByTask, setSubtaskTitleByTask] = useState({});
-  const [subtaskGuideByTask, setSubtaskGuideByTask] = useState({});
-  const [expandedSubtasksByTask, setExpandedSubtasksByTask] = useState({});
-
-
-  /* ---------------- Init supabase client (browser only) ---------------- */
+  /* Init Supabase */
   useEffect(() => {
-    const client = getSupabaseClient();
-    setSupabase(client);
+    setSupabase(getSupabaseClient());
   }, []);
 
-  /* ---------------- Auth: session + listener ---------------- */
+  /* Auth */
   useEffect(() => {
     if (!supabase) return;
 
-    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
+    const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s || null));
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (!mounted) return;
-      setSession(data.session || null);
-    });
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession || null);
-    });
-
-    return () => {
-      mounted = false;
-      sub?.subscription?.unsubscribe?.();
-    };
+    return () => data.subscription.unsubscribe();
   }, [supabase]);
 
-  /* ---------------- Persist Design Local ---------------- */
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem("ui_theme", theme);
-  }, [theme]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem("ui_background", background);
-  }, [background]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem("ui_accent", accent);
-  }, [accent]);
-
-  /* ---------------- Load all data when logged in ---------------- */
+  /* Load Data */
   useEffect(() => {
     if (!supabase || !user) return;
-
-    (async () => {
-      setGlobalError("");
-      await Promise.all([
-        loadAreas(),
-        loadGuides(),
-        loadTasks(),
-        loadCalendar(),
-        loadSubtasks(),
-        loadUserSettings(),
-      ]);
-    })();
+    refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, user]);
+  }, [supabase, user?.id]);
 
-  /* ---------------- reload when filters change ---------------- */
-  useEffect(() => {
-    if (!supabase || !user) return;
-    loadTasks();
-    loadCalendar();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, user, filterAreaId, filterDueBucket, search]);
-
-  /* ---------------- Data Loaders ---------------- */
-  const loadAreas = async () => {
-    if (!supabase) return;
-    setGlobalError("");
-
-    const { data, error } = await supabase
-      .from("areas")
-      .select("*")
-      .order("name", { ascending: true });
-
-    if (error) {
-      setGlobalError(`Bereiche laden fehlgeschlagen: ${error.message}`);
-      return;
+  const refreshAll = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      await Promise.all([loadAreas(), loadGuides(), loadTasksAndSubtasks()]);
+    } finally {
+      setLoading(false);
     }
+  };
 
-    const rows = data || [];
-    setAreas(rows);
-
-    if (!newAreaId && rows.length > 0) setNewAreaId(rows[0].id);
+  const loadAreas = async () => {
+    const { data, error: e } = await supabase.from("areas").select("id,name").order("name");
+    if (e) return showError(e, "LOAD AREAS ERROR");
+    setAreas(data || []);
   };
 
   const loadGuides = async () => {
-    if (!supabase) return;
-    setGlobalError("");
-
-    const { data, error } = await supabase
-      .from("guides")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      setGlobalError(`Anleitungen laden fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
+    const { data, error: e } = await supabase.from("guides").select("id,title").order("title");
+    if (e) return showError(e, "LOAD GUIDES ERROR");
     setGuides(data || []);
   };
 
-  const loadTasks = async () => {
-    if (!supabase) return;
-    setGlobalError("");
-
-    let query = supabase
+  const loadTasksAndSubtasks = async () => {
+    const { data: tdata, error: te } = await supabase
       .from("tasks")
-      .select("id,title,status,area_id,due_at,due_day,guide_id,created_at,areas(name)")
-      .order("due_at", { ascending: true, nullsFirst: false })
+      .select("id,title,status,due_at,area_id,guide_id,created_at,areas(name),guides(title)")
       .order("created_at", { ascending: false });
 
-    if (filterAreaId) query = query.eq("area_id", filterAreaId);
+    if (te) return showError(te, "LOAD TASKS ERROR");
 
-    if (filterDueBucket === "heute") {
-      query = query
-        .gte("due_at", startOfToday().toISOString())
-        .lte("due_at", endOfToday().toISOString());
-    }
+    const safeTasks = tdata || [];
+    setTasks(safeTasks);
 
-    if (filterDueBucket === "diese_woche") {
-      query = query
-        .gte("due_at", startOfWeek().toISOString())
-        .lte("due_at", endOfWeek().toISOString());
-    }
-
-    if (search?.trim()) query = query.ilike("title", `%${search.trim()}%`);
-
-    const { data, error } = await query;
-
-    if (error) {
-      setGlobalError(`Aufgaben laden fehlgeschlagen: ${error.message}`);
+    const taskIds = safeTasks.map((t) => t.id).filter(Boolean);
+    if (taskIds.length === 0) {
+      setSubtasksByTask({});
       return;
     }
 
-    setTasks(data || []);
-  };
-
-  const loadCalendar = async () => {
-    if (!supabase) return;
-    setGlobalError("");
-
-    let query = supabase
-      .from("tasks")
-      .select("id,title,area_id,due_at,status,areas(name)")
-      .not("due_at", "is", null)
-      .order("due_at", { ascending: true });
-
-    if (filterAreaId) query = query.eq("area_id", filterAreaId);
-
-    if (filterDueBucket === "heute") {
-      query = query
-        .gte("due_at", startOfToday().toISOString())
-        .lte("due_at", endOfToday().toISOString());
-    }
-
-    if (filterDueBucket === "diese_woche") {
-      query = query
-        .gte("due_at", startOfWeek().toISOString())
-        .lte("due_at", endOfWeek().toISOString());
-    }
-
-    if (search?.trim()) query = query.ilike("title", `%${search.trim()}%`);
-
-    const { data, error } = await query;
-
-    if (error) {
-      setGlobalError(`Kalender laden fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    setCalendarItems(data || []);
-  };
-
-  const loadSubtasks = async () => {
-    if (!supabase) return;
-    setGlobalError("");
-
-    const { data, error } = await supabase
+    const { data: sdata, error: se } = await supabase
       .from("subtasks")
-      .select("id,title,task_id,guide_id,is_done,status,created_at,tasks(title),guides(title)")
-      .order("created_at", { ascending: false });
+      .select("id,task_id,title,is_done,status,created_at,guide_id")
+      .in("task_id", taskIds)
+      .order("created_at", { ascending: true });
 
-    if (error) {
-      setGlobalError(`Unteraufgaben laden fehlgeschlagen: ${error.message}`);
-      return;
-    }
+    if (se) return showError(se, "LOAD SUBTASKS ERROR");
 
-    setSubtasks(data || []);
+    const map = {};
+    (sdata || []).forEach((st) => {
+      const k = st.task_id;
+      if (!map[k]) map[k] = [];
+      map[k].push(st);
+    });
+    setSubtasksByTask(map);
   };
 
-  const loadUserSettings = async () => {
-    if (!supabase || !user) return;
+  /* ---------- Robust error handler ---------- */
+  const showError = (e, context) => {
+    const msg = e?.message || String(e || "Unbekannter Fehler");
+    console.error(context || "ERROR", e);
+    setError(msg);
+    setToast(msg);
 
-    const { data, error } = await supabase
-      .from("user_settings")
-      .select("*")
-      .eq("user_id", user.id)
-      .maybeSingle();
+    window.clearTimeout(window.__toastTimer__);
+    window.__toastTimer__ = window.setTimeout(() => setToast(""), 4500);
 
-    if (error) return;
-
-    if (data) {
-      if (data.theme) setTheme(data.theme);
-      if (data.background) setBackground(data.background);
-      if (data.accent) setAccent(data.accent);
+    // Hint for the known trigger/calendar issue
+    if (msg.includes("ON CONFLICT") || msg.includes("unique or exclusion constraint")) {
+      console.warn("Hinweis: tasks_calendar braucht einen UNIQUE/PK-Constraint auf id (für ON CONFLICT (id)).");
     }
   };
 
-  const loadGuideFiles = async (gid) => {
-    if (!supabase) return;
-    if (!gid) {
-      setGuideFiles([]);
-      return;
-    }
-
-    const { data, error } = await supabase
-      .from("guide_files")
-      .select("*")
-      .eq("guide_id", gid)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      setGlobalError(`Guide-Dateien laden fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    setGuideFiles(data || []);
-  };
-
-  /* ---------------- Mutations ---------------- */
+  /* ---------------- Create Task ---------------- */
   const createTask = async () => {
+    setError("");
     if (!supabase || !user) return;
-    setGlobalError("");
+    if (!newTitle.trim()) return;
 
-    const title = newTitle.trim();
-    if (!title) return;
+    const payload = {
+      title: newTitle.trim(),
+      area_id: newAreaId || null,
+      due_at: toISO(newDueAt),
+      status: newStatus,
+      user_id: user.id,
+      guide_id: newGuideId || null,
+    };
 
-    let dueAtIso = toISO(newDueAtLocal);
-    if (!dueAtIso) dueAtIso = new Date().toISOString();
-
-const payload = {
-  title,
-  area_id: areaId || null,
-  due_at: dueAtIso,
-  status: selectedStatus === "Erledigt" ? "done" : "todo",
-  user_id: user.id,
-  guide_id: guideId || null,
-};
-
-
-
-    const { error } = await supabase.from("tasks").insert([payload]);
-
-    if (error) {
-      setGlobalError(`Aufgabe anlegen fehlgeschlagen: ${error.message}`);
-      return;
-    }
+    const { data, error: e } = await supabase.from("tasks").insert([payload]).select("id").single();
+    if (e) return showError(e, "CREATE TASK ERROR");
 
     setNewTitle("");
-    await Promise.all([loadTasks(), loadCalendar()]);
+    setNewAreaId("");
+    setNewDueAt("");
+    setNewStatus("todo");
+    setNewGuideId("");
+
+    if (data?.id) setExpandedTaskIds((m) => ({ ...m, [data.id]: true }));
+
+    await loadTasksAndSubtasks();
+    setToast("Aufgabe angelegt");
+    window.clearTimeout(window.__toastTimer__);
+    window.__toastTimer__ = window.setTimeout(() => setToast(""), 2500);
   };
 
-  const setTaskStatus = async (taskId, status) => {
+  /* ---------------- Task status toggle ---------------- */
+  const toggleTaskStatus = async (taskId, current) => {
     if (!supabase) return;
-    setGlobalError("");
-
-    const next = status === "done" ? "done" : "open";
-    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", taskId);
-
-    if (error) {
-      setGlobalError(`Status ändern fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    await Promise.all([loadTasks(), loadCalendar()]);
+    const next = current === "done" ? "todo" : "done";
+    const { error: e } = await supabase.from("tasks").update({ status: next }).eq("id", taskId);
+    if (e) return showError(e, "TOGGLE TASK STATUS ERROR");
+    await loadTasksAndSubtasks();
   };
 
-  const deleteTask = async (taskId) => {
+  /* ---------------- Subtasks ---------------- */
+  const toggleSubtaskDone = async (subtaskId, nextDone) => {
     if (!supabase) return;
-    setGlobalError("");
-
-    const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-    if (error) {
-      setGlobalError(`Aufgabe löschen fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    await Promise.all([loadTasks(), loadCalendar(), loadSubtasks()]);
+    const { error: e } = await supabase.from("subtasks").update({ is_done: !!nextDone }).eq("id", subtaskId);
+    if (e) return showError(e, "TOGGLE SUBTASK ERROR");
+    await loadTasksAndSubtasks();
   };
 
-  const createArea = async () => {
+  const addInlineSubtask = async (taskId) => {
     if (!supabase) return;
-    setGlobalError("");
-
-    const name = newAreaName.trim();
-    if (!name) return;
-
-    const { error } = await supabase.from("areas").insert([{ name }]);
-    if (error) {
-      setGlobalError(`Bereich anlegen fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    setNewAreaName("");
-    await loadAreas();
-  };
-
-  const deleteArea = async (areaId) => {
-    if (!supabase) return;
-    setGlobalError("");
-
-    const { count, error: cntErr } = await supabase
-      .from("tasks")
-      .select("id", { count: "exact", head: true })
-      .eq("area_id", areaId);
-
-    if (cntErr) {
-      setGlobalError(`Bereich prüfen fehlgeschlagen: ${cntErr.message}`);
-      return;
-    }
-
-    if ((count || 0) > 0) {
-      setGlobalError("Bereich kann nicht gelöscht werden, solange Aufgaben darin existieren.");
-      return;
-    }
-
-    const { error } = await supabase.from("areas").delete().eq("id", areaId);
-    if (error) {
-      setGlobalError(`Bereich löschen fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    if (filterAreaId === areaId) setFilterAreaId("");
-    await loadAreas();
-  };
-
-  const saveGuide = async () => {
-    if (!supabase || !user) return;
-    setGlobalError("");
-
-    const title = guideTitle.trim();
+    const title = (inlineSubtaskTitle[taskId] || "").trim();
     if (!title) return;
 
-    const payload = {
-      title,
-      content: guideContent || null,
-      user_id: user.id,
-    };
+    const payload = { task_id: taskId, title, is_done: false, status: "todo" };
+    const { error: e } = await supabase.from("subtasks").insert([payload]).select("id").single();
+    if (e) return showError(e, "CREATE SUBTASK ERROR");
 
-    const { data, error } = await supabase.from("guides").insert([payload]).select("*").single();
-
-    if (error) {
-      setGlobalError(`Anleitung speichern fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    setGuideTitle("");
-    setGuideContent("");
-    await loadGuides();
-
-    if (data?.id) {
-      setSelectedGuideId(data.id);
-      await loadGuideFiles(data.id);
-    }
+    setInlineSubtaskTitle((m) => ({ ...m, [taskId]: "" }));
+    await loadTasksAndSubtasks();
   };
 
-  const onSelectGuide = async (gid) => {
-    setSelectedGuideId(gid);
-    await loadGuideFiles(gid);
-  };
+  const toggleExpanded = (taskId) => setExpandedTaskIds((m) => ({ ...m, [taskId]: !m[taskId] }));
 
-  const uploadGuideFile = async (file) => {
-    if (!supabase || !user) return;
-    if (!file || !selectedGuideId) return;
-
-    setGlobalError("");
-    setUploadingGuideFile(true);
-
-    try {
-      const safeName = file.name.replace(/[^\w.\-]+/g, "_");
-      const path = `${selectedGuideId}/${Date.now()}_${safeName}`;
-
-      const { error: upErr } = await supabase.storage.from("guides").upload(path, file, {
-        upsert: false,
-      });
-
-      if (upErr) {
-        setGlobalError(`Upload fehlgeschlagen: ${upErr.message}`);
-        return;
-      }
-
-      const { error: dbErr } = await supabase.from("guide_files").insert([
-        {
-          guide_id: selectedGuideId,
-          path,
-          filename: file.name,
-          mime_type: file.type || null,
-          user_id: user.id,
-        },
-      ]);
-
-      if (dbErr) {
-        setGlobalError(`Datei speichern fehlgeschlagen: ${dbErr.message}`);
-        return;
-      }
-
-      await loadGuideFiles(selectedGuideId);
-    } finally {
-      setUploadingGuideFile(false);
-    }
-  };
-
-  const getGuideFileUrl = (path) => {
-    if (!supabase || !path) return "";
-    const { data } = supabase.storage.from("guides").getPublicUrl(path);
-    return data?.publicUrl || "";
-  };
-
-  const deleteGuideFile = async (fileRow) => {
-    if (!supabase) return;
-    if (!fileRow?.id) return;
-
-    setGlobalError("");
-
-    if (fileRow.path) {
-      await supabase.storage.from("guides").remove([fileRow.path]);
-    }
-
-    const { error } = await supabase.from("guide_files").delete().eq("id", fileRow.id);
-    if (error) {
-      setGlobalError(`Datei löschen fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    await loadGuideFiles(selectedGuideId);
-  };
-
-  const createSubtask = async () => {
-    if (!supabase || !user) return;
-    setGlobalError("");
-
-    const t = subtaskTitle.trim();
-    if (!t || !subtaskTaskId) return;
-
-    const payload = {
-      task_id: subtaskTaskId,
-      title: t,
-      guide_id: subtaskGuideId || null,
-      is_done: false,
-      status: "todo",
-    };
-
-    const { error } = await supabase.from("subtasks").insert([payload]);
-    if (error) {
-      setGlobalError(`Unteraufgabe anlegen fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    setSubtaskTitle("");
-    await loadSubtasks();
-  };
-
-  const toggleSubtaskDone = async (sid, done) => {
-    if (!supabase) return;
-    setGlobalError("");
-
-    const { error } = await supabase.from("subtasks").update({ is_done: !!done, status: !!done ? "done" : "todo" }).eq("id", sid);
-    if (error) {
-      setGlobalError(`Unteraufgabe Status ändern fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    await loadSubtasks();
-  };
-  // Inline-Helfer: Unteraufgabe direkt aus dem Board anlegen (ohne globale Eingabefelder)
-  const createSubtaskInline = async (taskId, title, guideId = null) => {
-    if (!supabase || !user) return;
-    setGlobalError("");
-
-    const t = (title || "").trim();
-    if (!t || !taskId) return;
-
-    const payload = {
-      task_id: taskId,
-      title: t,
-      guide_id: guideId || null,
-      is_done: false,
-      status: "todo",
-    };
-
-    let res = await supabase.from("subtasks").insert([payload]).select("id");
-
-    // Falls guide_id in DB/Schema/RLS noch nicht sauber ist: erneut ohne guide_id versuchen
-    if (res.error && /guide_id/i.test(res.error.message || "")) {
-      const payload2 = { task_id: taskId, title: t, is_done: false, status: "todo" };
-      res = await supabase.from("subtasks").insert([payload2]).select("id");
-    }
-
-    if (res.error) {
-      setGlobalError(`Unteraufgabe anlegen fehlgeschlagen: ${res.error.message}`);
-      return;
-    }
-
-    await loadSubtasks();
-  };
-
-  const toggleExpandedSubtasks = (taskId) => {
-    setExpandedSubtasks((prev) => {
-      const next = new Set(prev);
-      if (next.has(taskId)) next.delete(taskId);
-      else next.add(taskId);
-      return next;
-    });
-  };
-
-  const deleteSubtask = async (sid) => {
-    if (!supabase) return;
-    setGlobalError("");
-
-    const { error } = await supabase.from("subtasks").delete().eq("id", sid);
-    if (error) {
-      setGlobalError(`Unteraufgabe löschen fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    await loadSubtasks();
-  };
-
-  const saveUserSettings = async () => {
-    if (!supabase || !user) return;
-    setGlobalError("");
-
-    const { data, error } = await supabase
-      .from("user_settings")
-      .select("*")
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if (error) {
-      setGlobalError(`Einstellungen lesen fehlgeschlagen: ${error.message}`);
-      return;
-    }
-
-    const payload = {
-      user_id: user.id,
-      theme,
-      background,
-      accent,
-      updated_at: new Date().toISOString(),
-    };
-
-    if (data?.user_id) {
-      const { error: upErr } = await supabase
-        .from("user_settings")
-        .update(payload)
-        .eq("user_id", user.id);
-
-      if (upErr) {
-        setGlobalError(`Einstellungen speichern fehlgeschlagen: ${upErr.message}`);
-        return;
-      }
-    } else {
-      const { error: insErr } = await supabase.from("user_settings").insert([payload]);
-      if (insErr) {
-        setGlobalError(`Einstellungen speichern fehlgeschlagen: ${insErr.message}`);
-        return;
-      }
-    }
-  };
-
-  const signOut = async () => {
-    if (!supabase) return;
-    setGlobalError("");
-    await supabase.auth.signOut();
-  };
-
-  /* ---------------- Derived ---------------- */
-  const accentColor = useMemo(() => {
-    switch (accent) {
-      case "blue":
-        return "#2563eb";
-      case "orange":
-        return "#f97316";
-      case "purple":
-        return "#7c3aed";
-      case "gray":
-        return "#374151";
-      case "green":
-      default:
-        return "#0a7a1e";
-    }
-  }, [accent]);
-
-  const ui = useMemo(() => {
-    const isDark = theme === "dunkel";
-
-    const bg = (() => {
-      if (background === "clear") return isDark ? "#0b1220" : "#f6f7fb";
-      if (background === "neutral") return isDark ? "#0f172a" : "#f2f4f7";
-      return isDark ? "#0c1526" : "#eef2ff";
-    })();
-
-    const card = isDark ? "#0f1b33" : "#ffffff";
-    const text = isDark ? "#e5e7eb" : "#111827";
-    const sub = isDark ? "#9ca3af" : "#6b7280";
-    const border = isDark ? "rgba(255,255,255,0.10)" : "rgba(17,24,39,0.10)";
-
-    return { isDark, bg, card, text, sub, border, subtaskTitleByTask, setSubtaskTitleByTask, subtaskGuideByTask, setSubtaskGuideByTask };
-  }, [theme, background, subtaskTitleByTask, subtaskGuideByTask]);
-
-  const styles = useMemo(() => {
-    return {
-      page: {
-        minHeight: "100vh",
-        background: ui.bg,
-        color: ui.text,
-        fontFamily:
-          '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif',
-      },
-      container: { maxWidth: 1280, margin: "0 auto", padding: 18 },
-      grid: {
-        display: "grid",
-        gridTemplateColumns: "320px 1fr",
-        gap: 18,
-        alignItems: "start",
-      },
-      card: {
-        background: ui.card,
-        border: `1px solid ${ui.border}`,
-        borderRadius: 16,
-        padding: 16,
-        boxShadow: ui.isDark ? "none" : "0 10px 30px rgba(0,0,0,0.06)",
-      },
-      h: { margin: 0, fontSize: 18, fontWeight: 600 },
-      small: { color: ui.sub, fontSize: 13 },
-      btn: {
-        background: accentColor,
-        color: "#fff",
-        border: "none",
-        padding: "10px 14px",
-        borderRadius: 12,
-        cursor: "pointer",
-        fontWeight: 600,
-        whiteSpace: "nowrap",
-      },
-      btnGhost: {
-        background: "transparent",
-        color: ui.text,
-        border: `1px solid ${ui.border}`,
-        padding: "10px 14px",
-        borderRadius: 12,
-        cursor: "pointer",
-        fontWeight: 600,
-        whiteSpace: "nowrap",
-      },
-      input: {
-        width: "100%",
-        padding: "10px 12px",
-        borderRadius: 12,
-        border: `1px solid ${ui.border}`,
-        background: ui.isDark ? "#0b1427" : "#ffffff",
-        color: ui.text,
-        outline: "none",
-      },
-      select: {
-        width: "100%",
-        padding: "10px 12px",
-        borderRadius: 12,
-        border: `1px solid ${ui.border}`,
-        background: ui.isDark ? "#0b1427" : "#ffffff",
-        color: ui.text,
-        outline: "none",
-      },
-      tabs: { display: "flex", gap: 10, flexWrap: "wrap" },
-      tab: (active) => ({
-        padding: "8px 12px",
-        borderRadius: 999,
-        border: `1px solid ${ui.border}`,
-        background: active ? accentColor : ui.card,
-        color: active ? "#fff" : ui.text,
-        cursor: "pointer",
-        fontWeight: 600,
-        fontSize: 13,
-      }),
-      row: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
-      pill: {
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "6px 10px",
-        borderRadius: 999,
-        border: `1px solid ${ui.border}`,
-        fontSize: 13,
-        color: ui.sub,
-      },
-      danger: {
-        background: "transparent",
-        color: "#ef4444",
-        border: "1px solid rgba(239,68,68,0.35)",
-        padding: "8px 12px",
-        borderRadius: 12,
-        cursor: "pointer",
-        fontWeight: 600,
-      },
-      hr: { border: 0, borderTop: `1px solid ${ui.border}`, margin: "14px 0" },
-    };
-  }, [ui, accentColor]);
-
-  const subtasksByTask = useMemo(() => {
-    const map = new Map();
-    for (const s of subtasks) {
-      const key = s.task_id;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(s);
-    }
-    return map;
-  }, [subtasks]);
-
-  const counts = useMemo(() => {
-    const todayFrom = startOfToday().toISOString();
-    const todayTo = endOfToday().toISOString();
-    const weekFrom = startOfWeek().toISOString();
-    const weekTo = endOfWeek().toISOString();
-
-    const inRange = (t, from, to) => t?.due_at && t.due_at >= from && t.due_at <= to;
-
-    const tasksToday = tasks.filter((t) => inRange(t, todayFrom, todayTo));
-    const tasksWeek = tasks.filter((t) => inRange(t, weekFrom, weekTo));
-    const open = tasks.filter((t) => (t.status || "open") !== "done");
-
-    return { today: tasksToday.length, week: tasksWeek.length, open: open.length };
+  /* ---------------- Derived (Board columns) ---------------- */
+  const board = useMemo(() => {
+    const todo = [];
+    const done = [];
+    (tasks || []).forEach((t) => ((t?.status || "todo") === "done" ? done : todo).push(t));
+    return { todo, done };
   }, [tasks]);
 
-  const boardOpen = useMemo(
-    () => tasks.filter((t) => (t.status || "open") !== "done"),
-    [tasks]
-  );
-  const boardDone = useMemo(
-    () => tasks.filter((t) => (t.status || "open") === "done"),
-    [tasks]
-  );
-
-  /* ---------------- Loading/No ENV hint ---------------- */
+  /* ---------------- Login ---------------- */
   if (!supabase) {
     return (
-      <div style={{ minHeight: "100vh", padding: 24, fontFamily: "Arial, sans-serif" }}>
-        Supabase Client ist nicht initialisiert. Prüfe bitte:
-        NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel.
+      <div style={{ padding: 24, fontFamily: "system-ui, Arial" }}>
+        <h2>Dashboard</h2>
+        <div>Supabase ist nicht initialisiert (ENV prüfen).</div>
       </div>
     );
   }
 
-  /* ---------------- Login Screen ---------------- */
-  if (!user) {
-    return (
-      <div style={styles.page}>
-        <div style={{ ...styles.container, maxWidth: 760, paddingTop: 70 }}>
-          <div style={{ ...styles.card, padding: 22 }}>
-            <div style={styles.row}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>
-                  Anmeldung
-                </div>
-                <div style={styles.small}>Armaturenbrett</div>
-              </div>
-              <div style={styles.small}>Design ist bereits wählbar</div>
-            </div>
+  if (!user) return <Login supabase={supabase} />;
 
-            <LoginBox
-              supabase={supabase}
-              styles={styles}
-              theme={theme}
-              setTheme={setTheme}
-              background={background}
-              setBackground={setBackground}
-              accent={accent}
-              setAccent={setAccent}
-            />
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  /* ---------------- App Shell ---------------- */
+  /* ---------------- UI ---------------- */
   return (
-    <div style={styles.page}>
-      <div style={styles.container}>
-        <div style={{ ...styles.row, justifyContent: "space-between", marginBottom: 12 }}>
-          <div style={styles.tabs}>
-            {TABS.map((t) => (
-              <button
-                key={t.key}
-                type="button"
-                onClick={() => setActiveTab(t.key)}
-                style={styles.tab(activeTab === t.key)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          <div style={styles.row}>
-            <span style={styles.pill}>{user.email}</span>
-            <button type="button" style={styles.btnGhost} onClick={signOut}>
-              Abmelden
-            </button>
-          </div>
+    <div style={{ minHeight: "100vh", background: "#f5f7ff", padding: 20, fontFamily: "system-ui, Arial" }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>Dashboard</div>
+          <TabButton active={activeTab === "board"} onClick={() => setActiveTab("board")}>Board</TabButton>
+          <TabButton active={activeTab === "list"} onClick={() => setActiveTab("list")}>Liste</TabButton>
+          <button onClick={refreshAll} style={btnSecondary} title="Daten neu laden">Neu laden</button>
         </div>
 
-        {globalError ? (
-          <div
-            style={{
-              ...styles.card,
-              borderColor: "rgba(239,68,68,0.4)",
-              background: ui.isDark ? "rgba(239,68,68,0.08)" : "rgba(239,68,68,0.06)",
-              color: ui.text,
-              marginBottom: 12,
-            }}
-          >
-            {globalError}
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <div style={{ fontSize: 12, color: "#334155" }}>{user.email}</div>
+          <button onClick={() => supabase.auth.signOut()} style={btnSecondary}>Abmelden</button>
+        </div>
+      </div>
+
+      {toast ? (
+        <div style={toastStyle}>
+          {toast}
+          <button onClick={() => setToast("")} style={{ marginLeft: 10, border: "none", background: "transparent", cursor: "pointer", color: "#fff" }}>
+            ✕
+          </button>
+        </div>
+      ) : null}
+
+      {error ? <div style={errorStyle}>{error}</div> : null}
+
+      <div style={cardStyle}>
+        <div style={{ fontWeight: 700, marginBottom: 10 }}>Aufgabe anlegen</div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <input placeholder="Titel" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} style={inputStyle} />
+
+          <select value={newAreaId} onChange={(e) => setNewAreaId(e.target.value)} style={inputStyle}>
+            <option value="">Bereich</option>
+            {(areas || []).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+
+          <input type="datetime-local" value={newDueAt} onChange={(e) => setNewDueAt(e.target.value)} style={inputStyle} />
+
+          <select value={newStatus} onChange={(e) => setNewStatus(e.target.value)} style={inputStyle}>
+            <option value="todo">Zu erledigen</option>
+            <option value="done">Erledigt</option>
+          </select>
+
+          <select value={newGuideId} onChange={(e) => setNewGuideId(e.target.value)} style={inputStyle}>
+            <option value="">Anleitung</option>
+            {(guides || []).map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
+          </select>
+
+          <button onClick={createTask} style={btnPrimary} disabled={loading}>
+            {loading ? "..." : "Anlegen"}
+          </button>
+        </div>
+      </div>
+
+      {activeTab === "board" ? (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 14 }}>
+          <BoardColumn
+            title="Zu erledigen"
+            items={board.todo}
+            subtasksByTask={subtasksByTask}
+            expandedTaskIds={expandedTaskIds}
+            inlineSubtaskTitle={inlineSubtaskTitle}
+            setInlineSubtaskTitle={setInlineSubtaskTitle}
+            toggleExpanded={toggleExpanded}
+            toggleTaskStatus={toggleTaskStatus}
+            toggleSubtaskDone={toggleSubtaskDone}
+            addInlineSubtask={addInlineSubtask}
+          />
+          <BoardColumn
+            title="Erledigt"
+            items={board.done}
+            subtasksByTask={subtasksByTask}
+            expandedTaskIds={expandedTaskIds}
+            inlineSubtaskTitle={inlineSubtaskTitle}
+            setInlineSubtaskTitle={setInlineSubtaskTitle}
+            toggleExpanded={toggleExpanded}
+            toggleTaskStatus={toggleTaskStatus}
+            toggleSubtaskDone={toggleSubtaskDone}
+            addInlineSubtask={addInlineSubtask}
+          />
+        </div>
+      ) : (
+        <div style={{ marginTop: 14 }}>
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 700, marginBottom: 10 }}>Liste</div>
+            {(tasks || []).length === 0 ? (
+              <div style={{ color: "#475569" }}>Keine Aufgaben</div>
+            ) : (
+              (tasks || []).map((t) => (
+                <div key={t.id} style={{ padding: "10px 0", borderBottom: "1px solid #e5e7eb" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 600 }}>{t.title}</div>
+                      <div style={{ fontSize: 12, color: "#475569" }}>
+                        {t.areas?.name ? `Bereich: ${t.areas.name}` : ""}{t.due_at ? ` • Fällig: ${fmtDateTime(t.due_at)}` : ""}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span style={pillStyle(t.status)}>{t.status}</span>
+                      <button style={btnSecondary} onClick={() => toggleTaskStatus(t.id, t.status)}>Status wechseln</button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
-        ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
 
-        <div style={styles.grid}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div style={styles.card}>
-              <div style={{ ...styles.h, marginBottom: 10 }}>Übersicht</div>
-              <div style={{ display: "grid", gap: 10 }}>
-                <MiniStat label="Aufgaben heute" value={counts.today} styles={styles} />
-                <MiniStat label="Diese Woche" value={counts.week} styles={styles} />
-                <MiniStat label="Offen" value={counts.open} styles={styles} />
-              </div>
-            </div>
+/* ---------------- Board Column + Task Card ---------------- */
+function BoardColumn({
+  title,
+  items,
+  subtasksByTask,
+  expandedTaskIds,
+  inlineSubtaskTitle,
+  setInlineSubtaskTitle,
+  toggleExpanded,
+  toggleTaskStatus,
+  toggleSubtaskDone,
+  addInlineSubtask,
+}) {
+  return (
+    <div style={cardStyle}>
+      <div style={{ fontWeight: 700, marginBottom: 10 }}>{title}</div>
 
-            <div style={styles.card}>
-              <div style={{ ...styles.h, marginBottom: 10 }}>Navigation</div>
-              <div style={{ display: "grid", gap: 10 }}>
-                {TABS.map((t) => (
-                  <button
-                    key={t.key}
-                    type="button"
-                    style={{
-                      ...styles.btnGhost,
-                      background: activeTab === t.key ? accentColor : "transparent",
-                      color: activeTab === t.key ? "#fff" : ui.text,
-                    }}
-                    onClick={() => setActiveTab(t.key)}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+      {(items || []).length === 0 ? (
+        <div style={{ color: "#475569" }}>Keine Aufgaben</div>
+      ) : (
+        (items || []).map((t) => {
+          const st = subtasksByTask?.[t.id] || [];
+          const total = st.length;
+          const done = st.filter((x) => !!x.is_done).length;
+          const progressText = total > 0 ? `${done}/${total}` : "0/0";
+          const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+          const expanded = !!expandedTaskIds?.[t.id];
 
-            <div style={styles.card}>
-              <div style={{ ...styles.h, marginBottom: 10 }}>Filter</div>
-              <div style={{ display: "grid", gap: 10 }}>
-                <select
-                  style={styles.select}
-                  value={filterAreaId}
-                  onChange={(e) => setFilterAreaId(e.target.value)}
-                >
-                  <option value="">Alle Bereiche</option>
-                  {areas.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
+          return (
+            <div key={t.id} style={taskCardStyle}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 700, wordBreak: "break-word" }}>{t.title}</div>
+                    <span style={pillStyle(t.status)}>{t.status}</span>
+                  </div>
 
-                <select
-                  style={styles.select}
-                  value={filterDueBucket}
-                  onChange={(e) => setFilterDueBucket(e.target.value)}
-                >
-                  {DUE_BUCKETS.map((b) => (
-                    <option key={b.value} value={b.value}>
-                      {b.label}
-                    </option>
-                  ))}
-                </select>
+                  <div style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>
+                    {t.areas?.name ? `Bereich: ${t.areas.name}` : "Bereich: –"}
+                    {t.due_at ? ` • Fällig: ${fmtDateTime(t.due_at)}` : ""}
+                    {t.guides?.title ? ` • Anleitung: ${t.guides.title}` : ""}
+                  </div>
 
-                <input
-                  style={styles.input}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Suche..."
-                />
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div style={styles.card}>
-              <div style={{ ...styles.h, marginBottom: 10 }}>Aufgabe anlegen</div>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 240px 220px 200px 160px",
-                  gap: 10,
-                }}
-              >
-                <input
-                  style={styles.input}
-                  value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  placeholder="Titel"
-                />
-
-                <select
-                  style={styles.select}
-                  value={newAreaId}
-                  onChange={(e) => setNewAreaId(e.target.value)}
-                >
-                  <option value="">Bereich wählen...</option>
-                  {areas.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-
-                <input
-                  style={styles.input}
-                  type="datetime-local"
-                  value={newDueAtLocal}
-                  onChange={(e) => setNewDueAtLocal(e.target.value)}
-                />
-
-                <select
-                  style={styles.select}
-                  value={newStatus}
-                  onChange={(e) => setNewStatus(e.target.value)}
-                >
-                  <option value="open">Zu erledigen</option>
-                  <option value="done">Erledigt</option>
-                </select>
-
-                <button type="button" style={styles.btn} onClick={createTask}>
-                  Anlegen
-                </button>
-              </div>
-
-              <div style={{ marginTop: 10, maxWidth: 520 }}>
-                <select
-                  style={styles.select}
-                  value={newGuideId}
-                  onChange={(e) => setNewGuideId(e.target.value)}
-                >
-                  <option value="">Anleitung verknüpfen (optional)</option>
-                  {guides.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {activeTab === "board" && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                <div style={styles.card}>
-                  <div style={{ ...styles.h, marginBottom: 10 }}>Zu erledigen</div>
-                  {boardOpen.length === 0 ? (
-                    <div style={styles.small}>Keine Aufgaben</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {boardOpen.map((t) => (
-                        <TaskCard
-                          key={t.id}
-                          t={t}
-                          ui={ui}
-                          styles={styles}
-                          onDone={() => setTaskStatus(t.id, "done")}
-                          onOpen={() => setTaskStatus(t.id, "open")}
-                          onDelete={() => deleteTask(t.id)}
-                          subtasks={subtasksByTask.get(t.id) || []}
-                          guides={guides}
-                          expanded={!!expandedSubtasksByTask?.[t.id]}
-                          onToggleExpanded={() => toggleExpandedSubtasks(t.id)}
-                          onCreateSubtaskInline={createSubtaskInline}
-                          onToggleSubtaskDone={toggleSubtaskDone}
-                        />
-                      ))}
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#475569" }}>
+                      <span>Unteraufgaben</span>
+                      <span>{progressText}</span>
                     </div>
-                  )}
-                </div>
-
-                <div style={styles.card}>
-                  <div style={{ ...styles.h, marginBottom: 10 }}>Erledigt</div>
-                  {boardDone.length === 0 ? (
-                    <div style={styles.small}>Keine Aufgaben</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {boardDone.map((t) => (
-                        <TaskCard
-                          key={t.id}
-                          t={t}
-                          ui={ui}
-                          styles={styles}
-                          onDone={() => setTaskStatus(t.id, "done")}
-                          onOpen={() => setTaskStatus(t.id, "open")}
-                          onDelete={() => deleteTask(t.id)}
-                          subtasks={subtasksByTask.get(t.id) || []}
-                          guides={guides}
-                        />
-                      ))}
+                    <div style={progressOuter}>
+                      <div style={{ ...progressInner, width: `${pct}%` }} />
                     </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {activeTab === "list" && (
-              <div style={styles.card}>
-                <div style={{ ...styles.h, marginBottom: 10 }}>Liste</div>
-
-                {tasks.length === 0 ? (
-                  <div style={styles.small}>Keine Aufgaben</div>
-                ) : (
-                  <div style={{ overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                      <thead>
-                        <tr style={{ textAlign: "left", color: ui.sub }}>
-                          <th style={{ padding: "10px 8px" }}>Aufgabe</th>
-                          <th style={{ padding: "10px 8px" }}>Bereich</th>
-                          <th style={{ padding: "10px 8px" }}>Datum/Uhrzeit</th>
-                          <th style={{ padding: "10px 8px" }}>Status</th>
-                          <th style={{ padding: "10px 8px" }}></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {tasks.map((t) => (
-                          <tr key={t.id} style={{ borderTop: `1px solid ${ui.border}` }}>
-                            <td style={{ padding: "10px 8px" }}>{t.title}</td>
-                            <td style={{ padding: "10px 8px" }}>{t.areas?.name || ""}</td>
-                            <td style={{ padding: "10px 8px" }}>{fmtDateTime(t.due_at)}</td>
-                            <td style={{ padding: "10px 8px" }}>
-                              {(t.status || "open") === "done" ? "Erledigt" : "Zu erledigen"}
-                            </td>
-                            <td style={{ padding: "10px 8px", textAlign: "right" }}>
-                              {(t.status || "open") === "done" ? (
-                                <button
-                                  style={styles.btnGhost}
-                                  type="button"
-                                  onClick={() => setTaskStatus(t.id, "open")}
-                                >
-                                  Wieder öffnen
-                                </button>
-                              ) : (
-                                <button
-                                  style={styles.btn}
-                                  type="button"
-                                  onClick={() => setTaskStatus(t.id, "done")}
-                                >
-                                  Erledigt
-                                </button>
-                              )}
-                              <span style={{ marginLeft: 10 }}>
-                                <button style={styles.danger} type="button" onClick={() => deleteTask(t.id)}>
-                                  Löschen
-                                </button>
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
                   </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === "calendar" && (
-              <div style={styles.card}>
-                <div style={{ ...styles.h, marginBottom: 10 }}>Kalender</div>
-
-                {calendarItems.length === 0 ? (
-                  <div style={styles.small}>
-                    Keine Kalender-Einträge (keine Aufgaben mit due_at im aktuellen Filter).
-                  </div>
-                ) : (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {calendarItems.map((c) => (
-                      <div
-                        key={c.id}
-                        style={{
-                          border: `1px solid ${ui.border}`,
-                          borderRadius: 14,
-                          padding: 12,
-                        }}
-                      >
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                          <div style={{ fontWeight: 700 }}>{c.title}</div>
-                          <div style={styles.small}>{fmtDateTime(c.due_at)}</div>
-                        </div>
-                        <div style={{ marginTop: 6, ...styles.small }}>
-                          Bereich: {c.areas?.name || "-"} · Status:{" "}
-                          {(c.status || "open") === "done" ? "Erledigt" : "Zu erledigen"}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === "timeline" && (
-              <div style={styles.card}>
-                <div style={{ ...styles.h, marginBottom: 10 }}>Timeline</div>
-
-                <div style={styles.small}>
-                  Einfache Darstellung nach due_at. Später können wir hier eine echte Zeitachse bauen.
                 </div>
 
-                <div style={styles.hr} />
-
-                {calendarItems.length === 0 ? (
-                  <div style={styles.small}>Keine Einträge</div>
-                ) : (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {calendarItems.map((c) => (
-                      <div
-                        key={c.id}
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          gap: 10,
-                          border: `1px solid ${ui.border}`,
-                          borderRadius: 14,
-                          padding: 12,
-                        }}
-                      >
-                        <div>
-                          <div style={{ fontWeight: 700 }}>{c.title}</div>
-                          <div style={styles.small}>{c.areas?.name || "-"}</div>
-                        </div>
-                        <div style={styles.small}>{fmtDateTime(c.due_at)}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === "areas" && (
-              <div style={styles.card}>
-                <div style={{ ...styles.h, marginBottom: 10 }}>Bereiche</div>
-
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <input
-                    style={styles.input}
-                    value={newAreaName}
-                    onChange={(e) => setNewAreaName(e.target.value)}
-                    placeholder="Neuer Bereichname..."
-                  />
-                  <button type="button" style={styles.btn} onClick={createArea}>
-                    Anlegen
-                  </button>
-                </div>
-
-                <div style={styles.hr} />
-
-                <div style={{ display: "grid", gap: 10 }}>
-                  {areas.map((a) => (
-                    <div
-                      key={a.id}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        gap: 10,
-                        border: `1px solid ${ui.border}`,
-                        borderRadius: 14,
-                        padding: 12,
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span
-                          style={{
-                            width: 10,
-                            height: 10,
-                            borderRadius: 999,
-                            background: accentColor,
-                            display: "inline-block",
-                          }}
-                        />
-                        <div>{a.name}</div>
-                      </div>
-
-                      <button type="button" style={styles.danger} onClick={() => deleteArea(a.id)}>
-                        Löschen
-                      </button>
-                    </div>
-                  ))}
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <button style={btnSecondarySmall} onClick={() => toggleExpanded(t.id)}>{expanded ? "Zuklappen" : "Aufklappen"}</button>
+                  <button style={btnSecondarySmall} onClick={() => toggleTaskStatus(t.id, t.status)}>Status</button>
                 </div>
               </div>
-            )}
 
-            {activeTab === "guides" && (
-              <div style={styles.card}>
-                <div style={{ ...styles.h, marginBottom: 10 }}>Anleitung</div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 14 }}>
-                  <div style={{ border: `1px solid ${ui.border}`, borderRadius: 16, padding: 14 }}>
-                    <div style={{ fontWeight: 700, marginBottom: 10 }}>Anleitung anlegen</div>
-
+              {expanded ? (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <input
-                      style={styles.input}
-                      value={guideTitle}
-                      onChange={(e) => setGuideTitle(e.target.value)}
-                      placeholder="Titel (z. B. Twence anmelden)"
+                      placeholder="Unteraufgabe hinzufügen…"
+                      value={inlineSubtaskTitle?.[t.id] || ""}
+                      onChange={(e) => setInlineSubtaskTitle((m) => ({ ...m, [t.id]: e.target.value }))}
+                      onKeyDown={(e) => { if (e.key === "Enter") addInlineSubtask(t.id); }}
+                      style={{ ...inputStyle, flex: 1 }}
                     />
-
-                    <div style={{ height: 10 }} />
-
-                    <textarea
-                      style={{ ...styles.input, minHeight: 140, resize: "vertical" }}
-                      value={guideContent}
-                      onChange={(e) => setGuideContent(e.target.value)}
-                      placeholder="Inhalt / Hinweis / Ansprechpartner / Link..."
-                    />
-
-                    <div style={{ height: 10 }} />
-
-                    <button type="button" style={{ ...styles.btn, width: "100%" }} onClick={saveGuide}>
-                      Anleitung speichern
-                    </button>
-
-                    <div style={styles.hr} />
-
-                    <div style={{ fontWeight: 700, marginBottom: 8 }}>Vorhandene Anleitungen</div>
-                    <select
-                      style={styles.select}
-                      value={selectedGuideId}
-                      onChange={(e) => onSelectGuide(e.target.value)}
-                    >
-                      <option value="">— auswählen —</option>
-                      {guides.map((g) => (
-                        <option key={g.id} value={g.id}>
-                          {g.title}
-                        </option>
-                      ))}
-                    </select>
+                    <button style={btnPrimarySmall} onClick={() => addInlineSubtask(t.id)}>+</button>
                   </div>
 
-                  <div style={{ border: `1px solid ${ui.border}`, borderRadius: 16, padding: 14 }}>
-                    <div style={{ fontWeight: 700, marginBottom: 10 }}>Dateien hochladen</div>
-                    <div style={styles.small}>Bucket: guides</div>
-
-                    <div style={{ height: 8 }} />
-
-                    <input
-                      type="file"
-                      disabled={!selectedGuideId || uploadingGuideFile}
-                      onChange={(e) => uploadGuideFile(e.target.files?.[0])}
-                    />
-
-                    <div style={{ marginTop: 10, ...styles.small }}>
-                      {selectedGuideId ? "Dateien zur ausgewählten Anleitung:" : "Bitte Anleitung auswählen."}
-                    </div>
-
-                    <div style={{ height: 10 }} />
-
-                    {guideFiles.length === 0 ? (
-                      <div style={styles.small}>Keine Dateien</div>
+                  <div style={{ marginTop: 8 }}>
+                    {st.length === 0 ? (
+                      <div style={{ fontSize: 12, color: "#64748b" }}>Keine Unteraufgaben</div>
                     ) : (
-                      <div style={{ display: "grid", gap: 10 }}>
-                        {guideFiles.map((f) => {
-                          const url = getGuideFileUrl(f.path);
-                          return (
-                            <div
-                              key={f.id}
-                              style={{
-                                border: `1px solid ${ui.border}`,
-                                borderRadius: 14,
-                                padding: 12,
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                gap: 10,
-                              }}
-                            >
-                              <div style={{ minWidth: 0 }}>
-                                <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis" }}>
-                                  {f.filename || f.path}
-                                </div>
-                                {url ? (
-                                  <a
-                                    href={url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    style={{ ...styles.small, color: accentColor, textDecoration: "none" }}
-                                  >
-                                    Öffnen
-                                  </a>
-                                ) : (
-                                  <div style={styles.small}>Kein Public-URL verfügbar</div>
-                                )}
-                              </div>
-                              <button type="button" style={styles.danger} onClick={() => deleteGuideFile(f)}>
-                                Löschen
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
+                      st.map((s) => (
+                        <label key={s.id} style={subtaskRow}>
+                          <input type="checkbox" checked={!!s.is_done} onChange={(e) => toggleSubtaskDone(s.id, e.target.checked)} />
+                          <span style={{ textDecoration: s.is_done ? "line-through" : "none" }}>{s.title}</span>
+                        </label>
+                      ))
                     )}
                   </div>
                 </div>
-
-                <div style={styles.hr} />
-
-                <div style={{ border: `1px solid ${ui.border}`, borderRadius: 16, padding: 14 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 10 }}>Unteraufgabe anlegen</div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "320px 1fr 280px 140px", gap: 10 }}>
-                    <select
-                      style={styles.select}
-                      value={subtaskTaskId}
-                      onChange={(e) => setSubtaskTaskId(e.target.value)}
-                    >
-                      <option value="">Hauptaufgabe wählen...</option>
-                      {tasks.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.title}
-                        </option>
-                      ))}
-                    </select>
-
-                    <input
-                      style={styles.input}
-                      value={subtaskTitle}
-                      onChange={(e) => setSubtaskTitle(e.target.value)}
-                      placeholder="Unteraufgabe..."
-                    />
-
-                    <select
-                      style={styles.select}
-                      value={subtaskGuideId}
-                      onChange={(e) => setSubtaskGuideId(e.target.value)}
-                    >
-                      <option value="">Anleitung verknüpfen (optional)</option>
-                      {guides.map((g) => (
-                        <option key={g.id} value={g.id}>
-                          {g.title}
-                        </option>
-                      ))}
-                    </select>
-
-                    <button type="button" style={styles.btn} onClick={createSubtask}>
-                      Anlegen
-                    </button>
-                  </div>
-
-                  <div style={styles.hr} />
-
-                  <div style={{ fontWeight: 700, marginBottom: 8 }}>Vorhandene Unteraufgaben</div>
-                  {subtasks.length === 0 ? (
-                    <div style={styles.small}>Keine Unteraufgaben</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {subtasks.map((s) => (
-                        <div
-                          key={s.id}
-                          style={{
-                            border: `1px solid ${ui.border}`,
-                            borderRadius: 14,
-                            padding: 12,
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            gap: 10,
-                          }}
-                        >
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 700 }}>
-                              {s.is_done ? "✓ " : ""}{s.title}
-                            </div>
-                            <div style={styles.small}>Hauptaufgabe: {s.tasks?.title || "-"}</div>
-                          </div>
-                          <div style={styles.row}>
-                            <button
-                              type="button"
-                              style={styles.btnGhost}
-                              onClick={() => toggleSubtaskDone(s.id, !s.is_done)}
-                            >
-                              {s.is_done ? "Offen" : "Erledigt"}
-                            </button>
-                            <button type="button" style={styles.danger} onClick={() => deleteSubtask(s.id)}>
-                              Löschen
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {activeTab === "settings" && (
-              <div style={styles.card}>
-                <div style={{ ...styles.h, marginBottom: 10 }}>Einstellungen</div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "260px 260px 260px 160px", gap: 10 }}>
-                  <div>
-                    <div style={styles.small}>Theme</div>
-                    <select style={styles.select} value={theme} onChange={(e) => setTheme(e.target.value)}>
-                      {THEMES.map((t) => (
-                        <option key={t.value} value={t.value}>
-                          {t.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <div style={styles.small}>Hintergrund</div>
-                    <select
-                      style={styles.select}
-                      value={background}
-                      onChange={(e) => setBackground(e.target.value)}
-                    >
-                      {BACKGROUNDS.map((b) => (
-                        <option key={b.value} value={b.value}>
-                          {b.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <div style={styles.small}>Akzent</div>
-                    <select style={styles.select} value={accent} onChange={(e) => setAccent(e.target.value)}>
-                      {ACCENTS.map((a) => (
-                        <option key={a.value} value={a.value}>
-                          {a.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div style={{ display: "flex", alignItems: "flex-end" }}>
-                    <button type="button" style={styles.btn} onClick={saveUserSettings}>
-                      Speichern
-                    </button>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 12, ...styles.small }}>
-                  Benachrichtigungen bauen wir als nächsten Schritt (pro User ein/aus).
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+              ) : null}
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }
 
-/* ---------------- Subcomponents ---------------- */
-function MiniStat({ label, value, styles }) {
-  return (
-    <div style={{ ...styles.card, padding: 12, borderRadius: 14 }}>
-      <div style={styles.small}>{label}</div>
-      <div style={{ fontSize: 26, fontWeight: 800, marginTop: 4 }}>{value}</div>
-    </div>
-  );
-}
-
-function TaskCard({
-  t,
-  guides,
-  areas,
-  subtasks,
-  styles,
-  onToggleTaskStatus,
-  expanded,
-  onToggleExpanded,
-  onCreateSubtaskInline,
-  onToggleSubtaskDone,
-  onDeleteTask,
-}) {
-  // Guards: props can be briefly undefined during initial render / hydration
-  const safeGuides = Array.isArray(guides) ? guides : [];
-  const safeAreas = Array.isArray(areas) ? areas : [];
-  const safeSubtasks = Array.isArray(subtasks) ? subtasks : [];
-
-  const isDone = (t.status || "todo") === "done";
-  const areaName = t.area_id ? safeAreas.find((a) => a.id === t.area_id)?.name : "";
-  const guideTitle = t.guide_id ? safeGuides.find((g) => g.id === t.guide_id)?.title : "";
-
-  const st = safeSubtasks;
-  const stDoneCount = st.filter((s) => (s.is_done ?? s.done) === true).length;
-  const stTotal = st.length;
-  const stSorted = [...st].sort((a, b) => {
-    const ad = (a.is_done ?? a.done) ? 1 : 0;
-    const bd = (b.is_done ?? b.done) ? 1 : 0;
-    if (ad !== bd) return ad - bd; // offen zuerst
-    const at = a.created_at ? new Date(a.created_at).getTime() : 0;
-    const bt = b.created_at ? new Date(b.created_at).getTime() : 0;
-    return bt - at; // neuere oben
-  });
-
-  return (
-    <div style={styles.card}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-        <div>
-          <div style={{ fontWeight: 800, display: "flex", gap: 8, alignItems: "center" }}>
-            <span>{t.title}</span>
-            {stTotal ? <span style={{ fontSize: 12, color: "#64748b" }}>{stDoneCount}/{stTotal}</span> : null}
-          </div>
-          <div style={{ display: "flex", gap: 10, marginTop: 6, flexWrap: "wrap" }}>
-            {areaName ? <span style={styles.badge}>{areaName}</span> : null}
-            {guideTitle ? <span style={styles.badge}>Anleitung: {guideTitle}</span> : null}
-            {t.due_at ? <span style={styles.badge}>Fällig: {formatDateTime(t.due_at)}</span> : null}
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-          <button type="button" style={styles.btn} onClick={() => onToggleTaskStatus(t.id, t.status)}>
-            {isDone ? "Wieder offen" : "Erledigt"}
-          </button>
-          <button type="button" style={styles.btnGhost} onClick={() => onDeleteTask(t.id)}>
-            Löschen
-          </button>
-        </div>
-      </div>
-
-      <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button type="button" style={styles.btnGhost} onClick={() => onToggleExpanded(t.id)}>
-          {expanded ? "Unteraufgaben schließen" : `Unteraufgaben (${stDoneCount}/${stTotal})`}
-        </button>
-      </div>
-
-      {expanded ? (
-        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-          <SubtaskInlineForm
-            guides={guides}
-            styles={styles}
-            onCreate={(title, guideId) => onCreateSubtaskInline(t.id, title, guideId)}
-          />
-
-          <div style={{ display: "grid", gap: 6 }}>
-            {stTotal ? (
-              stSorted.map((s) => {
-                const sDone = (s.is_done ?? s.done) === true;
-                return (
-                  <div
-                    key={s.id}
-                    style={{
-                      display: "flex",
-                      gap: 10,
-                      alignItems: "center",
-                      padding: "8px 10px",
-                      border: `1px solid ${styles.border}`,
-                      borderRadius: 12,
-                      background: styles.cardBg,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={sDone}
-                      onChange={() => onToggleSubtaskDone(s.id, !sDone)}
-                    />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ textDecoration: sDone ? "line-through" : "none" }}>{s.title}</div>
-                      {s.guides?.title ? (
-                        <div style={{ fontSize: 12, opacity: 0.75 }}>Anleitung: {s.guides.title}</div>
-                      ) : null}
-                    </div>
-                    <button type="button" style={styles.btnGhost} onClick={() => onDeleteSubtask(s.id)}>
-                      Löschen
-                    </button>
-                  </div>
-                );
-              })
-            ) : (
-              <div style={styles.small}>Keine Unteraufgaben</div>
-            )}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function LoginBox({ supabase, styles, theme, setTheme, background, setBackground, accent, setAccent }) {
+/* ---------------- Login Component ---------------- */
+function Login({ supabase }) {
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [mode, setMode] = useState("login"); // login | signup
+  const [pw, setPw] = useState("");
   const [msg, setMsg] = useState("");
 
-  const onSubmit = async () => {
+  const login = async () => {
     setMsg("");
-    const e = email.trim();
-    const p = password;
-    if (!e || !p) return;
-
-    if (mode === "login") {
-      const { error } = await supabase.auth.signInWithPassword({ email: e, password: p });
-      if (error) setMsg(error.message);
-    } else {
-      const { error } = await supabase.auth.signUp({ email: e, password: p });
-      if (error) setMsg(error.message);
-      else setMsg("Konto erstellt. Falls E-Mail-Bestätigung aktiv ist: bitte bestätigen.");
-    }
+    const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
+    if (error) setMsg(error.message);
   };
 
   return (
-    <div style={{ marginTop: 14 }}>
-      <div style={{ display: "grid", gap: 10 }}>
-        <input
-          style={styles.input}
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="E-Mail"
-        />
-        <input
-          style={styles.input}
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Passwort"
-        />
-
-        <button type="button" style={{ ...styles.btn, width: "100%" }} onClick={onSubmit}>
-          {mode === "login" ? "Anmelden" : "Neues Konto erstellen"}
-        </button>
-
-        <button
-          type="button"
-          style={{ ...styles.btnGhost, width: "100%" }}
-          onClick={() => setMode((m) => (m === "login" ? "signup" : "login"))}
-        >
-          {mode === "login" ? "Neues Konto erstellen" : "Zur Anmeldung"}
-        </button>
-
-        {msg ? <div style={{ ...styles.small, color: "#ef4444" }}>{msg}</div> : null}
-
-        <div style={styles.hr} />
-
-        <div style={styles.small}>Design</div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.small}>Theme</div>
-            <select style={styles.select} value={theme} onChange={(e) => setTheme(e.target.value)}>
-              {THEMES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <div style={styles.small}>Hintergrund</div>
-            <select style={styles.select} value={background} onChange={(e) => setBackground(e.target.value)}>
-              {BACKGROUNDS.map((b) => (
-                <option key={b.value} value={b.value}>
-                  {b.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div style={{ gridColumn: "1 / -1" }}>
-            <div style={styles.small}>Akzent</div>
-            <select style={styles.select} value={accent} onChange={(e) => setAccent(e.target.value)}>
-              {ACCENTS.map((a) => (
-                <option key={a.value} value={a.value}>
-                  {a.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#f5f7ff", fontFamily: "system-ui, Arial" }}>
+      <div style={{ width: 360, background: "#fff", borderRadius: 14, padding: 18, boxShadow: "0 10px 30px rgba(0,0,0,0.08)" }}>
+        <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>Login</div>
+        {msg ? <div style={{ ...errorStyle, marginBottom: 10 }}>{msg}</div> : null}
+        <input placeholder="E-Mail" value={email} onChange={(e) => setEmail(e.target.value)} style={{ ...inputStyle, width: "100%", marginBottom: 8 }} />
+        <input type="password" placeholder="Passwort" value={pw} onChange={(e) => setPw(e.target.value)} style={{ ...inputStyle, width: "100%", marginBottom: 8 }} />
+        <button onClick={login} style={{ ...btnPrimary, width: "100%" }}>Login</button>
       </div>
     </div>
   );
 }
+
+/* ---------------- Small UI components/styles ---------------- */
+function TabButton({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        border: "1px solid #e5e7eb",
+        background: active ? "#0f7a2a" : "#ffffff",
+        color: active ? "#ffffff" : "#0f172a",
+        padding: "8px 12px",
+        borderRadius: 999,
+        cursor: "pointer",
+        fontWeight: 700,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+const cardStyle = {
+  background: "#ffffff",
+  borderRadius: 16,
+  padding: 14,
+  boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
+};
+
+const taskCardStyle = {
+  border: "1px solid #eef2ff",
+  borderRadius: 14,
+  padding: 12,
+  marginBottom: 10,
+  background: "#fbfdff",
+};
+
+const inputStyle = {
+  border: "1px solid #e5e7eb",
+  borderRadius: 10,
+  padding: "10px 10px",
+  outline: "none",
+  minWidth: 160,
+};
+
+const btnPrimary = {
+  background: "#0f7a2a",
+  color: "#fff",
+  border: "none",
+  borderRadius: 12,
+  padding: "10px 14px",
+  cursor: "pointer",
+  fontWeight: 800,
+};
+
+const btnSecondary = {
+  background: "#ffffff",
+  color: "#0f172a",
+  border: "1px solid #e5e7eb",
+  borderRadius: 12,
+  padding: "10px 14px",
+  cursor: "pointer",
+  fontWeight: 700,
+};
+
+const btnPrimarySmall = { ...btnPrimary, padding: "8px 10px", borderRadius: 10 };
+const btnSecondarySmall = { ...btnSecondary, padding: "8px 10px", borderRadius: 10 };
+
+const errorStyle = {
+  background: "#fff1f2",
+  border: "1px solid #fecdd3",
+  color: "#9f1239",
+  padding: 12,
+  borderRadius: 12,
+  marginBottom: 12,
+  fontWeight: 700,
+};
+
+const toastStyle = {
+  position: "sticky",
+  top: 10,
+  zIndex: 50,
+  background: "#111827",
+  color: "#fff",
+  padding: "10px 12px",
+  borderRadius: 12,
+  marginBottom: 12,
+  display: "inline-flex",
+  alignItems: "center",
+};
+
+function pillStyle(status) {
+  const isDone = status === "done";
+  return {
+    display: "inline-block",
+    padding: "4px 8px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 800,
+    background: isDone ? "#dcfce7" : "#fff7ed",
+    color: isDone ? "#166534" : "#9a3412",
+    border: `1px solid ${isDone ? "#86efac" : "#fdba74"}`,
+  };
+}
+
+const progressOuter = { width: "100%", height: 8, borderRadius: 999, background: "#eef2ff", overflow: "hidden" };
+const progressInner = { height: 8, borderRadius: 999, background: "#0f7a2a" };
+
+const subtaskRow = { display: "flex", gap: 10, alignItems: "center", padding: "6px 0", fontSize: 14 };
