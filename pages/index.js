@@ -1,11 +1,9 @@
-// pages/login.js
-import React, { useEffect, useState } from "react";
-import { useRouter } from "next/router";
+// pages/index.js
+import { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { useRouter } from "next/router";
 
-/* -------------------------------------------------------
-   Supabase (client-only, singleton)
-------------------------------------------------------- */
+/* ---------------- Supabase Client ---------------- */
 function getSupabaseClient() {
   if (typeof window === "undefined") return null;
 
@@ -13,8 +11,7 @@ function getSupabaseClient() {
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!url || !key) {
-    // eslint-disable-next-line no-console
-    console.warn("Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY");
+    console.warn("Supabase ENV fehlt");
     return null;
   }
 
@@ -27,93 +24,77 @@ function getSupabaseClient() {
   return window.__supabase__;
 }
 
-export default function LoginPage() {
+/* ---------------- Page ---------------- */
+export default function IndexPage() {
   const router = useRouter();
   const [supabase, setSupabase] = useState(null);
+  const [session, setSession] = useState(null);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
 
-  const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
-
+  /* Init Supabase */
   useEffect(() => {
     setSupabase(getSupabaseClient());
   }, []);
 
-  // Wenn schon eingeloggt -> direkt ins Dashboard
+  /* Session prüfen */
   useEffect(() => {
     if (!supabase) return;
+
     supabase.auth.getSession().then(({ data }) => {
-      if (data?.session) router.replace("/dashboard");
+      if (data.session) {
+        router.replace("/dashboard");
+      } else {
+        setSession(null);
+      }
     });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        router.replace("/dashboard");
+      }
+    });
+
+    return () => data.subscription.unsubscribe();
   }, [supabase, router]);
 
+  /* Login */
   const login = async () => {
-    if (!supabase) {
-      setMsg("Supabase ist nicht initialisiert. Bitte ENV prüfen (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY).");
-      return;
-    }
-    setBusy(true);
-    setMsg("");
-    try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      });
-      if (error) {
-        setMsg(error.message);
-        return;
-      }
-      router.replace("/dashboard");
-    } finally {
-      setBusy(false);
-    }
+    setError("");
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) setError(error.message);
   };
 
+  /* UI */
   return (
-    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24, background: "#f6f7fb" }}>
-      <div style={{ width: "100%", maxWidth: 420, background: "white", borderRadius: 16, padding: 24, boxShadow: "0 8px 30px rgba(0,0,0,0.08)" }}>
-        <h2 style={{ margin: 0, marginBottom: 14 }}>Bitte einloggen</h2>
+    <div style={{ padding: 40, maxWidth: 420, margin: "0 auto" }}>
+      <h2>Bitte einloggen</h2>
 
-        {msg && (
-          <div style={{ background: "#fee2e2", color: "#991b1b", padding: 10, borderRadius: 10, marginBottom: 12 }}>
-            {msg}
-          </div>
-        )}
+      {error && <p style={{ color: "red" }}>{error}</p>}
 
-        <div style={{ display: "grid", gap: 10 }}>
-          <input
-            placeholder="E-Mail"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={{ padding: 12, borderRadius: 10, border: "1px solid #e5e7eb" }}
-          />
-          <input
-            type="password"
-            placeholder="Passwort"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{ padding: 12, borderRadius: 10, border: "1px solid #e5e7eb" }}
-          />
+      <input
+        placeholder="E-Mail"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        style={{ width: "100%", marginBottom: 10 }}
+      />
 
-          <button
-            onClick={login}
-            disabled={busy}
-            style={{
-              padding: 12,
-              borderRadius: 10,
-              border: "none",
-              background: busy ? "#9ca3af" : "#0f6b2f",
-              color: "white",
-              fontWeight: 700,
-              cursor: busy ? "not-allowed" : "pointer",
-            }}
-          >
-            {busy ? "Bitte warten…" : "Login"}
-          </button>
-        </div>
-      </div>
+      <input
+        type="password"
+        placeholder="Passwort"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        style={{ width: "100%", marginBottom: 10 }}
+      />
+
+      <button onClick={login} style={{ width: "100%" }}>
+        Login
+      </button>
     </div>
   );
 }
