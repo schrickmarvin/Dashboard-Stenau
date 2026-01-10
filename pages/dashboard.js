@@ -779,7 +779,7 @@ export default function DashboardPage() {
             <div style={{ fontSize: 16, fontWeight: 900  }}>Kalender</div>
             <div style={{ display: "flex", gap: 8  }}>
               <button
-                style={...btnGhost}
+                style={btnGhost}
                 onClick={() => setCalMonth((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}
               >
                 ◀
@@ -788,7 +788,7 @@ export default function DashboardPage() {
                 {calMonth.toLocaleString("de-DE", { month: "long", year: "numeric" })}
               </div>
               <button
-                style={...btnGhost}
+                style={btnGhost}
                 onClick={() => setCalMonth((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}
               >
                 ▶
@@ -864,7 +864,7 @@ export default function DashboardPage() {
                   <button
                     key={key}
                     onClick={() => setCalSelectedDate(key)}
-                    style={
+                    style={{
                       border: "1px solid #e5e7eb",
                       background: isSelected ? "#0f7a2a" : "white",
                       color: isSelected ? "white" : "#111827",
@@ -873,18 +873,18 @@ export default function DashboardPage() {
                       textAlign: "left",
                       cursor: "pointer",
                       minHeight: 54,
-                    }
+                    }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline"  }}>
                       <div style={{ fontWeight: 900  }}>{d.getDate()}</div>
                       {count > 0 && (
-                        <div style={
+                        <div style={{
                           fontSize: 12,
                           fontWeight: 900,
                           background: isSelected ? "rgba(255,255,255,0.2)" : "#eef2ff",
                           padding: "2px 8px",
                           borderRadius: 999,
-                        }>
+                        }}>
                           {count}
                         </div>
                       )}
@@ -927,7 +927,7 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 8, alignItems: "flex-start"  }}>
-                      <button style={...btnGhost} onClick={() => toggleTaskStatus(it.id, it.status)}>Status</button>
+                      <button style={btnGhost} onClick={() => toggleTaskStatus(it.id, it.status)}>Status</button>
                     </div>
                   </div>
                 ))}
