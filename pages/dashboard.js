@@ -157,22 +157,73 @@ export default function DashboardPage() {
   };
 
   const loadTasks = async () => {
-    // IMPORTANT: tasks.updated_at is NOT selected (may not exist in your schema)
-    const { data, error } = await supabase
-      .from("tasks")
-      .select("id,title,status,created_at,due_at,area_id,guide_id,areas(name),guides(title)")
-      .order("created_at", { ascending: false });
+    // Prefer UI View (v_tasks_ui). Fallback: base table.
+    let data = null;
+    let error = null;
+
+    // 1) Try view (has area_name / guide_title / is_done)
+    {
+      const res = await supabase
+        .from("v_tasks_ui")
+        .select(
+          "id,title,status,is_done,created_at,due_at,due_day,period,user_id,area_id,area_name,guide_id,guide_title"
+        )
+        .order("created_at", { ascending: false });
+      data = res.data;
+      error = res.error;
+    }
+
+    // 2) Fallback if view doesn't exist
+    if (error) {
+      const msg = (error?.message || "").toLowerCase();
+      const viewMissing = msg.includes("does not exist") || msg.includes("relation") || msg.includes("42p01");
+      if (viewMissing) {
+        const res2 = await supabase
+          .from("tasks")
+          .select("id,title,status,created_at,due_at,area_id,guide_id,areas(name),guides(title)")
+          .order("created_at", { ascending: false });
+        data = (res2.data || []).map((t) => ({
+          ...t,
+          is_done: t.status === "done",
+          area_name: t.areas?.name || null,
+          guide_title: t.guides?.title || null,
+        }));
+        error = res2.error;
+      }
+    }
 
     if (error) throw error;
     setTasks(data || []);
   };
 
   const loadSubtasksForTask = async (taskId) => {
-    const { data, error } = await supabase
-      .from("subtasks")
-      .select("id,task_id,title,is_done,status,created_at,guide_id,guides(title)")
+    // Prefer UI View (v_subtasks_ui) if present; fallback to table.
+    let data = null;
+    let error = null;
+
+    const res1 = await supabase
+      .from("v_subtasks_ui")
+      .select("id,task_id,title,is_done,status,created_at,updated_at,guide_id,guide_title")
       .eq("task_id", taskId)
       .order("created_at", { ascending: true });
+
+    if (!res1.error) {
+      data = res1.data;
+    } else {
+      const res2 = await supabase
+        .from("subtasks")
+        .select("id,task_id,title,is_done,status,created_at,updated_at,guide_id,guides(title)")
+        .eq("task_id", taskId)
+        .order("created_at", { ascending: true });
+
+      if (!res2.error) {
+        data = (res2.data || []).map((s) => ({
+          ...s,
+          guide_title: s?.guides?.title || null,
+        }));
+      }
+      error = res2.error;
+    }
 
     if (error) throw error;
     setSubtasksByTask((prev) => ({ ...prev, [taskId]: data || [] }));
@@ -198,14 +249,15 @@ export default function DashboardPage() {
   const tasksTodo = useMemo(() => tasks.filter((t) => t.status === "todo"), [tasks]);
   const tasksDone = useMemo(() => tasks.filter((t) => t.status === "done"), [tasks]);
 
-  const areaName = (t) => t?.areas?.name || "–";
-  const guideTitle = (t) => t?.guides?.title || "";
+  const areaName = (t) => t?.area_name || t?.areas?.name || "–";
+  const guideTitle = (t) => t?.guide_title || t?.guides?.title || "";
 
   const subStats = (taskId) => {
     const list = subtasksByTask[taskId] || [];
     const total = list.length;
     const done = list.filter((s) => !!s.is_done).length;
-    return { total, done };
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    return { total, done, pct };
   };
 
   /* ---------------- Actions: tasks ---------------- */
@@ -395,7 +447,7 @@ export default function DashboardPage() {
             </div>
 
             <div style={{ marginTop: 10, fontSize: 13, color: "#374151" }}>
-              Unteraufgaben <span style={{ float: "right" }}>{done}/{total}</span>
+              Unteraufgaben <span style={{ float: "right" }}>{done}/{total} ({progress}%)</span>
               <div style={{ height: 10, background: "#eef2ff", borderRadius: 999, overflow: "hidden", marginTop: 6 }}>
                 <div style={{ height: "100%", width: `${progress}%`, background: "#0f7a2a" }} />
               </div>
