@@ -1,242 +1,564 @@
 // pages/dashboard.js
-import { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/router";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Supabase ---------------- */
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
+/* -------------------------------------------------------
+   Supabase (client-only, singleton)
+------------------------------------------------------- */
+function getSupabaseClient() {
+  if (typeof window === "undefined") return null;
 
-/* ---------------- Page ---------------- */
-export default function Dashboard() {
-  const [user, setUser] = useState(null);
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  const [tasks, setTasks] = useState([]);
-  const [subtasks, setSubtasks] = useState([]);
-  const [stats, setStats] = useState([]);
+  if (!url || !key) {
+    // eslint-disable-next-line no-console
+    console.warn("Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY");
+    return null;
+  }
 
-  const [areas, setAreas] = useState([]);
-  const [guides, setGuides] = useState([]);
-
-  const [title, setTitle] = useState("");
-  const [areaId, setAreaId] = useState("");
-  const [guideId, setGuideId] = useState("");
-  const [dueAt, setDueAt] = useState("");
-
-  const [error, setError] = useState("");
-
-  /* ---------------- Auth ---------------- */
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user ?? null);
+  if (!window.__supabase__) {
+    window.__supabase__ = createClient(url, key, {
+      auth: { persistSession: true, autoRefreshToken: true },
     });
-
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setUser(session?.user ?? null);
-      }
-    );
-
-    return () => listener.subscription.unsubscribe();
-  }, []);
-
-  /* ---------------- Load ---------------- */
-  useEffect(() => {
-    if (!user) return;
-    loadAll();
-  }, [user]);
-
-  async function loadAll() {
-    await Promise.all([
-      loadTasks(),
-      loadSubtasks(),
-      loadStats(),
-      loadAreas(),
-      loadGuides(),
-    ]);
   }
 
-  async function loadTasks() {
-    const { data, error } = await supabase
-      .from("v_tasks_ui")
-      .select("*")
-      .order("created_at", { ascending: false });
+  return window.__supabase__;
+}
 
-    if (error) setError(error.message);
-    else setTasks(data ?? []);
-  }
+/* -------------------------------------------------------
+   Helpers
+------------------------------------------------------- */
+const toISO = (v) => {
+  if (!v) return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+};
 
-  async function loadSubtasks() {
-    const { data } = await supabase.from("v_subtasks_ui").select("*");
-    setSubtasks(data ?? []);
-  }
+const fmtDue = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("de-DE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
 
-  async function loadStats() {
-    const { data } = await supabase
-      .from("v_task_subtask_stats")
-      .select("*");
-    setStats(data ?? []);
-  }
-
-  async function loadAreas() {
-    const { data } = await supabase.from("areas").select("*").order("name");
-    setAreas(data ?? []);
-  }
-
-  async function loadGuides() {
-    const { data } = await supabase.from("guides").select("*").order("title");
-    setGuides(data ?? []);
-  }
-
-  /* ---------------- Create Task ---------------- */
-  async function createTask() {
-    setError("");
-    if (!title.trim()) return;
-
-    const { error } = await supabase.from("tasks").insert([
-      {
-        title: title.trim(),
-        area_id: areaId || null,
-        guide_id: guideId || null,
-        due_at: dueAt ? new Date(dueAt).toISOString() : null,
-        status: "todo",
-        user_id: user.id,
-      },
-    ]);
-
-    if (error) {
-      setError(error.message);
-      return;
-    }
-
-    setTitle("");
-    setAreaId("");
-    setGuideId("");
-    setDueAt("");
-    await loadAll();
-  }
-
-  /* ---------------- Subtasks ---------------- */
-  async function addSubtask(taskId, text) {
-    if (!text.trim()) return;
-
-    await supabase.from("subtasks").insert([
-      {
-        task_id: taskId,
-        title: text.trim(),
-        is_done: false,
-      },
-    ]);
-
-    await loadAll();
-  }
-
-  async function toggleSubtask(id, isDone) {
-    await supabase
-      .from("subtasks")
-      .update({ is_done: !isDone })
-      .eq("id", id);
-
-    await loadAll();
-  }
-
-  /* ---------------- UI ---------------- */
-  if (!user) {
-    return <div style={{ padding: 40 }}>Bitte einloggen…</div>;
-  }
+function Pill({ children, tone = "gray" }) {
+  const bg =
+    tone === "green" ? "#d1fae5" : tone === "orange" ? "#ffedd5" : tone === "red" ? "#fee2e2" : "#e5e7eb";
+  const color =
+    tone === "green" ? "#065f46" : tone === "orange" ? "#9a3412" : tone === "red" ? "#991b1b" : "#111827";
 
   return (
-    <div style={{ padding: 24 }}>
-      <h2>Aufgabe anlegen</h2>
-
-      {error && <div style={{ color: "red" }}>{error}</div>}
-
-      <input
-        placeholder="Titel"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-      />
-
-      <select value={areaId} onChange={(e) => setAreaId(e.target.value)}>
-        <option value="">Bereich</option>
-        {areas.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.name}
-          </option>
-        ))}
-      </select>
-
-      <input
-        type="datetime-local"
-        value={dueAt}
-        onChange={(e) => setDueAt(e.target.value)}
-      />
-
-      <select value={guideId} onChange={(e) => setGuideId(e.target.value)}>
-        <option value="">Anleitung</option>
-        {guides.map((g) => (
-          <option key={g.id} value={g.id}>
-            {g.title}
-          </option>
-        ))}
-      </select>
-
-      <button onClick={createTask}>Anlegen</button>
-
-      <hr />
-
-      <h2>Board</h2>
-
-      {tasks.map((t) => {
-        const s = stats.find((x) => x.task_id === t.id);
-        const taskSubs = subtasks.filter((st) => st.task_id === t.id);
-
-        return (
-          <div key={t.id} style={{ border: "1px solid #ccc", marginBottom: 16, padding: 12 }}>
-            <strong>{t.title}</strong> ({t.status})<br />
-            Unteraufgaben: {s?.done_subtasks ?? 0}/{s?.total_subtasks ?? 0}
-
-            <div>
-              {taskSubs.map((st) => (
-                <div key={st.id}>
-                  <input
-                    type="checkbox"
-                    checked={st.is_done}
-                    onChange={() => toggleSubtask(st.id, st.is_done)}
-                  />{" "}
-                  {st.title}
-                </div>
-              ))}
-            </div>
-
-            <AddSubtask onAdd={(text) => addSubtask(t.id, text)} />
-          </div>
-        );
-      })}
-    </div>
+    <span
+      style={{
+        display: "inline-block",
+        padding: "2px 10px",
+        borderRadius: 999,
+        background: bg,
+        color,
+        fontSize: 12,
+        fontWeight: 700,
+        marginLeft: 8,
+      }}
+    >
+      {children}
+    </span>
   );
 }
 
-/* ---------------- Subtask Input ---------------- */
-function AddSubtask({ onAdd }) {
-  const [text, setText] = useState("");
+/* -------------------------------------------------------
+   Page
+------------------------------------------------------- */
+export default function DashboardPage() {
+  const router = useRouter();
+
+  const [supabase, setSupabase] = useState(null);
+
+  // session: "loading" | null | sessionObject
+  const [session, setSession] = useState("loading");
+  const user = session && session !== "loading" ? session.user : null;
+
+  const [error, setError] = useState("");
+
+  // Data
+  const [areas, setAreas] = useState([]);
+  const [guides, setGuides] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [subtasksByTask, setSubtasksByTask] = useState({});
+  const [expanded, setExpanded] = useState({});
+
+  // UI tab
+  const [tab, setTab] = useState("board"); // board | list
+
+  // Create task
+  const [newTitle, setNewTitle] = useState("");
+  const [newAreaId, setNewAreaId] = useState("");
+  const [newDueAt, setNewDueAt] = useState("");
+  const [newStatus, setNewStatus] = useState("todo"); // todo|done
+  const [newGuideId, setNewGuideId] = useState("");
+
+  // Create subtask
+  const [subtaskDraft, setSubtaskDraft] = useState({});
+
+  /* ---------------- Init supabase ---------------- */
+  useEffect(() => {
+    setSupabase(getSupabaseClient());
+  }, []);
+
+  /* ---------------- Auth + redirect ---------------- */
+  useEffect(() => {
+    if (!supabase) return;
+
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) return;
+      if (error) {
+        setSession(null);
+        return;
+      }
+      setSession(data.session || null);
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession || null);
+    });
+
+    return () => {
+      mounted = false;
+      data.subscription.unsubscribe();
+    };
+  }, [supabase]);
+
+  useEffect(() => {
+    if (session === "loading") return;
+    if (!session) router.replace("/login");
+  }, [session, router]);
+
+  /* ---------------- Loaders ---------------- */
+  const loadAreas = async () => {
+    const { data, error } = await supabase.from("areas").select("id,name").order("name");
+    if (error) throw error;
+    setAreas(data || []);
+  };
+
+  const loadGuides = async () => {
+    const { data, error } = await supabase.from("guides").select("id,title").order("title");
+    if (error) throw error;
+    setGuides(data || []);
+  };
+
+  const loadTasks = async () => {
+    // IMPORTANT: tasks.updated_at is NOT selected (may not exist in your schema)
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("id,title,status,created_at,due_at,area_id,guide_id,areas(name),guides(title)")
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+    setTasks(data || []);
+  };
+
+  const loadSubtasksForTask = async (taskId) => {
+    const { data, error } = await supabase
+      .from("subtasks")
+      .select("id,task_id,title,is_done,status,created_at,guide_id,guides(title)")
+      .eq("task_id", taskId)
+      .order("created_at", { ascending: true });
+
+    if (error) throw error;
+    setSubtasksByTask((prev) => ({ ...prev, [taskId]: data || [] }));
+  };
+
+  const loadAll = async () => {
+    if (!supabase || !user) return;
+    setError("");
+    try {
+      await Promise.all([loadAreas(), loadGuides(), loadTasks()]);
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+  };
+
+  useEffect(() => {
+    if (!supabase || !user) return;
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase, user?.id]);
+
+  /* ---------------- Derived ---------------- */
+  const tasksTodo = useMemo(() => tasks.filter((t) => t.status === "todo"), [tasks]);
+  const tasksDone = useMemo(() => tasks.filter((t) => t.status === "done"), [tasks]);
+
+  const areaName = (t) => t?.areas?.name || "–";
+  const guideTitle = (t) => t?.guides?.title || "";
+
+  const subStats = (taskId) => {
+    const list = subtasksByTask[taskId] || [];
+    const total = list.length;
+    const done = list.filter((s) => !!s.is_done).length;
+    return { total, done };
+  };
+
+  /* ---------------- Actions: tasks ---------------- */
+  const createTask = async () => {
+    if (!supabase || !user) return;
+    setError("");
+
+    const title = newTitle.trim();
+    if (!title) return;
+
+    const payload = {
+      title,
+      status: newStatus, // todo|done (DB check)
+      user_id: user.id, // RLS
+      area_id: newAreaId || null,
+      guide_id: newGuideId || null,
+      due_at: toISO(newDueAt) || null,
+    };
+
+    const { error } = await supabase.from("tasks").insert([payload]);
+    if (error) return setError(error.message);
+
+    setNewTitle("");
+    setNewAreaId("");
+    setNewDueAt("");
+    setNewStatus("todo");
+    setNewGuideId("");
+
+    await loadTasks();
+  };
+
+  const toggleTaskStatus = async (taskId, current) => {
+    if (!supabase) return;
+    setError("");
+    const next = current === "done" ? "todo" : "done";
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", taskId);
+    if (error) return setError(error.message);
+    await loadTasks();
+  };
+
+  const deleteTask = async (taskId) => {
+    if (!supabase) return;
+    setError("");
+    const { error } = await supabase.from("tasks").delete().eq("id", taskId);
+    if (error) return setError(error.message);
+
+    setSubtasksByTask((prev) => {
+      const copy = { ...prev };
+      delete copy[taskId];
+      return copy;
+    });
+
+    await loadTasks();
+  };
+
+  /* ---------------- Actions: subtasks ---------------- */
+  const toggleExpand = async (taskId) => {
+    const willOpen = !expanded[taskId];
+    setExpanded((prev) => ({ ...prev, [taskId]: willOpen }));
+    if (willOpen) {
+      try {
+        await loadSubtasksForTask(taskId);
+      } catch (e) {
+        setError(e?.message || String(e));
+      }
+    }
+  };
+
+  const addSubtask = async (taskId) => {
+    if (!supabase) return;
+    setError("");
+
+    const title = (subtaskDraft[taskId] || "").trim();
+    if (!title) return;
+
+    const payload = {
+      task_id: taskId,
+      title,
+      is_done: false,
+      status: "todo",
+      guide_id: null,
+    };
+
+    const { error } = await supabase.from("subtasks").insert([payload]);
+    if (error) return setError(error.message);
+
+    setSubtaskDraft((prev) => ({ ...prev, [taskId]: "" }));
+    await loadSubtasksForTask(taskId);
+  };
+
+  const toggleSubtask = async (subtask) => {
+    if (!supabase) return;
+    setError("");
+
+    const nextDone = !subtask.is_done;
+    const { error } = await supabase
+      .from("subtasks")
+      .update({ is_done: nextDone, status: nextDone ? "done" : "todo" })
+      .eq("id", subtask.id);
+
+    if (error) return setError(error.message);
+    await loadSubtasksForTask(subtask.task_id);
+  };
+
+  const deleteSubtask = async (subtask) => {
+    if (!supabase) return;
+    setError("");
+    const { error } = await supabase.from("subtasks").delete().eq("id", subtask.id);
+    if (error) return setError(error.message);
+    await loadSubtasksForTask(subtask.task_id);
+  };
+
+  /* ---------------- Logout ---------------- */
+  const logout = async () => {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    router.replace("/login");
+  };
+
+  /* ---------------- Guard render ---------------- */
+  if (session === "loading") return <div style={{ padding: 24 }}>Lade…</div>;
+  if (!user) return null; // redirect already triggered
+
+  /* ---------------- Styles ---------------- */
+  const page = { padding: 18, background: "#f3f6ff", minHeight: "100vh" };
+  const topbar = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16 };
+  const tabs = { display: "flex", gap: 10, alignItems: "center" };
+  const tabBtn = (active) => ({
+    padding: "8px 14px",
+    borderRadius: 999,
+    border: "1px solid #e5e7eb",
+    background: active ? "#0f7a2a" : "white",
+    color: active ? "white" : "#111827",
+    cursor: "pointer",
+    fontWeight: 800,
+  });
+
+  const card = {
+    background: "white",
+    border: "1px solid #e5e7eb",
+    borderRadius: 18,
+    padding: 16,
+    boxShadow: "0 8px 18px rgba(16,24,40,0.04)",
+  };
+
+  const btnGreen = {
+    background: "#0f7a2a",
+    color: "white",
+    border: "none",
+    borderRadius: 12,
+    padding: "10px 18px",
+    cursor: "pointer",
+    fontWeight: 900,
+  };
+
+  const btnGhost = {
+    background: "white",
+    border: "1px solid #e5e7eb",
+    borderRadius: 12,
+    padding: "8px 12px",
+    cursor: "pointer",
+    fontWeight: 800,
+  };
+
+  const grid = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 12 };
+
+  const TaskCard = ({ t }) => {
+    const isDone = t.status === "done";
+    const { total, done } = subStats(t.id);
+    const isOpen = !!expanded[t.id];
+    const list = subtasksByTask[t.id] || [];
+    const progress = total ? Math.round((done / total) * 100) : 0;
+
+    return (
+      <div style={{ ...card, marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.2 }}>
+              {t.title}
+              <Pill tone={isDone ? "green" : "orange"}>{t.status}</Pill>
+            </div>
+
+            <div style={{ marginTop: 6, color: "#374151", fontSize: 13 }}>
+              Bereich: {areaName(t)}
+              {t.due_at ? ` • Fällig: ${fmtDue(t.due_at)}` : ""}
+              {guideTitle(t) ? ` • Anleitung: ${guideTitle(t)}` : ""}
+            </div>
+
+            <div style={{ marginTop: 10, fontSize: 13, color: "#374151" }}>
+              Unteraufgaben <span style={{ float: "right" }}>{done}/{total}</span>
+              <div style={{ height: 10, background: "#eef2ff", borderRadius: 999, overflow: "hidden", marginTop: 6 }}>
+                <div style={{ height: "100%", width: `${progress}%`, background: "#0f7a2a" }} />
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+            <button style={btnGhost} onClick={() => toggleExpand(t.id)}>{isOpen ? "Zuklappen" : "Aufklappen"}</button>
+            <button style={btnGhost} onClick={() => toggleTaskStatus(t.id, t.status)}>Status</button>
+            <button style={{ ...btnGhost, borderColor: "#fecaca" }} onClick={() => deleteTask(t.id)}>Löschen</button>
+          </div>
+        </div>
+
+        {isOpen && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <input
+                placeholder="Unteraufgabe hinzufügen…"
+                value={subtaskDraft[t.id] || ""}
+                onChange={(e) => setSubtaskDraft((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                style={{ flex: 1, padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
+              />
+              <button style={btnGreen} onClick={() => addSubtask(t.id)}>+</button>
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              {list.length === 0 ? (
+                <div style={{ color: "#6b7280" }}>Keine Unteraufgaben</div>
+              ) : (
+                list.map((s) => (
+                  <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 2px" }}>
+                    <input type="checkbox" checked={!!s.is_done} onChange={() => toggleSubtask(s)} />
+                    <div style={{ flex: 1, textDecoration: s.is_done ? "line-through" : "none" }}>{s.title}</div>
+                    <button style={btnGhost} onClick={() => deleteSubtask(s)}>Entfernen</button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
-    <div>
-      <input
-        placeholder="Unteraufgabe…"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-      />
-      <button
-        onClick={() => {
-          onAdd(text);
-          setText("");
-        }}
-      >
-        +
-      </button>
+    <div style={page}>
+      <div style={topbar}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ fontSize: 20, fontWeight: 900 }}>Dashboard</div>
+          <div style={tabs}>
+            <button style={tabBtn(tab === "board")} onClick={() => setTab("board")}>Board</button>
+            <button style={tabBtn(tab === "list")} onClick={() => setTab("list")}>Liste</button>
+            <button style={btnGhost} onClick={loadAll}>Neu laden</button>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ color: "#374151", fontSize: 13 }}>{user?.email}</div>
+          <button style={btnGhost} onClick={logout}>Abmelden</button>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ marginBottom: 12, padding: 12, borderRadius: 14, background: "#fee2e2", border: "1px solid #fecaca", color: "#991b1b", fontWeight: 800 }}>
+          {error}
+        </div>
+      )}
+
+      <div style={{ ...card, marginBottom: 14 }}>
+        <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>Aufgabe anlegen</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr auto", gap: 10 }}>
+          <input
+            placeholder="Titel"
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
+          />
+
+          <select
+            value={newAreaId}
+            onChange={(e) => setNewAreaId(e.target.value)}
+            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
+          >
+            <option value="">Bereich</option>
+            {areas.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+
+          <input
+            type="datetime-local"
+            value={newDueAt}
+            onChange={(e) => setNewDueAt(e.target.value)}
+            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
+          />
+
+          <select
+            value={newStatus}
+            onChange={(e) => setNewStatus(e.target.value)}
+            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
+          >
+            <option value="todo">Zu erledigen</option>
+            <option value="done">Erledigt</option>
+          </select>
+
+          <select
+            value={newGuideId}
+            onChange={(e) => setNewGuideId(e.target.value)}
+            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
+          >
+            <option value="">Anleitung</option>
+            {guides.map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
+          </select>
+
+          <button style={btnGreen} onClick={createTask}>Anlegen</button>
+        </div>
+      </div>
+
+      {tab === "board" ? (
+        <div style={grid}>
+          <div>
+            <div style={{ ...card, marginBottom: 12 }}>
+              <div style={{ fontSize: 16, fontWeight: 900 }}>Zu erledigen</div>
+              <div style={{ marginTop: 10 }}>
+                {tasksTodo.length === 0 ? <div style={{ color: "#6b7280" }}>Keine Aufgaben</div> : tasksTodo.map((t) => <TaskCard key={t.id} t={t} />)}
+              </div>
+            </div>
+          </div>
+          <div>
+            <div style={{ ...card, marginBottom: 12 }}>
+              <div style={{ fontSize: 16, fontWeight: 900 }}>Erledigt</div>
+              <div style={{ marginTop: 10 }}>
+                {tasksDone.length === 0 ? <div style={{ color: "#6b7280" }}>Keine Aufgaben</div> : tasksDone.map((t) => <TaskCard key={t.id} t={t} />)}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div style={card}>
+          <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>Liste</div>
+          {tasks.length === 0 ? (
+            <div style={{ color: "#6b7280" }}>Keine Aufgaben</div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {tasks.map((t) => (
+                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: 12, border: "1px solid #e5e7eb", borderRadius: 14 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 900 }}>{t.title}<Pill tone={t.status === "done" ? "green" : "orange"}>{t.status}</Pill></div>
+                    <div style={{ color: "#374151", fontSize: 13, marginTop: 4 }}>
+                      Bereich: {areaName(t)}
+                      {t.due_at ? ` • Fällig: ${fmtDue(t.due_at)}` : ""}
+                      {guideTitle(t) ? ` • Anleitung: ${guideTitle(t)}` : ""}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button style={btnGhost} onClick={() => toggleExpand(t.id)}>{expanded[t.id] ? "Zuklappen" : "Aufklappen"}</button>
+                    <button style={btnGhost} onClick={() => toggleTaskStatus(t.id, t.status)}>Status</button>
+                    <button style={{ ...btnGhost, borderColor: "#fecaca" }} onClick={() => deleteTask(t.id)}>Löschen</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
