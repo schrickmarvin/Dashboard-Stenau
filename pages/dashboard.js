@@ -124,6 +124,9 @@ export default function DashboardPage() {
     return `${yyyy}-${mm}-${dd}`;
   });
   const [calItems, setCalItems] = useState([]); // tasks with due_at in current month
+  const [calStatusFilter, setCalStatusFilter] = useState("all"); // all | todo | done
+  const [calAreaFilter, setCalAreaFilter] = useState(""); // area_id or ""
+
 
   // Create task
   const [newTitle, setNewTitle] = useState("");
@@ -232,7 +235,7 @@ export default function DashboardPage() {
     // Prefer view if present, fallback to tasks table
     let { data, error } = await supabase
       .from("v_tasks_calendar_ui")
-      .select("id,title,status,due_at,area_name,guide_title")
+      .select("id,title,status,due_at,due_date,area_id,area_name,guide_id,guide_title")
       .gte("due_at", startISO)
       .lt("due_at", endISO)
       .order("due_at", { ascending: true });
@@ -322,6 +325,21 @@ export default function DashboardPage() {
 
   const areaName = (t) => t?.area_name || t?.areas?.name || "–";
   const guideTitle = (t) => t?.guide_title || t?.guides?.title || "";
+
+
+  const calFilteredItems = useMemo(() => {
+    const base = calItems || [];
+    return base.filter((it) => {
+      if (calStatusFilter !== "all" && it.status !== calStatusFilter) return false;
+      if (calAreaFilter && it.area_id && it.area_id !== calAreaFilter) return false;
+      // if view provides only area_name, we keep area filter best-effort by matching name
+      if (calAreaFilter && !it.area_id) {
+        const area = areas.find((a) => a.id === calAreaFilter);
+        if (area && it.area_name && it.area_name !== area.name) return false;
+      }
+      return true;
+    });
+  }, [calItems, calStatusFilter, calAreaFilter, areas]);
 
   const subStats = (taskId) => {
     const list = subtasksByTask[taskId] || [];
@@ -776,6 +794,43 @@ export default function DashboardPage() {
                 ▶
               </button>
             </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+            <select
+              value={calStatusFilter}
+              onChange={(e) => setCalStatusFilter(e.target.value)}
+              style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #e5e7eb", fontWeight: 800 }}
+            >
+              <option value="all">Alle Status</option>
+              <option value="todo">Zu erledigen</option>
+              <option value="done">Erledigt</option>
+            </select>
+
+            <select
+              value={calAreaFilter}
+              onChange={(e) => setCalAreaFilter(e.target.value)}
+              style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #e5e7eb", fontWeight: 800 }}
+            >
+              <option value="">Alle Bereiche</option>
+              {areas.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+
+            <button
+              style={btnGhost}
+              onClick={() => {
+                const d = new Date();
+                const yyyy = d.getFullYear();
+                const mm = String(d.getMonth() + 1).padStart(2, "0");
+                const dd = String(d.getDate()).padStart(2, "0");
+                setCalMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+                setCalSelectedDate(`${yyyy}-${mm}-${dd}`);
+              }}
+            >
+              Heute
+            </button>
+          </div>
+
           </div>
 
           <div style={ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 14 }>
@@ -794,7 +849,7 @@ export default function DashboardPage() {
               for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(calMonth.getFullYear(), calMonth.getMonth(), d));
 
               const itemsByDate = {};
-              for (const it of calItems) {
+              for (const it of calFilteredItems) {
                 const key = toYMD(new Date(it.due_at));
                 itemsByDate[key] = (itemsByDate[key] || 0) + 1;
               }
@@ -848,7 +903,7 @@ export default function DashboardPage() {
           </div>
 
           {(() => {
-            const dayItems = (calItems || [])
+            const dayItems = (calFilteredItems || [])
               .filter((it) => toYMD(new Date(it.due_at)) === calSelectedDate)
               .sort((a,b) => new Date(a.due_at) - new Date(b.due_at));
 
