@@ -50,6 +50,22 @@ const fmtDue = (iso) => {
   });
 };
 
+const toYMD = (d) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const monthStart = (d) => new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+const monthEndExclusive = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 1, 0, 0, 0, 0);
+
+// Monday-first index (0..6)
+const weekdayMon0 = (dateObj) => {
+  const js = dateObj.getDay(); // 0 Sun..6 Sat
+  return (js + 6) % 7;
+};
+
 function Pill({ children, tone = "gray" }) {
   const bg =
     tone === "green" ? "#d1fae5" : tone === "orange" ? "#ffedd5" : tone === "red" ? "#fee2e2" : "#e5e7eb";
@@ -96,7 +112,18 @@ export default function DashboardPage() {
   const [expanded, setExpanded] = useState({});
 
   // UI tab
-  const [tab, setTab] = useState("board"); // board | list
+  const [tab, setTab] = useState("board"); // board | list | calendar
+
+  // Calendar
+  const [calMonth, setCalMonth] = useState(() => new Date());
+  const [calSelectedDate, setCalSelectedDate] = useState(() => {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  });
+  const [calItems, setCalItems] = useState([]); // tasks with due_at in current month
 
   // Create task
   const [newTitle, setNewTitle] = useState("");
@@ -196,6 +223,43 @@ export default function DashboardPage() {
     setTasks(data || []);
   };
 
+  const loadCalendarItems = async (monthDate = calMonth) => {
+    const start = monthStart(monthDate);
+    const end = monthEndExclusive(monthDate);
+    const startISO = start.toISOString();
+    const endISO = end.toISOString();
+
+    // Prefer view if present, fallback to tasks table
+    let { data, error } = await supabase
+      .from("v_tasks_calendar_ui")
+      .select("id,title,status,due_at,area_name,guide_title")
+      .gte("due_at", startISO)
+      .lt("due_at", endISO)
+      .order("due_at", { ascending: true });
+
+    if (error) {
+      const res = await supabase
+        .from("tasks")
+        .select("id,title,status,due_at,areas(name),guides(title)")
+        .gte("due_at", startISO)
+        .lt("due_at", endISO)
+        .order("due_at", { ascending: true });
+
+      if (res.error) throw res.error;
+
+      data = (res.data || []).map((t) => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        due_at: t.due_at,
+        area_name: t?.areas?.name || "–",
+        guide_title: t?.guides?.title || "",
+      }));
+    }
+
+    setCalItems(data || []);
+  };
+
   const loadSubtasksForTask = async (taskId) => {
     // Prefer UI View (v_subtasks_ui) if present; fallback to table.
     let data = null;
@@ -233,7 +297,7 @@ export default function DashboardPage() {
     if (!supabase || !user) return;
     setError("");
     try {
-      await Promise.all([loadAreas(), loadGuides(), loadTasks()]);
+      await Promise.all([loadAreas(), loadGuides(), loadTasks(), loadCalendarItems()]);
     } catch (e) {
       setError(e?.message || String(e));
     }
@@ -244,6 +308,13 @@ export default function DashboardPage() {
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, user?.id]);
+
+  // Reload calendar when month changes
+  useEffect(() => {
+    if (!supabase || !user) return;
+    loadCalendarItems(calMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calMonth, supabase, user?.id]);
 
   /* ---------------- Derived ---------------- */
   const tasksTodo = useMemo(() => tasks.filter((t) => t.status === "todo"), [tasks]);
@@ -500,6 +571,7 @@ export default function DashboardPage() {
           <div style={tabs}>
             <button style={tabBtn(tab === "board")} onClick={() => setTab("board")}>Board</button>
             <button style={tabBtn(tab === "list")} onClick={() => setTab("list")}>Liste</button>
+            <button style={tabBtn(tab === "calendar")} onClick={() => setTab("calendar")}>Kalender</button>
             <button style={btnGhost} onClick={loadAll}>Neu laden</button>
           </div>
         </div>
@@ -564,7 +636,9 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      
       {tab === "board" ? (
+
         <div style={grid}>
           <div>
             <div style={{ ...card, marginBottom: 12 }}>
@@ -583,7 +657,9 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
-      ) : (
+      
+      ) : tab === "list" ? (
+
         <div style={card}>
           <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>Liste</div>
           {tasks.length === 0 ? (
@@ -678,7 +754,134 @@ export default function DashboardPage() {
               })}
             </div>
           )}
-        </div>      )}
+        </div>      
+      ) : (
+        <div style={...card}>
+          <div style={ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10 }>
+            <div style={ fontSize: 16, fontWeight: 900 }>Kalender</div>
+            <div style={ display: "flex", gap: 8 }>
+              <button
+                style={...btnGhost}
+                onClick={() => setCalMonth((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}
+              >
+                ◀
+              </button>
+              <div style={ fontWeight: 900, alignSelf: "center" }>
+                {calMonth.toLocaleString("de-DE", { month: "long", year: "numeric" })}
+              </div>
+              <button
+                style={...btnGhost}
+                onClick={() => setCalMonth((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}
+              >
+                ▶
+              </button>
+            </div>
+          </div>
+
+          <div style={ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 14 }>
+            {["Mo","Di","Mi","Do","Fr","Sa","So"].map((w) => (
+              <div key={w} style={ fontSize: 12, color: "#6b7280", fontWeight: 900, textAlign: "center" }>
+                {w}
+              </div>
+            ))}
+
+            {(() => {
+              const start = monthStart(calMonth);
+              const lead = weekdayMon0(start);
+              const daysInMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0).getDate();
+              const cells = [];
+              for (let i = 0; i < lead; i++) cells.push(null);
+              for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(calMonth.getFullYear(), calMonth.getMonth(), d));
+
+              const itemsByDate = {};
+              for (const it of calItems) {
+                const key = toYMD(new Date(it.due_at));
+                itemsByDate[key] = (itemsByDate[key] || 0) + 1;
+              }
+
+              return cells.map((d, idx) => {
+                if (!d) return <div key={`e-${idx}`} />;
+                const key = toYMD(d);
+                const count = itemsByDate[key] || 0;
+                const isSelected = key === calSelectedDate;
+
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setCalSelectedDate(key)}
+                    style={
+                      border: "1px solid #e5e7eb",
+                      background: isSelected ? "#0f7a2a" : "white",
+                      color: isSelected ? "white" : "#111827",
+                      borderRadius: 14,
+                      padding: "10px 8px",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      minHeight: 54,
+                    }
+                  >
+                    <div style={ display: "flex", justifyContent: "space-between", alignItems: "baseline" }>
+                      <div style={ fontWeight: 900 }>{d.getDate()}</div>
+                      {count > 0 && (
+                        <div style={
+                          fontSize: 12,
+                          fontWeight: 900,
+                          background: isSelected ? "rgba(255,255,255,0.2)" : "#eef2ff",
+                          padding: "2px 8px",
+                          borderRadius: 999,
+                        }>
+                          {count}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              });
+            })()}
+          </div>
+
+          <div style={ fontWeight: 900, marginBottom: 8 }>
+            Termine am {(() => {
+              const [y,m,d] = calSelectedDate.split("-");
+              return `${d}.${m}.${y}`;
+            })()}
+          </div>
+
+          {(() => {
+            const dayItems = (calItems || [])
+              .filter((it) => toYMD(new Date(it.due_at)) === calSelectedDate)
+              .sort((a,b) => new Date(a.due_at) - new Date(b.due_at));
+
+            if (dayItems.length === 0) {
+              return <div style={ color: "#6b7280" }>Keine Aufgaben an diesem Tag</div>;
+            }
+
+            return (
+              <div style={ display: "grid", gap: 10 }>
+                {dayItems.map((it) => (
+                  <div key={it.id} style={ padding: 12, border: "1px solid #e5e7eb", borderRadius: 14, display: "flex", justifyContent: "space-between", gap: 12 }>
+                    <div style={ minWidth: 0 }>
+                      <div style={ fontWeight: 900 }>
+                        {it.title}
+                        <Pill tone={it.status === "done" ? "green" : "orange"}>{it.status}</Pill>
+                      </div>
+                      <div style={ fontSize: 13, color: "#374151", marginTop: 4 }>
+                        {fmtDue(it.due_at)}
+                        {it.area_name ? ` • Bereich: ${it.area_name}` : ""}
+                        {it.guide_title ? ` • Anleitung: ${it.guide_title}` : ""}
+                      </div>
+                    </div>
+                    <div style={ display: "flex", gap: 8, alignItems: "flex-start" }>
+                      <button style={...btnGhost} onClick={() => toggleTaskStatus(it.id, it.status)}>Status</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
     </div>
   );
 }
