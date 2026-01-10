@@ -590,27 +590,95 @@ export default function DashboardPage() {
             <div style={{ color: "#6b7280" }}>Keine Aufgaben</div>
           ) : (
             <div style={{ display: "grid", gap: 10 }}>
-              {tasks.map((t) => (
-                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: 12, border: "1px solid #e5e7eb", borderRadius: 14 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 900 }}>{t.title}<Pill tone={t.status === "done" ? "green" : "orange"}>{t.status}</Pill></div>
-                    <div style={{ color: "#374151", fontSize: 13, marginTop: 4 }}>
-                      Bereich: {areaName(t)}
-                      {t.due_at ? ` • Fällig: ${fmtDue(t.due_at)}` : ""}
-                      {guideTitle(t) ? ` • Anleitung: ${guideTitle(t)}` : ""}
+              {tasks.map((t) => {
+                const isOpen = !!expanded[t.id];
+                const { total, done } = subStats(t.id);
+                const progress = total ? Math.round((done / total) * 100) : 0;
+                const list = subtasksByTask[t.id] || [];
+
+                return (
+                  <div
+                    key={t.id}
+                    style={{
+                      padding: 12,
+                      border: "1px solid #e5e7eb",
+                      borderRadius: 14,
+                      background: "white",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontWeight: 900 }}>
+                          {t.title}
+                          <Pill tone={t.status === "done" ? "green" : "orange"}>{t.status}</Pill>
+                        </div>
+
+                        <div style={{ color: "#374151", fontSize: 13, marginTop: 4 }}>
+                          Bereich: {areaName(t)}
+                          {t.due_at ? ` • Fällig: ${fmtDue(t.due_at)}` : ""}
+                          {guideTitle(t) ? ` • Anleitung: ${guideTitle(t)}` : ""}
+                        </div>
+
+                        <div style={{ marginTop: 10, fontSize: 13, color: "#374151" }}>
+                          Unteraufgaben <span style={{ float: "right" }}>{done}/{total}</span>
+                          <div style={{ height: 10, background: "#eef2ff", borderRadius: 999, overflow: "hidden", marginTop: 6 }}>
+                            <div style={{ height: "100%", width: `${progress}%`, background: "#0f7a2a" }} />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                        <button style={btnGhost} onClick={() => toggleExpand(t.id)}>
+                          {isOpen ? "Zuklappen" : "Aufklappen"}
+                        </button>
+                        <button style={btnGhost} onClick={() => toggleTaskStatus(t.id, t.status)}>
+                          Status
+                        </button>
+                        <button style={{ ...btnGhost, borderColor: "#fecaca" }} onClick={() => deleteTask(t.id)}>
+                          Löschen
+                        </button>
+                      </div>
                     </div>
+
+                    {isOpen && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                          <input
+                            placeholder="Unteraufgabe hinzufügen…"
+                            value={subtaskDraft[t.id] || ""}
+                            onChange={(e) => setSubtaskDraft((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                            style={{ flex: 1, padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
+                          />
+                          <button style={btnGreen} onClick={() => addSubtask(t.id)}>
+                            +
+                          </button>
+                        </div>
+
+                        <div style={{ marginTop: 10 }}>
+                          {list.length === 0 ? (
+                            <div style={{ color: "#6b7280" }}>Keine Unteraufgaben</div>
+                          ) : (
+                            list.map((s) => (
+                              <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 2px" }}>
+                                <input type="checkbox" checked={!!s.is_done} onChange={() => toggleSubtask(s)} />
+                                <div style={{ flex: 1, textDecoration: s.is_done ? "line-through" : "none" }}>
+                                  {s.title}
+                                </div>
+                                <button style={btnGhost} onClick={() => deleteSubtask(s)}>
+                                  Entfernen
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button style={btnGhost} onClick={() => toggleExpand(t.id)}>{expanded[t.id] ? "Zuklappen" : "Aufklappen"}</button>
-                    <button style={btnGhost} onClick={() => toggleTaskStatus(t.id, t.status)}>Status</button>
-                    <button style={{ ...btnGhost, borderColor: "#fecaca" }} onClick={() => deleteTask(t.id)}>Löschen</button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
-        </div>
-      )}
+        </div>      )}
     </div>
   );
 }
