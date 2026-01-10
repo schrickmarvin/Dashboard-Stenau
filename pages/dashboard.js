@@ -774,17 +774,17 @@ export default function DashboardPage() {
           )}
         </div>      
       ) : (
-        <div style={...card}>
-          <div style={ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10 }>
-            <div style={ fontSize: 16, fontWeight: 900 }>Kalender</div>
-            <div style={ display: "flex", gap: 8 }>
+        <div style={card}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10  }}>
+            <div style={{ fontSize: 16, fontWeight: 900  }}>Kalender</div>
+            <div style={{ display: "flex", gap: 8  }}>
               <button
                 style={...btnGhost}
                 onClick={() => setCalMonth((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}
               >
                 ◀
               </button>
-              <div style={ fontWeight: 900, alignSelf: "center" }>
+              <div style={{ fontWeight: 900, alignSelf: "center"  }}>
                 {calMonth.toLocaleString("de-DE", { month: "long", year: "numeric" })}
               </div>
               <button
@@ -833,9 +833,9 @@ export default function DashboardPage() {
 
           </div>
 
-          <div style={ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 14 }>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 14  }}>
             {["Mo","Di","Mi","Do","Fr","Sa","So"].map((w) => (
-              <div key={w} style={ fontSize: 12, color: "#6b7280", fontWeight: 900, textAlign: "center" }>
+              <div key={w} style={{ fontSize: 12, color: "#6b7280", fontWeight: 900, textAlign: "center"  }}>
                 {w}
               </div>
             ))}
@@ -875,8 +875,8 @@ export default function DashboardPage() {
                       minHeight: 54,
                     }
                   >
-                    <div style={ display: "flex", justifyContent: "space-between", alignItems: "baseline" }>
-                      <div style={ fontWeight: 900 }>{d.getDate()}</div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline"  }}>
+                      <div style={{ fontWeight: 900  }}>{d.getDate()}</div>
                       {count > 0 && (
                         <div style={
                           fontSize: 12,
@@ -895,7 +895,7 @@ export default function DashboardPage() {
             })()}
           </div>
 
-          <div style={ fontWeight: 900, marginBottom: 8 }>
+          <div style={{ fontWeight: 900, marginBottom: 8  }}>
             Termine am {(() => {
               const [y,m,d] = calSelectedDate.split("-");
               return `${d}.${m}.${y}`;
@@ -908,25 +908,25 @@ export default function DashboardPage() {
               .sort((a,b) => new Date(a.due_at) - new Date(b.due_at));
 
             if (dayItems.length === 0) {
-              return <div style={ color: "#6b7280" }>Keine Aufgaben an diesem Tag</div>;
+              return <div style={{ color: "#6b7280"  }}>Keine Aufgaben an diesem Tag</div>;
             }
 
             return (
-              <div style={ display: "grid", gap: 10 }>
+              <div style={{ display: "grid", gap: 10  }}>
                 {dayItems.map((it) => (
-                  <div key={it.id} style={ padding: 12, border: "1px solid #e5e7eb", borderRadius: 14, display: "flex", justifyContent: "space-between", gap: 12 }>
-                    <div style={ minWidth: 0 }>
-                      <div style={ fontWeight: 900 }>
+                  <div key={it.id} style={{ padding: 12, border: "1px solid #e5e7eb", borderRadius: 14, display: "flex", justifyContent: "space-between", gap: 12  }}>
+                    <div style={{ minWidth: 0  }}>
+                      <div style={{ fontWeight: 900  }}>
                         {it.title}
                         <Pill tone={it.status === "done" ? "green" : "orange"}>{it.status}</Pill>
                       </div>
-                      <div style={ fontSize: 13, color: "#374151", marginTop: 4 }>
+                      <div style={{ fontSize: 13, color: "#374151", marginTop: 4  }}>
                         {fmtDue(it.due_at)}
                         {it.area_name ? ` • Bereich: ${it.area_name}` : ""}
                         {it.guide_title ? ` • Anleitung: ${it.guide_title}` : ""}
                       </div>
                     </div>
-                    <div style={ display: "flex", gap: 8, alignItems: "flex-start" }>
+                    <div style={{ display: "flex", gap: 8, alignItems: "flex-start"  }}>
                       <button style={...btnGhost} onClick={() => toggleTaskStatus(it.id, it.status)}>Status</button>
                     </div>
                   </div>
