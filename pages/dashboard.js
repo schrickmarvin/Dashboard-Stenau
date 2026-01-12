@@ -110,9 +110,21 @@ export default function DashboardPage() {
   const [tasks, setTasks] = useState([]);
   const [subtasksByTask, setSubtasksByTask] = useState({});
   const [expanded, setExpanded] = useState({});
+  const [highlightTaskId, setHighlightTaskId] = useState(null);
 
   // UI tab
   const [tab, setTab] = useState("board"); // board | list | calendar
+
+
+// scroll/highlight helper when jumping from calendar to a task
+useEffect(() => {
+  if (!highlightTaskId) return;
+  const el = document.getElementById(`task-${highlightTaskId}`);
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}, [highlightTaskId]);
+
 
   // Calendar
   const [calMonth, setCalMonth] = useState(() => new Date());
@@ -235,7 +247,7 @@ export default function DashboardPage() {
     // Prefer view if present, fallback to tasks table
     let { data, error } = await supabase
       .from("v_tasks_calendar_ui")
-      .select("id,title,status,due_at,due_date,area_id,area_name,guide_id,guide_title")
+      .select("id,title,status,due_at,due_date,area_id,area_name,guide_id,guide_title,total_subtasks,done_subtasks")
       .gte("due_at", startISO)
       .lt("due_at", endISO)
       .order("due_at", { ascending: true });
@@ -403,6 +415,19 @@ export default function DashboardPage() {
   };
 
   /* ---------------- Actions: subtasks ---------------- */
+
+/* ---------------- Actions: jump to task ---------------- */
+const gotoTask = async (taskId) => {
+  setTab("board");
+  setHighlightTaskId(taskId);
+  setExpanded((prev) => ({ ...prev, [taskId]: true }));
+  try {
+    await loadSubtasks(taskId);
+  } catch (e) {
+    // ignore – subtasks are optional here
+  }
+};
+
   const toggleExpand = async (taskId) => {
     const willOpen = !expanded[taskId];
     setExpanded((prev) => ({ ...prev, [taskId]: willOpen }));
@@ -521,7 +546,7 @@ export default function DashboardPage() {
     const progress = total ? Math.round((done / total) * 100) : 0;
 
     return (
-      <div style={{ ...card, marginBottom: 12 }}>
+      <div id={`task-${t.id}`} style={{ ...card, marginBottom: 12, outline: highlightTaskId === t.id ? "3px solid #0f7a2a" : "none", outlineOffset: 2 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.2 }}>
@@ -659,7 +684,7 @@ export default function DashboardPage() {
 
         <div style={grid}>
           <div>
-            <div style={{ ...card, marginBottom: 12 }}>
+            <div id={`task-${t.id}`} style={{ ...card, marginBottom: 12, outline: highlightTaskId === t.id ? "3px solid #0f7a2a" : "none", outlineOffset: 2 }}>
               <div style={{ fontSize: 16, fontWeight: 900 }}>Zu erledigen</div>
               <div style={{ marginTop: 10 }}>
                 {tasksTodo.length === 0 ? <div style={{ color: "#6b7280" }}>Keine Aufgaben</div> : tasksTodo.map((t) => <TaskCard key={t.id} t={t} />)}
@@ -667,7 +692,7 @@ export default function DashboardPage() {
             </div>
           </div>
           <div>
-            <div style={{ ...card, marginBottom: 12 }}>
+            <div id={`task-${t.id}`} style={{ ...card, marginBottom: 12, outline: highlightTaskId === t.id ? "3px solid #0f7a2a" : "none", outlineOffset: 2 }}>
               <div style={{ fontSize: 16, fontWeight: 900 }}>Erledigt</div>
               <div style={{ marginTop: 10 }}>
                 {tasksDone.length === 0 ? <div style={{ color: "#6b7280" }}>Keine Aufgaben</div> : tasksDone.map((t) => <TaskCard key={t.id} t={t} />)}
@@ -926,9 +951,16 @@ export default function DashboardPage() {
                         {it.guide_title ? ` • Anleitung: ${it.guide_title}` : ""}
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "flex-start"  }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                      <button style={btnGhost} onClick={() => gotoTask(it.id)}>Öffnen</button>
                       <button style={btnGhost} onClick={() => toggleTaskStatus(it.id, it.status)}>Status</button>
                     </div>
+
+                    {(typeof it.total_subtasks === "number" && it.total_subtasks > 0) && (
+                      <div style={{ marginTop: 6, fontSize: 12, color: "#374151" }}>
+                        Unteraufgaben: {(it.done_subtasks ?? 0)}/{it.total_subtasks}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
