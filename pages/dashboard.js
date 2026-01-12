@@ -305,6 +305,15 @@ useEffect(() => {
     }
   };
 
+// Alles neu laden (für den Button "Neu laden")
+const loadAll = async () => {
+  if (!supabase || !user) return;
+  setError("");
+  // parallel laden (schneller)
+  await Promise.allSettled([loadAreas(), loadGuides(), loadTasks(), loadCalendarItems()]);
+};
+
+
   const toggleExpand = async (taskId) => {
     const willOpen = !expanded[taskId];
     setExpanded((prev) => ({ ...prev, [taskId]: willOpen }));
