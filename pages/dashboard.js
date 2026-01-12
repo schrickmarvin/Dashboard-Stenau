@@ -684,7 +684,7 @@ const gotoTask = async (taskId) => {
 
         <div style={grid}>
           <div>
-            <div id={`task-${t.id}`} style={{ ...card, marginBottom: 12, outline: highlightTaskId === t.id ? "3px solid #0f7a2a" : "none", outlineOffset: 2 }}>
+            <div style={{ ...card, marginBottom: 12 }}>
               <div style={{ fontSize: 16, fontWeight: 900 }}>Zu erledigen</div>
               <div style={{ marginTop: 10 }}>
                 {tasksTodo.length === 0 ? <div style={{ color: "#6b7280" }}>Keine Aufgaben</div> : tasksTodo.map((t) => <TaskCard key={t.id} t={t} />)}
@@ -692,7 +692,7 @@ const gotoTask = async (taskId) => {
             </div>
           </div>
           <div>
-            <div id={`task-${t.id}`} style={{ ...card, marginBottom: 12, outline: highlightTaskId === t.id ? "3px solid #0f7a2a" : "none", outlineOffset: 2 }}>
+            <div style={{ ...card, marginBottom: 12 }}>
               <div style={{ fontSize: 16, fontWeight: 900 }}>Erledigt</div>
               <div style={{ marginTop: 10 }}>
                 {tasksDone.length === 0 ? <div style={{ color: "#6b7280" }}>Keine Aufgaben</div> : tasksDone.map((t) => <TaskCard key={t.id} t={t} />)}
