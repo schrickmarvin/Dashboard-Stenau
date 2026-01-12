@@ -424,10 +424,6 @@ const loadAll = async () => {
 
   const grid = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 12 };
 
-  // Board-Spalten (fürs UI)
-  const tasksTodo = useMemo(() => (tasks || []).filter((t) => t.status !== "done"), [tasks]);
-  const tasksDone = useMemo(() => (tasks || []).filter((t) => t.status === "done"), [tasks]);
-
   const TaskCard = ({ t }) => {
     const isDone = t.status === "done";
     const { total, done } = subStats(t.id);
