@@ -239,194 +239,71 @@ useEffect(() => {
   };
 
   const loadCalendarItems = async (monthDate = calMonth) => {
-    const start = monthStart(monthDate);
-    const end = monthEndExclusive(monthDate);
-    const startISO = start.toISOString();
-    const endISO = end.toISOString();
+    if (!supabase || !user) return;
+    setCalLoading(true);
+    setError("");
 
-    // Prefer view if present, fallback to tasks table
-    let { data, error } = await supabase
-      .from("v_tasks_calendar_ui")
-      .select("id,title,status,due_at,due_date,area_id,area_name,guide_id,guide_title,total_subtasks,done_subtasks")
-      .gte("due_at", startISO)
-      .lt("due_at", endISO)
-      .order("due_at", { ascending: true });
+    try {
+      // Monats-Range [start, end)
+      const monthStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1, 0, 0, 0, 0);
+      const monthEnd = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 1, 0, 0, 0, 0);
 
-    if (error) {
-      const res = await supabase
-        .from("tasks")
-        .select("id,title,status,due_at,areas(name),guides(title)")
-        .gte("due_at", startISO)
-        .lt("due_at", endISO)
+      let q = supabase
+        // WICHTIG: v_tasks_ui enthält area_name + guide_title (v_tasks_calendar nicht)
+        .from("v_tasks_ui")
+        .select("id,title,status,due_at,area_id,area_name,guide_id,guide_title")
+        .gte("due_at", monthStart.toISOString())
+        .lt("due_at", monthEnd.toISOString())
         .order("due_at", { ascending: true });
 
-      if (res.error) throw res.error;
-
-      data = (res.data || []).map((t) => ({
-        id: t.id,
-        title: t.title,
-        status: t.status,
-        due_at: t.due_at,
-        area_name: t?.areas?.name || "–",
-        guide_title: t?.guides?.title || "",
-      }));
-    }
-
-    setCalItems(data || []);
-  };
-
-  const loadSubtasksForTask = async (taskId) => {
-    // Prefer UI View (v_subtasks_ui) if present; fallback to table.
-    let data = null;
-    let error = null;
-
-    const res1 = await supabase
-      .from("v_subtasks_ui")
-      .select("id,task_id,title,is_done,status,created_at,updated_at,guide_id,guide_title")
-      .eq("task_id", taskId)
-      .order("created_at", { ascending: true });
-
-    if (!res1.error) {
-      data = res1.data;
-    } else {
-      const res2 = await supabase
-        .from("subtasks")
-        .select("id,task_id,title,is_done,status,created_at,updated_at,guide_id,guides(title)")
-        .eq("task_id", taskId)
-        .order("created_at", { ascending: true });
-
-      if (!res2.error) {
-        data = (res2.data || []).map((s) => ({
-          ...s,
-          guide_title: s?.guides?.title || null,
-        }));
+      // Filter (Status)
+      if (calStatusFilter !== "all") {
+        q = q.eq("status", calStatusFilter);
       }
-      error = res2.error;
-    }
 
-    if (error) throw error;
-    setSubtasksByTask((prev) => ({ ...prev, [taskId]: data || [] }));
-  };
+      // Filter (Bereich)
+      if (calAreaFilter !== "all") {
+        q = q.eq("area_id", calAreaFilter);
+      }
 
-  const loadAll = async () => {
-    if (!supabase || !user) return;
-    setError("");
-    try {
-      await Promise.all([loadAreas(), loadGuides(), loadTasks(), loadCalendarItems()]);
+      const { data: items, error: err1 } = await q;
+      if (err1) throw err1;
+
+      const list = items || [];
+      const ids = list.map((x) => x.id);
+
+      // Subtask-Fortschritt je Task holen (clientseitig aggregieren)
+      let merged = list.map((x) => ({ ...x, total_subtasks: 0, done_subtasks: 0 }));
+      if (ids.length > 0) {
+        const { data: subs, error: err2 } = await supabase
+          .from("subtasks")
+          .select("task_id,is_done")
+          .in("task_id", ids);
+
+        if (err2) throw err2;
+
+        const agg = new Map(); // task_id -> {total, done}
+        (subs || []).forEach((s) => {
+          const cur = agg.get(s.task_id) || { total: 0, done: 0 };
+          cur.total += 1;
+          if (s.is_done) cur.done += 1;
+          agg.set(s.task_id, cur);
+        });
+
+        merged = list.map((x) => {
+          const a = agg.get(x.id) || { total: 0, done: 0 };
+          return { ...x, total_subtasks: a.total, done_subtasks: a.done };
+        });
+      }
+
+      setCalItems(merged);
     } catch (e) {
       setError(e?.message || String(e));
+      setCalItems([]);
+    } finally {
+      setCalLoading(false);
     }
   };
-
-  useEffect(() => {
-    if (!supabase || !user) return;
-    loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, user?.id]);
-
-  // Reload calendar when month changes
-  useEffect(() => {
-    if (!supabase || !user) return;
-    loadCalendarItems(calMonth);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calMonth, supabase, user?.id]);
-
-  /* ---------------- Derived ---------------- */
-  const tasksTodo = useMemo(() => tasks.filter((t) => t.status === "todo"), [tasks]);
-  const tasksDone = useMemo(() => tasks.filter((t) => t.status === "done"), [tasks]);
-
-  const areaName = (t) => t?.area_name || t?.areas?.name || "–";
-  const guideTitle = (t) => t?.guide_title || t?.guides?.title || "";
-
-
-  const calFilteredItems = useMemo(() => {
-    const base = calItems || [];
-    return base.filter((it) => {
-      if (calStatusFilter !== "all" && it.status !== calStatusFilter) return false;
-      if (calAreaFilter && it.area_id && it.area_id !== calAreaFilter) return false;
-      // if view provides only area_name, we keep area filter best-effort by matching name
-      if (calAreaFilter && !it.area_id) {
-        const area = areas.find((a) => a.id === calAreaFilter);
-        if (area && it.area_name && it.area_name !== area.name) return false;
-      }
-      return true;
-    });
-  }, [calItems, calStatusFilter, calAreaFilter, areas]);
-
-  const subStats = (taskId) => {
-    const list = subtasksByTask[taskId] || [];
-    const total = list.length;
-    const done = list.filter((s) => !!s.is_done).length;
-    const pct = total ? Math.round((done / total) * 100) : 0;
-    return { total, done, pct };
-  };
-
-  /* ---------------- Actions: tasks ---------------- */
-  const createTask = async () => {
-    if (!supabase || !user) return;
-    setError("");
-
-    const title = newTitle.trim();
-    if (!title) return;
-
-    const payload = {
-      title,
-      status: newStatus, // todo|done (DB check)
-      user_id: user.id, // RLS
-      area_id: newAreaId || null,
-      guide_id: newGuideId || null,
-      due_at: toISO(newDueAt) || null,
-    };
-
-    const { error } = await supabase.from("tasks").insert([payload]);
-    if (error) return setError(error.message);
-
-    setNewTitle("");
-    setNewAreaId("");
-    setNewDueAt("");
-    setNewStatus("todo");
-    setNewGuideId("");
-
-    await loadTasks();
-  };
-
-  const toggleTaskStatus = async (taskId, current) => {
-    if (!supabase) return;
-    setError("");
-    const next = current === "done" ? "todo" : "done";
-    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", taskId);
-    if (error) return setError(error.message);
-    await loadTasks();
-  };
-
-  const deleteTask = async (taskId) => {
-    if (!supabase) return;
-    setError("");
-    const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-    if (error) return setError(error.message);
-
-    setSubtasksByTask((prev) => {
-      const copy = { ...prev };
-      delete copy[taskId];
-      return copy;
-    });
-
-    await loadTasks();
-  };
-
-  /* ---------------- Actions: subtasks ---------------- */
-
-/* ---------------- Actions: jump to task ---------------- */
-const gotoTask = async (taskId) => {
-  setTab("board");
-  setHighlightTaskId(taskId);
-  setExpanded((prev) => ({ ...prev, [taskId]: true }));
-  try {
-    await loadSubtasks(taskId);
-  } catch (e) {
-    // ignore – subtasks are optional here
-  }
-};
 
   const toggleExpand = async (taskId) => {
     const willOpen = !expanded[taskId];
