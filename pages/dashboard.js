@@ -238,42 +238,6 @@ useEffect(() => {
     setTasks(data || []);
   };
 
-  /* ---------------- Actions ---------------- */
-  const createTask = async () => {
-    if (!supabase || !user) return;
-    setError("");
-
-    const title = (newTitle || "").trim();
-    if (!title) return;
-
-    // datetime-local liefert z.B. "2026-01-12T07:30" (ohne Zeitzone)
-    const dueISO = newDueAt
-      ? new Date(newDueAt).toISOString()
-      : new Date().toISOString();
-
-    const payload = {
-      title,
-      status: newStatus || "todo",
-      area_id: newAreaId || null,
-      guide_id: newGuideId || null,
-      due_at: dueISO,
-      user_id: user.id,
-    };
-
-    const { error } = await supabase.from("tasks").insert([payload]);
-    if (error) {
-      setError(error.message || "Fehler beim Speichern");
-      return;
-    }
-
-    setNewTitle("");
-    setNewAreaId("");
-    setNewDueAt("");
-    setNewStatus("todo");
-    setNewGuideId("");
-    await loadAll();
-  };
-
   const loadCalendarItems = async (monthDate = calMonth) => {
     if (!supabase || !user) return;
     setCalLoading(true);
@@ -459,6 +423,10 @@ const loadAll = async () => {
   };
 
   const grid = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 12 };
+
+  // Board-Spalten (fürs UI)
+  const tasksTodo = useMemo(() => (tasks || []).filter((t) => t.status !== "done"), [tasks]);
+  const tasksDone = useMemo(() => (tasks || []).filter((t) => t.status === "done"), [tasks]);
 
   const TaskCard = ({ t }) => {
     const isDone = t.status === "done";
