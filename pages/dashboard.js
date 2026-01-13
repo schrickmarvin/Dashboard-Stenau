@@ -1,11 +1,8 @@
 // pages/dashboard.js
-import React, { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/router";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* -------------------------------------------------------
-   Supabase (client-only, singleton)
-------------------------------------------------------- */
+/* ---------------- Supabase Client (browser singleton) ---------------- */
 function getSupabaseClient() {
   if (typeof window === "undefined") return null;
 
@@ -13,8 +10,7 @@ function getSupabaseClient() {
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!url || !key) {
-    // eslint-disable-next-line no-console
-    console.warn("Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY");
+    console.warn("Supabase ENV fehlt (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY)");
     return null;
   }
 
@@ -23,838 +19,832 @@ function getSupabaseClient() {
       auth: { persistSession: true, autoRefreshToken: true },
     });
   }
-
   return window.__supabase__;
 }
 
-/* -------------------------------------------------------
-   Helpers
-------------------------------------------------------- */
-const toISO = (v) => {
-  if (!v) return null;
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
-};
+/* ---------------- Small helpers ---------------- */
+const pad2 = (n) => String(n).padStart(2, "0");
+const isoFromLocalInput = (v) => (v ? new Date(v).toISOString() : null);
 
-const fmtDue = (iso) => {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString("de-DE", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
-
-const toYMD = (d) => {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-};
-
-const monthStart = (d) => new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
-const monthEndExclusive = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 1, 0, 0, 0, 0);
-
-// Monday-first index (0..6)
-const weekdayMon0 = (dateObj) => {
-  const js = dateObj.getDay(); // 0 Sun..6 Sat
-  return (js + 6) % 7;
-};
-
-function Pill({ children, tone = "gray" }) {
-  const bg =
-    tone === "green" ? "#d1fae5" : tone === "orange" ? "#ffedd5" : tone === "red" ? "#fee2e2" : "#e5e7eb";
-  const color =
-    tone === "green" ? "#065f46" : tone === "orange" ? "#9a3412" : tone === "red" ? "#991b1b" : "#111827";
-
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "2px 10px",
-        borderRadius: 999,
-        background: bg,
-        color,
-        fontSize: 12,
-        fontWeight: 700,
-        marginLeft: 8,
-      }}
-    >
-      {children}
-    </span>
-  );
+function ymdLocal(date) {
+  // date: Date
+  const y = date.getFullYear();
+  const m = pad2(date.getMonth() + 1);
+  const d = pad2(date.getDate());
+  return `${y}-${m}-${d}`;
 }
 
-/* -------------------------------------------------------
-   Page
-------------------------------------------------------- */
+function startOfMonth(d) {
+  return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+}
+function endOfMonth(d) {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+}
+function addMonths(d, delta) {
+  return new Date(d.getFullYear(), d.getMonth() + delta, 1, 0, 0, 0, 0);
+}
+
+/* ---------------- Page ---------------- */
 export default function DashboardPage() {
-  const router = useRouter();
-
   const [supabase, setSupabase] = useState(null);
+  const [session, setSession] = useState(null);
+  const user = session?.user || null;
 
-  // session: "loading" | null | sessionObject
-  const [session, setSession] = useState("loading");
-  const user = session && session !== "loading" ? session.user : null;
+  const [activeTab, setActiveTab] = useState("board"); // board | list | calendar
 
-  const [error, setError] = useState("");
-
-  // Data
+  const [tasks, setTasks] = useState([]); // enriched tasks
+  const [subtasks, setSubtasks] = useState([]); // enriched subtasks
   const [areas, setAreas] = useState([]);
   const [guides, setGuides] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [subtasksByTask, setSubtasksByTask] = useState({});
-  const [expanded, setExpanded] = useState({});
-  const [highlightTaskId, setHighlightTaskId] = useState(null);
 
-  // UI tab
-  const [tab, setTab] = useState("board"); // board | list | calendar
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
 
-
-// scroll/highlight helper when jumping from calendar to a task
-useEffect(() => {
-  if (!highlightTaskId) return;
-  const el = document.getElementById(`task-${highlightTaskId}`);
-  if (el) {
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-}, [highlightTaskId]);
-
-
-  // Calendar
-  const [calMonth, setCalMonth] = useState(() => new Date());
-  const [calSelectedDate, setCalSelectedDate] = useState(() => {
-    const d = new Date();
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  });
-  const [calItems, setCalItems] = useState([]); // tasks with due_at in current month
-  const [calStatusFilter, setCalStatusFilter] = useState("all"); // all | todo | done
-  const [calAreaFilter, setCalAreaFilter] = useState(""); // area_id or ""
-
-
-  // Create task
+  // create task
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
-  const [newDueAt, setNewDueAt] = useState("");
-  const [newStatus, setNewStatus] = useState("todo"); // todo|done
+  const [newDueAt, setNewDueAt] = useState(""); // datetime-local
+  const [newStatus, setNewStatus] = useState("todo");
   const [newGuideId, setNewGuideId] = useState("");
 
-  // Create subtask
-  const [subtaskDraft, setSubtaskDraft] = useState({});
+  // subtasks input per task
+  const [subtaskDraft, setSubtaskDraft] = useState({}); // { [taskId]: string }
 
-  /* ---------------- Init supabase ---------------- */
+  // calendar UI state
+  const [calMonth, setCalMonth] = useState(() => startOfMonth(new Date()));
+  const [calSelectedDay, setCalSelectedDay] = useState(() => ymdLocal(new Date()));
+  const [calStatus, setCalStatus] = useState(""); // "" | todo | done
+  const [calArea, setCalArea] = useState(""); // "" or area_id
+
+  const infoTimer = useRef(null);
+
+  function flashInfo(msg) {
+    setInfo(msg);
+    if (infoTimer.current) clearTimeout(infoTimer.current);
+    infoTimer.current = setTimeout(() => setInfo(""), 2500);
+  }
+
+  /* Init Supabase */
   useEffect(() => {
     setSupabase(getSupabaseClient());
   }, []);
 
-  /* ---------------- Auth + redirect ---------------- */
+  /* Auth */
   useEffect(() => {
     if (!supabase) return;
 
-    let mounted = true;
-
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (!mounted) return;
-      if (error) {
-        setSession(null);
-        return;
-      }
-      setSession(data.session || null);
-    });
-
-    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession || null);
-    });
-
-    return () => {
-      mounted = false;
-      data.subscription.unsubscribe();
-    };
+    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
+    const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s || null));
+    return () => data.subscription.unsubscribe();
   }, [supabase]);
 
+  /* Load on login */
   useEffect(() => {
-    if (session === "loading") return;
-    if (!session) router.replace("/login");
-  }, [session, router]);
+    if (!supabase || !user) return;
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase, user?.id]);
 
-  /* ---------------- Loaders ---------------- */
+  /* ---------------- Data loading ---------------- */
   const loadAreas = async () => {
-    const { data, error } = await supabase.from("areas").select("id,name").order("name");
+    const { data, error } = await supabase.from("areas").select("*").order("name");
     if (error) throw error;
     setAreas(data || []);
   };
 
   const loadGuides = async () => {
-    const { data, error } = await supabase.from("guides").select("id,title").order("title");
+    const { data, error } = await supabase.from("guides").select("*").order("title");
     if (error) throw error;
     setGuides(data || []);
   };
 
   const loadTasks = async () => {
-    // Prefer UI View (v_tasks_ui). Fallback: base table.
-    let data = null;
-    let error = null;
+    // Prefer view v_tasks_ui (enriched), fallback to tasks
+    let res = await supabase
+      .from("v_tasks_ui")
+      .select("id,title,status,is_done,created_at,updated_at,due_at,area_id,area_name,guide_id,guide_title")
+      .order("created_at", { ascending: false });
 
-    // 1) Try view (has area_name / guide_title / is_done)
-    {
-      const res = await supabase
-        .from("v_tasks_ui")
-        .select(
-          "id,title,status,is_done,created_at,due_at,due_day,period,user_id,area_id,area_name,guide_id,guide_title"
-        )
+    if (res.error) {
+      // fallback
+      res = await supabase
+        .from("tasks")
+        .select("id,title,status,created_at,updated_at,due_at,area_id,guide_id")
         .order("created_at", { ascending: false });
-      data = res.data;
-      error = res.error;
     }
 
-    // 2) Fallback if view doesn't exist
-    if (error) {
-      const msg = (error?.message || "").toLowerCase();
-      const viewMissing = msg.includes("does not exist") || msg.includes("relation") || msg.includes("42p01");
-      if (viewMissing) {
-        const res2 = await supabase
-          .from("tasks")
-          .select("id,title,status,created_at,due_at,area_id,guide_id,areas(name),guides(title)")
-          .order("created_at", { ascending: false });
-        data = (res2.data || []).map((t) => ({
-          ...t,
-          is_done: t.status === "done",
-          area_name: t.areas?.name || null,
-          guide_title: t.guides?.title || null,
-        }));
-        error = res2.error;
-      }
-    }
+    if (res.error) throw res.error;
 
-    if (error) throw error;
-    setTasks(data || []);
+    const list = (res.data || []).map((t) => ({
+      ...t,
+      is_done: typeof t.is_done === "boolean" ? t.is_done : t.status === "done",
+    }));
+    setTasks(list);
   };
 
-  const loadCalendarItems = async (monthDate = calMonth) => {
+  const loadSubtasks = async () => {
+    // Prefer view v_subtasks_ui (enriched), fallback to subtasks
+    let res = await supabase
+      .from("v_subtasks_ui")
+      .select("id,task_id,title,is_done,status,created_at,updated_at,guide_id,guide_title")
+      .order("created_at", { ascending: true });
+
+    if (res.error) {
+      res = await supabase
+        .from("subtasks")
+        .select("id,task_id,title,is_done,status,created_at,updated_at,guide_id")
+        .order("created_at", { ascending: true });
+    }
+
+    if (res.error) throw res.error;
+    setSubtasks(res.data || []);
+  };
+
+  const loadAll = async () => {
     if (!supabase || !user) return;
-    setCalLoading(true);
     setError("");
-
     try {
-      // Monats-Range [start, end)
-      const monthStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1, 0, 0, 0, 0);
-      const monthEnd = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 1, 0, 0, 0, 0);
-
-      let q = supabase
-        // WICHTIG: v_tasks_ui enthält area_name + guide_title (v_tasks_calendar nicht)
-        .from("v_tasks_ui")
-        .select("id,title,status,due_at,area_id,area_name,guide_id,guide_title")
-        .gte("due_at", monthStart.toISOString())
-        .lt("due_at", monthEnd.toISOString())
-        .order("due_at", { ascending: true });
-
-      // Filter (Status)
-      if (calStatusFilter !== "all") {
-        q = q.eq("status", calStatusFilter);
-      }
-
-      // Filter (Bereich)
-      if (calAreaFilter !== "all") {
-        q = q.eq("area_id", calAreaFilter);
-      }
-
-      const { data: items, error: err1 } = await q;
-      if (err1) throw err1;
-
-      const list = items || [];
-      const ids = list.map((x) => x.id);
-
-      // Subtask-Fortschritt je Task holen (clientseitig aggregieren)
-      let merged = list.map((x) => ({ ...x, total_subtasks: 0, done_subtasks: 0 }));
-      if (ids.length > 0) {
-        const { data: subs, error: err2 } = await supabase
-          .from("subtasks")
-          .select("task_id,is_done")
-          .in("task_id", ids);
-
-        if (err2) throw err2;
-
-        const agg = new Map(); // task_id -> {total, done}
-        (subs || []).forEach((s) => {
-          const cur = agg.get(s.task_id) || { total: 0, done: 0 };
-          cur.total += 1;
-          if (s.is_done) cur.done += 1;
-          agg.set(s.task_id, cur);
-        });
-
-        merged = list.map((x) => {
-          const a = agg.get(x.id) || { total: 0, done: 0 };
-          return { ...x, total_subtasks: a.total, done_subtasks: a.done };
-        });
-      }
-
-      setCalItems(merged);
+      await Promise.all([loadAreas(), loadGuides(), loadTasks(), loadSubtasks()]);
+      flashInfo("Aktualisiert");
     } catch (e) {
-      setError(e?.message || String(e));
-      setCalItems([]);
-    } finally {
-      setCalLoading(false);
+      setError(e?.message || "Fehler beim Laden");
     }
   };
 
-// Alles neu laden (für den Button "Neu laden")
-const loadAll = async () => {
-  if (!supabase || !user) return;
-  setError("");
-  // parallel laden (schneller)
-  await Promise.allSettled([loadAreas(), loadGuides(), loadTasks(), loadCalendarItems()]);
-};
-
-
-  const toggleExpand = async (taskId) => {
-    const willOpen = !expanded[taskId];
-    setExpanded((prev) => ({ ...prev, [taskId]: willOpen }));
-    if (willOpen) {
-      try {
-        await loadSubtasksForTask(taskId);
-      } catch (e) {
-        setError(e?.message || String(e));
-      }
+  /* ---------------- Derived ---------------- */
+  const subtasksByTask = useMemo(() => {
+    const m = {};
+    for (const s of subtasks) {
+      if (!m[s.task_id]) m[s.task_id] = [];
+      m[s.task_id].push(s);
     }
-  };
+    return m;
+  }, [subtasks]);
 
-  const addSubtask = async (taskId) => {
-    if (!supabase) return;
+  const progressByTask = useMemo(() => {
+    const m = {};
+    for (const t of tasks) {
+      const list = subtasksByTask[t.id] || [];
+      const total = list.length;
+      const done = list.reduce((acc, s) => acc + (s.is_done ? 1 : 0), 0);
+      m[t.id] = { total, done };
+    }
+    return m;
+  }, [tasks, subtasksByTask]);
+
+  const tasksTodo = useMemo(() => tasks.filter((t) => t.status !== "done"), [tasks]);
+  const tasksDone = useMemo(() => tasks.filter((t) => t.status === "done"), [tasks]);
+
+  /* ---------------- Mutations: Tasks ---------------- */
+  const createTask = async () => {
     setError("");
+    if (!supabase || !user) return;
+    if (!newTitle.trim()) return;
 
+    const payload = {
+      title: newTitle.trim(),
+      status: newStatus || "todo",
+      user_id: user.id,
+      area_id: newAreaId || null,
+      guide_id: newGuideId || null,
+      due_at: isoFromLocalInput(newDueAt),
+    };
+
+    const { error } = await supabase.from("tasks").insert([payload]);
+    if (error) return setError(error.message);
+
+    setNewTitle("");
+    setNewAreaId("");
+    setNewGuideId("");
+    setNewDueAt("");
+    setNewStatus("todo");
+
+    await loadTasks();
+    flashInfo("Aufgabe angelegt");
+  };
+
+  const toggleTaskStatus = async (taskId) => {
+    const t = tasks.find((x) => x.id === taskId);
+    if (!t) return;
+    const next = t.status === "done" ? "todo" : "done";
+
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", taskId);
+    if (error) return setError(error.message);
+
+    await loadTasks();
+    flashInfo("Status geändert");
+  };
+
+  const updateTaskDueAt = async (taskId, isoOrNull) => {
+    const { error } = await supabase.from("tasks").update({ due_at: isoOrNull }).eq("id", taskId);
+    if (error) return setError(error.message);
+    await loadTasks();
+    flashInfo("Fälligkeitsdatum gespeichert");
+  };
+
+  /* ---------------- Mutations: Subtasks ---------------- */
+  const addSubtask = async (taskId) => {
+    setError("");
     const title = (subtaskDraft[taskId] || "").trim();
     if (!title) return;
 
-    const payload = {
-      task_id: taskId,
-      title,
-      is_done: false,
-      status: "todo",
-      guide_id: null,
-    };
-
-    const { error } = await supabase.from("subtasks").insert([payload]);
+    const { error } = await supabase.from("subtasks").insert([
+      {
+        task_id: taskId,
+        title,
+        is_done: false,
+        status: "todo",
+      },
+    ]);
     if (error) return setError(error.message);
 
     setSubtaskDraft((prev) => ({ ...prev, [taskId]: "" }));
-    await loadSubtasksForTask(taskId);
+    await loadSubtasks();
+    flashInfo("Unteraufgabe hinzugefügt");
   };
 
-  const toggleSubtask = async (subtask) => {
-    if (!supabase) return;
-    setError("");
+  const toggleSubtask = async (subtaskId) => {
+    const s = subtasks.find((x) => x.id === subtaskId);
+    if (!s) return;
+    const nextDone = !s.is_done;
+    const nextStatus = nextDone ? "done" : "todo";
 
-    const nextDone = !subtask.is_done;
     const { error } = await supabase
       .from("subtasks")
-      .update({ is_done: nextDone, status: nextDone ? "done" : "todo" })
-      .eq("id", subtask.id);
+      .update({ is_done: nextDone, status: nextStatus })
+      .eq("id", subtaskId);
 
     if (error) return setError(error.message);
-    await loadSubtasksForTask(subtask.task_id);
+    await loadSubtasks();
   };
 
-  const deleteSubtask = async (subtask) => {
-    if (!supabase) return;
-    setError("");
-    const { error } = await supabase.from("subtasks").delete().eq("id", subtask.id);
-    if (error) return setError(error.message);
-    await loadSubtasksForTask(subtask.task_id);
-  };
+  /* ---------------- Calendar data (month + day) ---------------- */
+  const monthRange = useMemo(() => {
+    const from = startOfMonth(calMonth);
+    const to = endOfMonth(calMonth);
+    return { from, to };
+  }, [calMonth]);
 
-  /* ---------------- Logout ---------------- */
-  const logout = async () => {
-    if (!supabase) return;
-    await supabase.auth.signOut();
-    router.replace("/login");
-  };
+  const calTasksInMonth = useMemo(() => {
+    // client-side filter on already loaded tasks
+    // ensures calendar works even if v_tasks_calendar is not used client-side
+    const from = monthRange.from.getTime();
+    const to = monthRange.to.getTime();
+    return tasks.filter((t) => {
+      if (!t.due_at) return false;
+      const ts = new Date(t.due_at).getTime();
+      if (ts < from || ts > to) return false;
+      if (calStatus && t.status !== calStatus) return false;
+      if (calArea && t.area_id !== calArea) return false;
+      return true;
+    });
+  }, [tasks, monthRange, calStatus, calArea]);
 
-  /* ---------------- Guard render ---------------- */
-  if (session === "loading") return <div style={{ padding: 24 }}>Lade…</div>;
-  if (!user) return null; // redirect already triggered
+  const calCountByDay = useMemo(() => {
+    const m = {};
+    for (const t of calTasksInMonth) {
+      const day = ymdLocal(new Date(t.due_at));
+      m[day] = (m[day] || 0) + 1;
+    }
+    return m;
+  }, [calTasksInMonth]);
 
-  /* ---------------- Styles ---------------- */
-  const page = { padding: 18, background: "#f3f6ff", minHeight: "100vh" };
-  const topbar = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16 };
-  const tabs = { display: "flex", gap: 10, alignItems: "center" };
-  const tabBtn = (active) => ({
-    padding: "8px 14px",
-    borderRadius: 999,
-    border: "1px solid #e5e7eb",
-    background: active ? "#0f7a2a" : "white",
-    color: active ? "white" : "#111827",
-    cursor: "pointer",
-    fontWeight: 800,
-  });
+  const calTasksForSelectedDay = useMemo(() => {
+    return calTasksInMonth
+      .filter((t) => ymdLocal(new Date(t.due_at)) === calSelectedDay)
+      .sort((a, b) => new Date(a.due_at).getTime() - new Date(b.due_at).getTime());
+  }, [calTasksInMonth, calSelectedDay]);
 
-  const card = {
-    background: "white",
-    border: "1px solid #e5e7eb",
-    borderRadius: 18,
-    padding: 16,
-    boxShadow: "0 8px 18px rgba(16,24,40,0.04)",
-  };
+  /* ---------------- UI helpers ---------------- */
+  const styles = useMemo(
+    () => ({
+      page: { padding: 20, background: "#f4f7fb", minHeight: "100vh" },
+      topbar: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 12,
+        marginBottom: 16,
+      },
+      tabs: { display: "flex", gap: 8, alignItems: "center" },
+      tab: (active) => ({
+        padding: "8px 14px",
+        borderRadius: 999,
+        border: "1px solid #e5e7eb",
+        background: active ? "#0f7a2a" : "white",
+        color: active ? "white" : "#111827",
+        fontWeight: 800,
+        cursor: "pointer",
+      }),
+      btn: {
+        padding: "8px 14px",
+        borderRadius: 12,
+        border: "1px solid #e5e7eb",
+        background: "white",
+        cursor: "pointer",
+        fontWeight: 800,
+      },
+      btnPrimary: {
+        padding: "10px 16px",
+        borderRadius: 14,
+        border: "none",
+        background: "#0f7a2a",
+        color: "white",
+        cursor: "pointer",
+        fontWeight: 900,
+      },
+      card: {
+        background: "white",
+        border: "1px solid #e5e7eb",
+        borderRadius: 18,
+        padding: 16,
+        boxShadow: "0 6px 20px rgba(15, 23, 42, 0.06)",
+      },
+      section: { marginTop: 14 },
+      row: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" },
+      input: {
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: "1px solid #e5e7eb",
+        minWidth: 180,
+      },
+      select: {
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: "1px solid #e5e7eb",
+        minWidth: 180,
+        background: "white",
+      },
+      twoCol: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 },
+      listRow: {
+        display: "grid",
+        gridTemplateColumns: "1.6fr 0.8fr 0.8fr 0.8fr 0.8fr",
+        gap: 10,
+        alignItems: "center",
+        padding: "10px 0",
+        borderBottom: "1px solid #eef2f7",
+      },
+      pill: (done) => ({
+        display: "inline-flex",
+        padding: "3px 10px",
+        borderRadius: 999,
+        fontWeight: 900,
+        fontSize: 12,
+        background: done ? "#dcfce7" : "#ffedd5",
+        color: done ? "#166534" : "#9a3412",
+        border: "1px solid #e5e7eb",
+      }),
+      subRow: { display: "flex", gap: 10, alignItems: "center", padding: "6px 0" },
+      progressWrap: { height: 10, borderRadius: 999, background: "#e5e7eb", overflow: "hidden" },
+      progressBar: (pct) => ({ height: 10, width: `${pct}%`, background: "#0f7a2a" }),
+      calGrid: {
+        display: "grid",
+        gridTemplateColumns: "repeat(7, 1fr)",
+        gap: 10,
+      },
+      calCell: (selected) => ({
+        minHeight: 58,
+        borderRadius: 14,
+        border: "1px solid #e5e7eb",
+        background: selected ? "#0f7a2a" : "white",
+        color: selected ? "white" : "#111827",
+        padding: 10,
+        cursor: "pointer",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "flex-start",
+      }),
+      calBadge: (selected) => ({
+        minWidth: 22,
+        height: 22,
+        borderRadius: 999,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontWeight: 900,
+        fontSize: 12,
+        background: selected ? "rgba(255,255,255,0.25)" : "#eef2ff",
+        color: selected ? "white" : "#3730a3",
+        border: "1px solid rgba(0,0,0,0.08)",
+      }),
+      bannerErr: {
+        background: "#fee2e2",
+        color: "#991b1b",
+        border: "1px solid #fecaca",
+        padding: 10,
+        borderRadius: 12,
+        marginBottom: 12,
+        fontWeight: 800,
+      },
+      bannerOk: {
+        background: "#dcfce7",
+        color: "#166534",
+        border: "1px solid #bbf7d0",
+        padding: 10,
+        borderRadius: 12,
+        marginBottom: 12,
+        fontWeight: 800,
+      },
+    }),
+    []
+  );
 
-  const btnGreen = {
-    background: "#0f7a2a",
-    color: "white",
-    border: "none",
-    borderRadius: 12,
-    padding: "10px 18px",
-    cursor: "pointer",
-    fontWeight: 900,
-  };
+  const monthLabel = useMemo(() => {
+    const monthNames = [
+      "Januar",
+      "Februar",
+      "März",
+      "April",
+      "Mai",
+      "Juni",
+      "Juli",
+      "August",
+      "September",
+      "Oktober",
+      "November",
+      "Dezember",
+    ];
+    return `${monthNames[calMonth.getMonth()]} ${calMonth.getFullYear()}`;
+  }, [calMonth]);
 
-  const btnGhost = {
-    background: "white",
-    border: "1px solid #e5e7eb",
-    borderRadius: 12,
-    padding: "8px 12px",
-    cursor: "pointer",
-    fontWeight: 800,
-  };
+  const calDays = useMemo(() => {
+    const d0 = startOfMonth(calMonth);
+    // monday-based grid
+    const dayOfWeek = (d0.getDay() + 6) % 7; // 0=Mon
+    const firstGridDay = new Date(d0);
+    firstGridDay.setDate(d0.getDate() - dayOfWeek);
 
-  const grid = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 12 };
+    const cells = [];
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(firstGridDay);
+      d.setDate(firstGridDay.getDate() + i);
+      cells.push(d);
+    }
+    return cells;
+  }, [calMonth]);
 
-  const TaskCard = ({ t }) => {
-    const isDone = t.status === "done";
-    const { total, done } = subStats(t.id);
-    const isOpen = !!expanded[t.id];
+  /* ---------------- Login screen ---------------- */
+  if (!user) {
+    return <Login supabase={supabase} />;
+  }
+
+  /* ---------------- Render helpers ---------------- */
+  function TaskCard({ t, compact }) {
+    const p = progressByTask[t.id] || { total: 0, done: 0 };
+    const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
     const list = subtasksByTask[t.id] || [];
-    const progress = total ? Math.round((done / total) * 100) : 0;
 
     return (
-      <div id={`task-${t.id}`} style={{ ...card, marginBottom: 12, outline: highlightTaskId === t.id ? "3px solid #0f7a2a" : "none", outlineOffset: 2 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.2 }}>
-              {t.title}
-              <Pill tone={isDone ? "green" : "orange"}>{t.status}</Pill>
+      <div style={{ ...styles.card, padding: compact ? 12 : 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ fontSize: 16, fontWeight: 900 }}>{t.title}</div>
+              <span style={styles.pill(t.status === "done")}>{t.status}</span>
             </div>
 
-            <div style={{ marginTop: 6, color: "#374151", fontSize: 13 }}>
-              Bereich: {areaName(t)}
-              {t.due_at ? ` • Fällig: ${fmtDue(t.due_at)}` : ""}
-              {guideTitle(t) ? ` • Anleitung: ${guideTitle(t)}` : ""}
+            <div style={{ marginTop: 6, color: "#475569", fontSize: 13 }}>
+              Bereich: {t.area_name || "—"}
+              {t.due_at ? ` • Fällig: ${new Date(t.due_at).toLocaleString("de-DE")}` : ""}
             </div>
 
-            <div style={{ marginTop: 10, fontSize: 13, color: "#374151" }}>
-              Unteraufgaben <span style={{ float: "right" }}>{done}/{total} ({progress}%)</span>
-              <div style={{ height: 10, background: "#eef2ff", borderRadius: 999, overflow: "hidden", marginTop: 6 }}>
-                <div style={{ height: "100%", width: `${progress}%`, background: "#0f7a2a" }} />
+            <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: "#334155" }}>Unteraufgaben</div>
+              <div style={{ fontSize: 13, color: "#64748b" }}>
+                {p.done}/{p.total}
               </div>
+            </div>
+
+            <div style={{ marginTop: 6, ...styles.progressWrap }}>
+              <div style={styles.progressBar(pct)} />
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-            <button style={btnGhost} onClick={() => toggleExpand(t.id)}>{isOpen ? "Zuklappen" : "Aufklappen"}</button>
-            <button style={btnGhost} onClick={() => toggleTaskStatus(t.id, t.status)}>Status</button>
-            <button style={{ ...btnGhost, borderColor: "#fecaca" }} onClick={() => deleteTask(t.id)}>Löschen</button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button style={styles.btn} onClick={() => toggleTaskStatus(t.id)}>
+              Status
+            </button>
           </div>
         </div>
 
-        {isOpen && (
-          <div style={{ marginTop: 14 }}>
+        {/* Subtasks */ }
+        {!compact && (
+          <div style={{ marginTop: 12 }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               <input
+                style={{ ...styles.input, flex: 1, minWidth: 220 }}
                 placeholder="Unteraufgabe hinzufügen…"
                 value={subtaskDraft[t.id] || ""}
                 onChange={(e) => setSubtaskDraft((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                style={{ flex: 1, padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
               />
-              <button style={btnGreen} onClick={() => addSubtask(t.id)}>+</button>
+              <button style={styles.btnPrimary} onClick={() => addSubtask(t.id)}>
+                +
+              </button>
             </div>
 
-            <div style={{ marginTop: 10 }}>
-              {list.length === 0 ? (
-                <div style={{ color: "#6b7280" }}>Keine Unteraufgaben</div>
-              ) : (
-                list.map((s) => (
-                  <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 2px" }}>
-                    <input type="checkbox" checked={!!s.is_done} onChange={() => toggleSubtask(s)} />
+            {list.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                {list.map((s) => (
+                  <div key={s.id} style={styles.subRow}>
+                    <input type="checkbox" checked={!!s.is_done} onChange={() => toggleSubtask(s.id)} />
                     <div style={{ flex: 1, textDecoration: s.is_done ? "line-through" : "none" }}>{s.title}</div>
-                    <button style={btnGhost} onClick={() => deleteSubtask(s)}>Entfernen</button>
                   </div>
-                ))
-              )}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
     );
-  };
+  }
 
+  /* ---------------- Main UI ---------------- */
   return (
-    <div style={page}>
-      <div style={topbar}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ fontSize: 20, fontWeight: 900 }}>Dashboard</div>
-          <div style={tabs}>
-            <button style={tabBtn(tab === "board")} onClick={() => setTab("board")}>Board</button>
-            <button style={tabBtn(tab === "list")} onClick={() => setTab("list")}>Liste</button>
-            <button style={tabBtn(tab === "calendar")} onClick={() => setTab("calendar")}>Kalender</button>
-            <button style={btnGhost} onClick={loadAll}>Neu laden</button>
-          </div>
+    <div style={styles.page}>
+      <div style={styles.topbar}>
+        <div style={styles.tabs}>
+          <div style={{ fontSize: 20, fontWeight: 900, marginRight: 6 }}>Dashboard</div>
+          <button style={styles.tab(activeTab === "board")} onClick={() => setActiveTab("board")}>
+            Board
+          </button>
+          <button style={styles.tab(activeTab === "list")} onClick={() => setActiveTab("list")}>
+            Liste
+          </button>
+          <button style={styles.tab(activeTab === "calendar")} onClick={() => setActiveTab("calendar")}>
+            Kalender
+          </button>
+          <button style={styles.btn} onClick={loadAll}>
+            Neu laden
+          </button>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ color: "#374151", fontSize: 13 }}>{user?.email}</div>
-          <button style={btnGhost} onClick={logout}>Abmelden</button>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <div style={{ color: "#475569", fontSize: 13 }}>{user.email}</div>
+          <button
+            style={styles.btn}
+            onClick={async () => {
+              await supabase.auth.signOut();
+            }}
+          >
+            Abmelden
+          </button>
         </div>
       </div>
 
-      {error && (
-        <div style={{ marginBottom: 12, padding: 12, borderRadius: 14, background: "#fee2e2", border: "1px solid #fecaca", color: "#991b1b", fontWeight: 800 }}>
-          {error}
-        </div>
-      )}
+      {error ? <div style={styles.bannerErr}>{error}</div> : null}
+      {info ? <div style={styles.bannerOk}>{info}</div> : null}
 
-      <div style={{ ...card, marginBottom: 14 }}>
+      {/* Create Task */}
+      <div style={styles.card}>
         <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>Aufgabe anlegen</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr auto", gap: 10 }}>
-          <input
-            placeholder="Titel"
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
-          />
-
-          <select
-            value={newAreaId}
-            onChange={(e) => setNewAreaId(e.target.value)}
-            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
-          >
+        <div style={styles.row}>
+          <input style={styles.input} placeholder="Titel" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} />
+          <select style={styles.select} value={newAreaId} onChange={(e) => setNewAreaId(e.target.value)}>
             <option value="">Bereich</option>
-            {areas.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            {areas.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
           </select>
-
-          <input
-            type="datetime-local"
-            value={newDueAt}
-            onChange={(e) => setNewDueAt(e.target.value)}
-            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
-          />
-
-          <select
-            value={newStatus}
-            onChange={(e) => setNewStatus(e.target.value)}
-            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
-          >
+          <input style={styles.input} type="datetime-local" value={newDueAt} onChange={(e) => setNewDueAt(e.target.value)} />
+          <select style={styles.select} value={newStatus} onChange={(e) => setNewStatus(e.target.value)}>
             <option value="todo">Zu erledigen</option>
             <option value="done">Erledigt</option>
           </select>
-
-          <select
-            value={newGuideId}
-            onChange={(e) => setNewGuideId(e.target.value)}
-            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
-          >
+          <select style={styles.select} value={newGuideId} onChange={(e) => setNewGuideId(e.target.value)}>
             <option value="">Anleitung</option>
-            {guides.map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
+            {guides.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.title}
+              </option>
+            ))}
           </select>
-
-          <button style={btnGreen} onClick={createTask}>Anlegen</button>
+          <button style={styles.btnPrimary} onClick={createTask}>
+            Anlegen
+          </button>
         </div>
       </div>
 
-      
-      {tab === "board" ? (
-
-        <div style={grid}>
-          <div>
-            <div style={{ ...card, marginBottom: 12 }}>
+      {/* Tabs content */}
+      {activeTab === "board" && (
+        <div style={{ ...styles.section, ...styles.twoCol }}>
+          <div style={styles.card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={{ fontSize: 16, fontWeight: 900 }}>Zu erledigen</div>
-              <div style={{ marginTop: 10 }}>
-                {tasksTodo.length === 0 ? <div style={{ color: "#6b7280" }}>Keine Aufgaben</div> : tasksTodo.map((t) => <TaskCard key={t.id} t={t} />)}
-              </div>
+              <div style={{ color: "#64748b", fontSize: 13 }}>{tasksTodo.length}</div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {tasksTodo.map((t) => (
+                <TaskCard key={t.id} t={t} compact={false} />
+              ))}
+              {tasksTodo.length === 0 && <div style={{ color: "#64748b" }}>Keine Aufgaben</div>}
             </div>
           </div>
-          <div>
-            <div style={{ ...card, marginBottom: 12 }}>
+
+          <div style={styles.card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={{ fontSize: 16, fontWeight: 900 }}>Erledigt</div>
-              <div style={{ marginTop: 10 }}>
-                {tasksDone.length === 0 ? <div style={{ color: "#6b7280" }}>Keine Aufgaben</div> : tasksDone.map((t) => <TaskCard key={t.id} t={t} />)}
-              </div>
+              <div style={{ color: "#64748b", fontSize: 13 }}>{tasksDone.length}</div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {tasksDone.map((t) => (
+                <TaskCard key={t.id} t={t} compact={false} />
+              ))}
+              {tasksDone.length === 0 && <div style={{ color: "#64748b" }}>Keine erledigten Aufgaben</div>}
             </div>
           </div>
         </div>
-      
-      ) : tab === "list" ? (
+      )}
 
-        <div style={card}>
+      {activeTab === "list" && (
+        <div style={{ ...styles.section, ...styles.card }}>
           <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>Liste</div>
-          {tasks.length === 0 ? (
-            <div style={{ color: "#6b7280" }}>Keine Aufgaben</div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {tasks.map((t) => {
-                const isOpen = !!expanded[t.id];
-                const { total, done } = subStats(t.id);
-                const progress = total ? Math.round((done / total) * 100) : 0;
-                const list = subtasksByTask[t.id] || [];
+
+          <div style={{ ...styles.listRow, fontWeight: 900, color: "#334155" }}>
+            <div>Titel</div>
+            <div>Status</div>
+            <div>Bereich</div>
+            <div>Fällig</div>
+            <div>Aktion</div>
+          </div>
+
+          {tasks.map((t) => (
+            <div key={t.id} style={styles.listRow}>
+              <div style={{ fontWeight: 800 }}>{t.title}</div>
+              <div>
+                <span style={styles.pill(t.status === "done")}>{t.status}</span>
+              </div>
+              <div>{t.area_name || "—"}</div>
+              <div>
+                {t.due_at ? (
+                  <input
+                    type="datetime-local"
+                    style={{ ...styles.input, minWidth: 210 }}
+                    value={new Date(t.due_at).toISOString().slice(0, 16)}
+                    onChange={(e) => updateTaskDueAt(t.id, isoFromLocalInput(e.target.value))}
+                  />
+                ) : (
+                  <input
+                    type="datetime-local"
+                    style={{ ...styles.input, minWidth: 210 }}
+                    value={""}
+                    onChange={(e) => updateTaskDueAt(t.id, isoFromLocalInput(e.target.value))}
+                  />
+                )}
+              </div>
+              <div>
+                <button style={styles.btn} onClick={() => toggleTaskStatus(t.id)}>
+                  Status
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {tasks.length === 0 && <div style={{ marginTop: 10, color: "#64748b" }}>Keine Aufgaben</div>}
+        </div>
+      )}
+
+      {activeTab === "calendar" && (
+        <div style={{ ...styles.section, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={styles.card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ fontSize: 16, fontWeight: 900 }}>Kalender</div>
+
+                <button style={styles.btn} onClick={() => setCalMonth((m) => addMonths(m, -1))}>
+                  ◀
+                </button>
+                <div style={{ fontWeight: 900 }}>{monthLabel}</div>
+                <button style={styles.btn} onClick={() => setCalMonth((m) => addMonths(m, 1))}>
+                  ▶
+                </button>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <select style={styles.select} value={calStatus} onChange={(e) => setCalStatus(e.target.value)}>
+                  <option value="">Alle Status</option>
+                  <option value="todo">todo</option>
+                  <option value="done">done</option>
+                </select>
+
+                <select style={styles.select} value={calArea} onChange={(e) => setCalArea(e.target.value)}>
+                  <option value="">Alle Bereiche</option>
+                  {areas.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  style={styles.btn}
+                  onClick={() => {
+                    const today = new Date();
+                    setCalMonth(startOfMonth(today));
+                    setCalSelectedDay(ymdLocal(today));
+                  }}
+                >
+                  Heute
+                </button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12, color: "#64748b", fontSize: 13 }}>
+              Tipp: Aufgaben ohne Fälligkeitsdatum erscheinen nicht im Kalender.
+            </div>
+
+            <div style={{ marginTop: 14, ...styles.calGrid }}>
+              {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((d) => (
+                <div key={d} style={{ fontWeight: 900, color: "#475569", paddingLeft: 6 }}>
+                  {d}
+                </div>
+              ))}
+
+              {calDays.map((d) => {
+                const key = ymdLocal(d);
+                const inMonth = d.getMonth() === calMonth.getMonth();
+                const selected = key === calSelectedDay;
+                const count = calCountByDay[key] || 0;
 
                 return (
                   <div
-                    key={t.id}
+                    key={key}
+                    onClick={() => setCalSelectedDay(key)}
                     style={{
-                      padding: 12,
-                      border: "1px solid #e5e7eb",
-                      borderRadius: 14,
-                      background: "white",
+                      ...styles.calCell(selected),
+                      opacity: inMonth ? 1 : 0.35,
                     }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontWeight: 900 }}>
-                          {t.title}
-                          <Pill tone={t.status === "done" ? "green" : "orange"}>{t.status}</Pill>
-                        </div>
-
-                        <div style={{ color: "#374151", fontSize: 13, marginTop: 4 }}>
-                          Bereich: {areaName(t)}
-                          {t.due_at ? ` • Fällig: ${fmtDue(t.due_at)}` : ""}
-                          {guideTitle(t) ? ` • Anleitung: ${guideTitle(t)}` : ""}
-                        </div>
-
-                        <div style={{ marginTop: 10, fontSize: 13, color: "#374151" }}>
-                          Unteraufgaben <span style={{ float: "right" }}>{done}/{total}</span>
-                          <div style={{ height: 10, background: "#eef2ff", borderRadius: 999, overflow: "hidden", marginTop: 6 }}>
-                            <div style={{ height: "100%", width: `${progress}%`, background: "#0f7a2a" }} />
-                          </div>
-                        </div>
-                      </div>
-
-                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                        <button style={btnGhost} onClick={() => toggleExpand(t.id)}>
-                          {isOpen ? "Zuklappen" : "Aufklappen"}
-                        </button>
-                        <button style={btnGhost} onClick={() => toggleTaskStatus(t.id, t.status)}>
-                          Status
-                        </button>
-                        <button style={{ ...btnGhost, borderColor: "#fecaca" }} onClick={() => deleteTask(t.id)}>
-                          Löschen
-                        </button>
-                      </div>
-                    </div>
-
-                    {isOpen && (
-                      <div style={{ marginTop: 12 }}>
-                        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                          <input
-                            placeholder="Unteraufgabe hinzufügen…"
-                            value={subtaskDraft[t.id] || ""}
-                            onChange={(e) => setSubtaskDraft((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                            style={{ flex: 1, padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
-                          />
-                          <button style={btnGreen} onClick={() => addSubtask(t.id)}>
-                            +
-                          </button>
-                        </div>
-
-                        <div style={{ marginTop: 10 }}>
-                          {list.length === 0 ? (
-                            <div style={{ color: "#6b7280" }}>Keine Unteraufgaben</div>
-                          ) : (
-                            list.map((s) => (
-                              <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 2px" }}>
-                                <input type="checkbox" checked={!!s.is_done} onChange={() => toggleSubtask(s)} />
-                                <div style={{ flex: 1, textDecoration: s.is_done ? "line-through" : "none" }}>
-                                  {s.title}
-                                </div>
-                                <button style={btnGhost} onClick={() => deleteSubtask(s)}>
-                                  Entfernen
-                                </button>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    )}
+                    <div style={{ fontWeight: 900 }}>{d.getDate()}</div>
+                    {count > 0 ? <div style={styles.calBadge(selected)}>{count}</div> : <div />}
                   </div>
                 );
               })}
             </div>
-          )}
-        </div>      
-      ) : (
-        <div style={card}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10  }}>
-            <div style={{ fontSize: 16, fontWeight: 900  }}>Kalender</div>
-            <div style={{ display: "flex", gap: 8  }}>
-              <button
-                style={btnGhost}
-                onClick={() => setCalMonth((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}
-              >
-                ◀
-              </button>
-              <div style={{ fontWeight: 900, alignSelf: "center"  }}>
-                {calMonth.toLocaleString("de-DE", { month: "long", year: "numeric" })}
-              </div>
-              <button
-                style={btnGhost}
-                onClick={() => setCalMonth((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}
-              >
-                ▶
-              </button>
+          </div>
+
+          <div style={styles.card}>
+            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>
+              Termine am {new Date(calSelectedDay + "T00:00:00").toLocaleDateString("de-DE")}
             </div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-            <select
-              value={calStatusFilter}
-              onChange={(e) => setCalStatusFilter(e.target.value)}
-              style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #e5e7eb", fontWeight: 800 }}
-            >
-              <option value="all">Alle Status</option>
-              <option value="todo">Zu erledigen</option>
-              <option value="done">Erledigt</option>
-            </select>
 
-            <select
-              value={calAreaFilter}
-              onChange={(e) => setCalAreaFilter(e.target.value)}
-              style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #e5e7eb", fontWeight: 800 }}
-            >
-              <option value="">Alle Bereiche</option>
-              {areas.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-
-            <button
-              style={btnGhost}
-              onClick={() => {
-                const d = new Date();
-                const yyyy = d.getFullYear();
-                const mm = String(d.getMonth() + 1).padStart(2, "0");
-                const dd = String(d.getDate()).padStart(2, "0");
-                setCalMonth(new Date(d.getFullYear(), d.getMonth(), 1));
-                setCalSelectedDate(`${yyyy}-${mm}-${dd}`);
-              }}
-            >
-              Heute
-            </button>
-          </div>
-
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 14  }}>
-            {["Mo","Di","Mi","Do","Fr","Sa","So"].map((w) => (
-              <div key={w} style={{ fontSize: 12, color: "#6b7280", fontWeight: 900, textAlign: "center"  }}>
-                {w}
+            {calTasksForSelectedDay.map((t) => (
+              <div key={t.id} style={{ marginBottom: 10 }}>
+                <TaskCard t={t} compact={true} />
               </div>
             ))}
 
-            {(() => {
-              const start = monthStart(calMonth);
-              const lead = weekdayMon0(start);
-              const daysInMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0).getDate();
-              const cells = [];
-              for (let i = 0; i < lead; i++) cells.push(null);
-              for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(calMonth.getFullYear(), calMonth.getMonth(), d));
-
-              const itemsByDate = {};
-              for (const it of calFilteredItems) {
-                const key = toYMD(new Date(it.due_at));
-                itemsByDate[key] = (itemsByDate[key] || 0) + 1;
-              }
-
-              return cells.map((d, idx) => {
-                if (!d) return <div key={`e-${idx}`} />;
-                const key = toYMD(d);
-                const count = itemsByDate[key] || 0;
-                const isSelected = key === calSelectedDate;
-
-                return (
-                  <button
-                    key={key}
-                    onClick={() => setCalSelectedDate(key)}
-                    style={{
-                      border: "1px solid #e5e7eb",
-                      background: isSelected ? "#0f7a2a" : "white",
-                      color: isSelected ? "white" : "#111827",
-                      borderRadius: 14,
-                      padding: "10px 8px",
-                      textAlign: "left",
-                      cursor: "pointer",
-                      minHeight: 54,
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline"  }}>
-                      <div style={{ fontWeight: 900  }}>{d.getDate()}</div>
-                      {count > 0 && (
-                        <div style={{
-                          fontSize: 12,
-                          fontWeight: 900,
-                          background: isSelected ? "rgba(255,255,255,0.2)" : "#eef2ff",
-                          padding: "2px 8px",
-                          borderRadius: 999,
-                        }}>
-                          {count}
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                );
-              });
-            })()}
+            {calTasksForSelectedDay.length === 0 && <div style={{ color: "#64748b" }}>Keine Termine</div>}
           </div>
-
-          <div style={{ fontWeight: 900, marginBottom: 8  }}>
-            Termine am {(() => {
-              const [y,m,d] = calSelectedDate.split("-");
-              return `${d}.${m}.${y}`;
-            })()}
-          </div>
-
-          {(() => {
-            const dayItems = (calFilteredItems || [])
-              .filter((it) => toYMD(new Date(it.due_at)) === calSelectedDate)
-              .sort((a,b) => new Date(a.due_at) - new Date(b.due_at));
-
-            if (dayItems.length === 0) {
-              return <div style={{ color: "#6b7280"  }}>Keine Aufgaben an diesem Tag</div>;
-            }
-
-            return (
-              <div style={{ display: "grid", gap: 10  }}>
-                {dayItems.map((it) => (
-                  <div key={it.id} style={{ padding: 12, border: "1px solid #e5e7eb", borderRadius: 14, display: "flex", justifyContent: "space-between", gap: 12  }}>
-                    <div style={{ minWidth: 0  }}>
-                      <div style={{ fontWeight: 900  }}>
-                        {it.title}
-                        <Pill tone={it.status === "done" ? "green" : "orange"}>{it.status}</Pill>
-                      </div>
-                      <div style={{ fontSize: 13, color: "#374151", marginTop: 4  }}>
-                        {fmtDue(it.due_at)}
-                        {it.area_name ? ` • Bereich: ${it.area_name}` : ""}
-                        {it.guide_title ? ` • Anleitung: ${it.guide_title}` : ""}
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                      <button style={btnGhost} onClick={() => gotoTask(it.id)}>Öffnen</button>
-                      <button style={btnGhost} onClick={() => toggleTaskStatus(it.id, it.status)}>Status</button>
-                    </div>
-
-                    {(typeof it.total_subtasks === "number" && it.total_subtasks > 0) && (
-                      <div style={{ marginTop: 6, fontSize: 12, color: "#374151" }}>
-                        Unteraufgaben: {(it.done_subtasks ?? 0)}/{it.total_subtasks}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
         </div>
       )}
+    </div>
+  );
+}
 
+/* ---------------- Login Component ---------------- */
+function Login({ supabase }) {
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+
+  const login = async () => {
+    setErr("");
+    if (!supabase) return setErr("Supabase nicht initialisiert – ENV prüfen.");
+    const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
+    if (error) setErr(error.message);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f4f7fb", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ width: 420, background: "white", border: "1px solid #e5e7eb", borderRadius: 18, padding: 20 }}>
+        <div style={{ fontSize: 20, fontWeight: 900, marginBottom: 14 }}>Bitte einloggen</div>
+        {err ? (
+          <div style={{ background: "#fee2e2", color: "#991b1b", border: "1px solid #fecaca", padding: 10, borderRadius: 12, marginBottom: 12, fontWeight: 800 }}>
+            {err}
+          </div>
+        ) : null}
+        <input
+          style={{ width: "100%", padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", marginBottom: 10 }}
+          placeholder="E-Mail"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <input
+          style={{ width: "100%", padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", marginBottom: 12 }}
+          type="password"
+          placeholder="Passwort"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+        />
+        <button
+          style={{ width: "100%", padding: "10px 16px", borderRadius: 14, border: "none", background: "#0f7a2a", color: "white", cursor: "pointer", fontWeight: 900 }}
+          onClick={login}
+        >
+          Login
+        </button>
+      </div>
     </div>
   );
 }
