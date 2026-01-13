@@ -122,14 +122,14 @@ export default function DashboardPage() {
     // Prefer view v_tasks_ui (enriched), fallback to tasks
     let res = await supabase
       .from("v_tasks_ui")
-      .select("id,title,status,is_done,created_at,updated_at,due_at,area_id,area_name,guide_id,guide_title")
+      .select("id,title,status,is_done,created_at,due_at,area_id,area_name,guide_id,guide_title")
       .order("created_at", { ascending: false });
 
     if (res.error) {
       // fallback
       res = await supabase
         .from("tasks")
-        .select("id,title,status,created_at,updated_at,due_at,area_id,guide_id")
+        .select("id,title,status,created_at,due_at,area_id,guide_id")
         .order("created_at", { ascending: false });
     }
 
