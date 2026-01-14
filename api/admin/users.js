@@ -1,44 +1,68 @@
 // pages/api/admin/users.js
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+/**
+ * REQUIREMENTS (Vercel / .env):
+ * - NEXT_PUBLIC_SUPABASE_URL
+ * - SUPABASE_SERVICE_ROLE_KEY  (server-side only!)
+ *
+ * Supported actions (POST JSON):
+ * { action: "list", payload: {} }
+ * { action: "createUser", payload: { email, password, role, name } }
+ * { action: "setPassword", payload: { userId, password } }
+ * { action: "setRole", payload: { userId, role } }
+ *
+ * NOTE:
+ * This route uses the Service Role key and should never be exposed client-side.
+ * We additionally verify the caller is an admin by reading public.profiles.role.
+ */
 
-function json(res, status, body) {
-  res.status(status).json(body);
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+async function getBearerToken(req) {
+  const h = req.headers?.authorization || req.headers?.Authorization || "";
+  if (!h) return null;
+  const m = String(h).match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] : null;
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    return json(res, 500, { error: "Missing SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_URL" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Methode nicht erlaubt" });
   }
 
-  const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (!token) return json(res, 401, { error: "Missing bearer token" });
-
-  const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
-  if (userErr || !userData?.user) return json(res, 401, { error: "Invalid token" });
-
-  const requesterId = userData.user.id;
-
-  const { data: prof, error: profErr } = await supabaseAdmin
-    .from("profiles")
-    .select("role")
-    .eq("id", requesterId)
-    .maybeSingle();
-
-  const isAdmin = !profErr && prof?.role === "admin";
-  if (!isAdmin) return json(res, 403, { error: "Not authorized", isAdmin: false });
-
-  const { action, ...payload } = req.body || {};
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(500).json({
+      error: "Server ENV fehlt: NEXT_PUBLIC_SUPABASE_URL oder SUPABASE_SERVICE_ROLE_KEY",
+    });
+  }
 
   try {
+    const token = await getBearerToken(req);
+    if (!token) return res.status(401).json({ error: "Nicht angemeldet" });
+
+    // verify caller
+    const { data: caller, error: callerErr } = await supabaseAdmin.auth.getUser(token);
+    if (callerErr) return res.status(401).json({ error: "Ungültige Session" });
+
+    const callerId = caller?.user?.id;
+    if (!callerId) return res.status(401).json({ error: "Ungültige Session" });
+
+    const { data: prof, error: profErr } = await supabaseAdmin
+      .from("profiles")
+      .select("role")
+      .eq("id", callerId)
+      .maybeSingle();
+
+    if (profErr) return res.status(403).json({ error: "Profilprüfung fehlgeschlagen" });
+    if ((prof?.role || "user") !== "admin") return res.status(403).json({ error: "Keine Admin-Rechte" });
+
+    const { action, payload } = req.body || {};
+
+    // LIST
     if (action === "list") {
       const { data, error } = await supabaseAdmin
         .from("profiles")
@@ -46,63 +70,75 @@ export default async function handler(req, res) {
         .order("created_at", { ascending: false });
 
       if (error) throw error;
-      return json(res, 200, { isAdmin: true, users: data || [] });
+      return res.status(200).json({ users: data || [], isAdmin: true });
     }
 
-    if (action === "create") {
-      const email = String(payload.email || "").trim().toLowerCase();
-      const name = String(payload.name || "").trim();
-      const role = payload.role === "admin" ? "admin" : "user";
-      let tempPassword = String(payload.tempPassword || "").trim();
+    // CREATE USER
+    if (action === "createUser") {
+      const email = String(payload?.email || "").trim();
+      const password = String(payload?.password || "").trim();
+      const role = String(payload?.role || "user").trim();
+      const name = payload?.name ? String(payload.name).trim() : null;
 
-      if (!email) return json(res, 400, { error: "Email missing" });
-      if (!tempPassword) {
-        tempPassword = (Math.random().toString(36).slice(2) + "A!" + Math.random().toString(36).slice(2)).slice(0, 14);
-      }
+      if (!email) return res.status(400).json({ error: "E-Mail fehlt" });
+      if (!password || password.length < 8)
+        return res.status(400).json({ error: "Passwort fehlt/zu kurz (min. 8 Zeichen)" });
 
-      const { data: created, error: cErr } = await supabaseAdmin.auth.admin.createUser({
+      const { data, error } = await supabaseAdmin.auth.admin.createUser({
         email,
-        password: tempPassword,
+        password,
         email_confirm: true,
       });
-      if (cErr) throw cErr;
-
-      const { error: upErr } = await supabaseAdmin.from("profiles").upsert({
-        id: created.user.id,
-        email,
-        name: name || null,
-        role,
-      });
-      if (upErr) throw upErr;
-
-      return json(res, 200, { ok: true, id: created.user.id, tempPassword });
-    }
-
-    if (action === "update") {
-      const id = String(payload.id || "").trim();
-      const name = String(payload.name || "").trim();
-      const role = payload.role === "admin" ? "admin" : "user";
-      if (!id) return json(res, 400, { error: "id missing" });
-
-      const { error } = await supabaseAdmin.from("profiles").update({ name: name || null, role }).eq("id", id);
       if (error) throw error;
 
-      return json(res, 200, { ok: true });
+      const userId = data?.user?.id;
+      if (!userId) return res.status(500).json({ error: "User-ID fehlt nach createUser" });
+
+      const { error: pErr } = await supabaseAdmin.from("profiles").upsert(
+        {
+          id: userId,
+          email,
+          name,
+          role: role === "admin" ? "admin" : "user",
+        },
+        { onConflict: "id" }
+      );
+      if (pErr) throw pErr;
+
+      return res.status(200).json({ success: true, userId });
     }
 
+    // SET PASSWORD
     if (action === "setPassword") {
-      const id = String(payload.id || "").trim();
-      const password = String(payload.password || "").trim();
-      if (!id || !password) return json(res, 400, { error: "id/password missing" });
+      const userId = String(payload?.userId || "").trim();
+      const password = String(payload?.password || "").trim();
+      if (!userId) return res.status(400).json({ error: "userId fehlt" });
+      if (!password || password.length < 8)
+        return res.status(400).json({ error: "Passwort fehlt/zu kurz (min. 8 Zeichen)" });
 
-      const { error } = await supabaseAdmin.auth.admin.updateUserById(id, { password });
+      const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, { password });
       if (error) throw error;
 
-      return json(res, 200, { ok: true });
+      return res.status(200).json({ success: true });
     }
 
-    return json(res, 400, { error: "Unknown action" });
-  } catch (e) {
-    return json(res, 500, { error: e?.message || String(e) });
+    // SET ROLE
+    if (action === "setRole") {
+      const userId = String(payload?.userId || "").trim();
+      const role = String(payload?.role || "user").trim();
+      if (!userId) return res.status(400).json({ error: "userId fehlt" });
+
+      const { error } = await supabaseAdmin
+        .from("profiles")
+        .update({ role: role === "admin" ? "admin" : "user", updated_at: new Date().toISOString() })
+        .eq("id", userId);
+
+      if (error) throw error;
+      return res.status(200).json({ success: true });
+    }
+
+    return res.status(400).json({ error: "Unbekannte Aktion" });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message || String(err) });
   }
 }
