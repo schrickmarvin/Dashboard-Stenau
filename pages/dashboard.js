@@ -483,7 +483,9 @@ export default function Dashboard() {
     (async () => {
       try {
         await mustSupabase();
-        const u = await getUser();
+        // robust: prefer session as source of truth
+        const { data } = await supabase.auth.getSession();
+        const u = data?.session?.user || (await getUser());
         setUser(u);
       } catch (e) {
         setErr(String(e?.message || e));
@@ -493,13 +495,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!supabase) return;
-    const { data: sub } = supabase.auth.onAuthStateChange(async () => {
-      try {
-        const u = await getUser();
-        setUser(u);
-      } catch (e) {
-        setErr(String(e?.message || e));
-      }
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      // robust: use session user directly
+      setUser(session?.user || null);
     });
     return () => sub?.subscription?.unsubscribe?.();
   }, []);
@@ -742,6 +740,9 @@ export default function Dashboard() {
                     setAuthMsg("");
                     try {
                       await signIn(email, pw);
+                      // immediate UI update (avoid relying only on auth event)
+                      const { data } = await supabase.auth.getSession();
+                      if (data?.session?.user) setUser(data.session.user);
                     } catch (e) {
                       setAuthMsg(String(e?.message || e));
                     }
