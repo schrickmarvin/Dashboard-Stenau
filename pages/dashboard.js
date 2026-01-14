@@ -14,14 +14,6 @@ const supabase =
 /* ---------------- Small utils ---------------- */
 const pad2 = (n) => String(n).padStart(2, "0");
 
-function toLocalDateTimeInputValue(date) {
-  // yyyy-MM-ddTHH:mm for <input type="datetime-local" />
-  const d = new Date(date);
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(
-    d.getHours()
-  )}:${pad2(d.getMinutes())}`;
-}
-
 function safeDate(v) {
   if (!v) return null;
   const d = new Date(v);
@@ -325,7 +317,6 @@ async function signOut() {
 }
 
 async function fetchAreas() {
-  // Falls du areas nicht nutzt, kommt einfach []
   try {
     const { data, error } = await supabase.from("areas").select("id,name").order("name");
     if (error) throw error;
@@ -351,7 +342,6 @@ async function fetchTasks() {
 }
 
 async function fetchSubtasksForTask(taskId) {
-  // Optional (wenn subtasks Tabelle existiert)
   try {
     const { data, error } = await supabase
       .from("subtasks")
@@ -522,7 +512,6 @@ export default function Dashboard() {
       setGuides(g);
       setTasks(t);
 
-      // Subtasks nachladen (für Board/Liste direkt sichtbar)
       const map = {};
       for (const task of t) {
         const subs = await fetchSubtasksForTask(task.id);
@@ -611,7 +600,6 @@ export default function Dashboard() {
       }));
       setSubInputByTask((prev) => ({ ...prev, [taskId]: "" }));
     } catch (e) {
-      // subtasks optional - zeige saubere Fehlermeldung
       setErr(String(e?.message || e));
     }
   }
@@ -695,7 +683,6 @@ export default function Dashboard() {
     const startM = startOfMonth(cursor);
     const endM = endOfMonth(cursor);
 
-    // Monday start
     const startDay = new Date(startM);
     const dow = (startDay.getDay() + 6) % 7;
     const gridStart = addDays(startDay, -dow);
@@ -789,13 +776,11 @@ export default function Dashboard() {
     );
   }
 
-  /* -------- Derived: board columns -------- */
   const todoTasks = tasks.filter((t) => (t.status || "todo") === "todo");
   const doneTasks = tasks.filter((t) => (t.status || "todo") === "done");
 
   return (
     <div style={S.page}>
-      {/* Topbar */}
       <div style={S.topbar}>
         <div style={S.brand}>Dashboard</div>
 
@@ -839,7 +824,6 @@ export default function Dashboard() {
       {err ? <div style={S.err}>{err}</div> : null}
 
       <div style={S.container}>
-        {/* Create form (wie Screenshot) */}
         <div style={S.card}>
           <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>Aufgabe anlegen</div>
           <div style={S.formRow}>
@@ -854,13 +838,7 @@ export default function Dashboard() {
               ))}
             </select>
 
-            <input
-              style={S.input}
-              type="datetime-local"
-              value={newDueAt}
-              onChange={(e) => setNewDueAt(e.target.value)}
-              placeholder="tt.mm.jjjj --:--"
-            />
+            <input style={S.input} type="datetime-local" value={newDueAt} onChange={(e) => setNewDueAt(e.target.value)} />
 
             <select style={S.select} value={newStatus} onChange={(e) => setNewStatus(e.target.value)}>
               <option value="todo">Zu erledigen</option>
@@ -882,7 +860,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* TAB: BOARD */}
         {tab === "board" && (
           <div style={S.board}>
             <div style={S.column}>
@@ -945,112 +922,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* TAB: LIST */}
-        {tab === "list" && (
-          <div style={S.listLayout}>
-            {tasks.map((task) => (
-              <div key={task.id} style={S.card}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                      <div style={{ fontSize: 16, fontWeight: 900 }}>{task.title}</div>
-                      <div style={S.tag(task.status || "todo")}>{(task.status || "todo") === "done" ? "done" : "todo"}</div>
-                    </div>
-                    <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>
-                      {taskMetaLine(task)}
-                    </div>
-
-                    {/* Task guide quick */}
-                    <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                      <select
-                        style={{ ...S.select, minWidth: 240 }}
-                        value={task.guide_id || ""}
-                        onChange={(e) => setTaskGuide(task.id, e.target.value || null)}
-                      >
-                        <option value="">Anleitung</option>
-                        {guides.map((g) => (
-                          <option key={g.id} value={g.id}>
-                            {g.title}
-                          </option>
-                        ))}
-                      </select>
-
-                      <button
-                        style={S.ghostBtn}
-                        onClick={() => {
-                          const g = task.guide_id ? guidesById[task.guide_id] : null;
-                          if (!g) return;
-                          openGuide(g);
-                        }}
-                      >
-                        Öffnen
-                      </button>
-                    </div>
-
-                    {/* Subtasks */}
-                    <div style={{ marginTop: 10 }}>
-                      <div style={{ fontSize: 13, fontWeight: 900 }}>
-                        Unteraufgaben {subStats(task.id).done}/{subStats(task.id).total}
-                      </div>
-                      <div style={S.progressBg}>
-                        <div style={S.progressBar(subStats(task.id).pct)} />
-                      </div>
-
-                      {(subtasksByTask[task.id] || []).map((s) => (
-                        <div key={s.id} style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
-                          <input type="checkbox" checked={!!s.done} onChange={() => toggleSubtask(task.id, s)} />
-                          <div style={{ textDecoration: s.done ? "line-through" : "none" }}>{s.title}</div>
-
-                          <select
-                            style={{ ...S.select, minWidth: 220, marginLeft: "auto" }}
-                            value={s.guide_id || ""}
-                            onChange={(e) => setSubtaskGuide(task.id, s.id, e.target.value || null)}
-                          >
-                            <option value="">Anleitung</option>
-                            {guides.map((g) => (
-                              <option key={g.id} value={g.id}>
-                                {g.title}
-                              </option>
-                            ))}
-                          </select>
-
-                          <button
-                            style={S.ghostBtn}
-                            onClick={() => {
-                              const g = s.guide_id ? guidesById[s.guide_id] : null;
-                              if (!g) return;
-                              openGuide(g);
-                            }}
-                          >
-                            Öffnen
-                          </button>
-                        </div>
-                      ))}
-
-                      <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                        <input
-                          style={S.input}
-                          placeholder="Unteraufgabe hinzufügen..."
-                          value={subInputByTask[task.id] || ""}
-                          onChange={(e) => setSubInputByTask((p) => ({ ...p, [task.id]: e.target.value }))}
-                        />
-                        <button style={S.plusBtn} onClick={() => addSubtask(task.id)}>
-                          +
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button style={S.statusBtn} onClick={() => toggleTaskStatus(task)}>
-                    Status
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* TAB: CALENDAR */}
         {tab === "calendar" && (
           <div style={{ ...S.card, marginTop: 14 }}>
             <div style={S.calHeader}>
@@ -1077,15 +948,7 @@ export default function Dashboard() {
                 const key = ymd(d);
                 const dayTasks = tasksByDay[key] || [];
                 return (
-                  <div
-                    key={key}
-                    style={S.calCell(!inMonth)}
-                    onClick={() => {
-                      // Mini-Shortcut: beim Klick auf Tag springe zur Liste und filtere nicht, aber der Tag ist sichtbar über Date in cards
-                      setTab("list");
-                    }}
-                    title={key}
-                  >
+                  <div key={key} style={S.calCell(!inMonth)} title={key}>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
                       <div style={{ fontSize: 13, fontWeight: 900 }}>{d.getDate()}</div>
                       {key === ymd(new Date()) ? <div style={S.tag("done")}>Heute</div> : null}
@@ -1118,7 +981,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* TAB: GUIDES (das ist der fehlende Bereich) */}
         {tab === "guides" && (
           <div style={{ display: "grid", gap: 14, marginTop: 14 }}>
             <div style={S.card}>
@@ -1217,7 +1079,6 @@ export default function Dashboard() {
                           try {
                             await deleteGuide(g);
                             setGuides((prev) => prev.filter((x) => x.id !== g.id));
-                            // FK on delete set null sorgt dafür, dass Tasks/Subtasks sauber bleiben
                             await reloadAll();
                           } catch (e) {
                             setErr(String(e?.message || e));
@@ -1237,7 +1098,6 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Viewer Modal */}
       {viewerOpen && (
         <div style={S.modalBg} onClick={closeViewer}>
           <div style={S.modal} onClick={(e) => e.stopPropagation()}>
