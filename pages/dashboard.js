@@ -13,18 +13,15 @@ const supabase =
 
 /* ---------------- Small utils ---------------- */
 const pad2 = (n) => String(n).padStart(2, "0");
-
 function safeDate(v) {
   if (!v) return null;
   const d = new Date(v);
   return isNaN(d.getTime()) ? null : d;
 }
-
 function ymd(d) {
   const x = new Date(d);
   return `${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}`;
 }
-
 function startOfMonth(d) {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
@@ -37,7 +34,7 @@ function addDays(d, n) {
   return x;
 }
 
-/* ---------------- Styles (ähnlich Screenshot) ---------------- */
+/* ---------------- Styles ---------------- */
 const S = {
   page: {
     minHeight: "100vh",
@@ -123,6 +120,15 @@ const S = {
     background: "#fff",
     cursor: "pointer",
   },
+  multiSelect: {
+    width: "100%",
+    border: "1px solid #e5e7eb",
+    borderRadius: 14,
+    padding: "8px 10px",
+    fontSize: 14,
+    outline: "none",
+    background: "#fff",
+  },
   primary: {
     border: "0",
     background: "#0b7a2b",
@@ -155,10 +161,7 @@ const S = {
     marginBottom: 10,
   },
   colTitle: { fontSize: 16, fontWeight: 800 },
-  badgeCount: {
-    fontSize: 12,
-    opacity: 0.7,
-  },
+  badgeCount: { fontSize: 12, opacity: 0.7 },
 
   taskCard: {
     border: "1px solid #eef2f7",
@@ -205,11 +208,7 @@ const S = {
     marginTop: 6,
     marginBottom: 10,
   },
-  progressBar: (pct) => ({
-    height: "100%",
-    width: `${pct}%`,
-    background: "#0b7a2b",
-  }),
+  progressBar: (pct) => ({ height: "100%", width: `${pct}%`, background: "#0b7a2b" }),
   subtaskRow: { display: "flex", alignItems: "center", gap: 10, marginTop: 8 },
   subtaskInputRow: { display: "flex", alignItems: "center", gap: 10, marginTop: 10 },
   plusBtn: {
@@ -244,7 +243,6 @@ const S = {
     minHeight: 86,
     background: "#fff",
     opacity: muted ? 0.5 : 1,
-    cursor: "pointer",
   }),
   calDow: { fontSize: 12, opacity: 0.7, paddingLeft: 8 },
 
@@ -278,7 +276,14 @@ const S = {
     display: "grid",
     gridTemplateRows: "auto 1fr",
   },
-  modalHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: 12, borderBottom: "1px solid #eef2f7" },
+  modalHead: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    padding: 12,
+    borderBottom: "1px solid #eef2f7",
+  },
   modalTitle: { fontSize: 14, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   modalClose: {
     border: "1px solid #e5e7eb",
@@ -291,18 +296,16 @@ const S = {
   },
 };
 
-/* ---------------- Supabase data functions ---------------- */
+/* ---------------- Supabase helpers ---------------- */
 async function mustSupabase() {
   if (!supabase) throw new Error("Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY");
 }
-
 async function getUser() {
   await mustSupabase();
   const { data, error } = await supabase.auth.getUser();
   if (error) throw error;
   return data?.user || null;
 }
-
 async function signIn(email, password) {
   const { error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) throw error;
@@ -316,6 +319,7 @@ async function signOut() {
   if (error) throw error;
 }
 
+/* ---------------- Data ---------------- */
 async function fetchAreas() {
   try {
     const { data, error } = await supabase.from("areas").select("id,name").order("name");
@@ -355,13 +359,39 @@ async function fetchSubtasksForTask(taskId) {
   }
 }
 
+/* ---- NEW: task_guides join (many-to-many) ---- */
+async function fetchTaskGuideLinks() {
+  const { data, error } = await supabase.from("task_guides").select("task_id,guide_id");
+  if (error) throw error;
+  const map = {};
+  for (const r of data || []) {
+    if (!map[r.task_id]) map[r.task_id] = [];
+    map[r.task_id].push(r.guide_id);
+  }
+  for (const k of Object.keys(map)) map[k] = Array.from(new Set(map[k]));
+  return map;
+}
+
+async function setTaskGuideLinks(taskId, guideIds) {
+  const gids = (guideIds || []).filter(Boolean);
+
+  const { error: delErr } = await supabase.from("task_guides").delete().eq("task_id", taskId);
+  if (delErr) throw delErr;
+
+  if (gids.length === 0) return;
+
+  const rows = gids.map((gid) => ({ task_id: taskId, guide_id: gid }));
+  const { error: insErr } = await supabase.from("task_guides").insert(rows);
+  if (insErr) throw insErr;
+}
+
 async function insertTask({ title, area_id, due_at, status, guide_id }) {
   const payload = {
     title,
     area_id: area_id || null,
     due_at: due_at || null,
     status: status || "todo",
-    guide_id: guide_id || null,
+    guide_id: guide_id || null, // compatibility
   };
   const { data, error } = await supabase.from("tasks").insert([payload]).select("*").single();
   if (error) throw error;
@@ -441,7 +471,7 @@ async function signedGuideUrl(guide) {
 /* ---------------- Component ---------------- */
 export default function Dashboard() {
   const [user, setUser] = useState(null);
-  const [authMode, setAuthMode] = useState("login"); // login | signup
+  const [authMode, setAuthMode] = useState("login");
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [authMsg, setAuthMsg] = useState("");
@@ -454,15 +484,18 @@ export default function Dashboard() {
   const guidesById = useMemo(() => Object.fromEntries((guides || []).map((g) => [g.id, g])), [guides]);
 
   const [tasks, setTasks] = useState([]);
-  const [subtasksByTask, setSubtasksByTask] = useState({}); // { [taskId]: subtasks[] }
-  const [subInputByTask, setSubInputByTask] = useState({}); // { [taskId]: string }
+  const [subtasksByTask, setSubtasksByTask] = useState({});
+  const [subInputByTask, setSubInputByTask] = useState({});
 
-  // Create form (wie Screenshot: Titel, Bereich, Datum/Uhrzeit, Status, Anleitung)
+  // many-to-many
+  const [taskGuideIdsByTask, setTaskGuideIdsByTask] = useState({}); // { taskId: [guideId,...] }
+
+  // Create form
   const [newTitle, setNewTitle] = useState("");
   const [newAreaId, setNewAreaId] = useState("");
   const [newDueAt, setNewDueAt] = useState("");
   const [newStatus, setNewStatus] = useState("todo");
-  const [newGuideId, setNewGuideId] = useState("");
+  const [newGuideIds, setNewGuideIds] = useState([]);
 
   // Kalender
   const [calCursor, setCalCursor] = useState(() => new Date());
@@ -473,7 +506,7 @@ export default function Dashboard() {
   const [gVis, setGVis] = useState("all");
   const [gFile, setGFile] = useState(null);
 
-  // Viewer modal (Guide öffnen)
+  // Viewer modal
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerTitle, setViewerTitle] = useState("");
   const [viewerUrl, setViewerUrl] = useState(null);
@@ -483,7 +516,6 @@ export default function Dashboard() {
     (async () => {
       try {
         await mustSupabase();
-        // robust: prefer session as source of truth
         const { data } = await supabase.auth.getSession();
         const u = data?.session?.user || (await getUser());
         setUser(u);
@@ -496,7 +528,6 @@ export default function Dashboard() {
   useEffect(() => {
     if (!supabase) return;
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
-      // robust: use session user directly
       setUser(session?.user || null);
     });
     return () => sub?.subscription?.unsubscribe?.();
@@ -510,12 +541,27 @@ export default function Dashboard() {
       setGuides(g);
       setTasks(t);
 
-      const map = {};
+      const subsMap = {};
       for (const task of t) {
         const subs = await fetchSubtasksForTask(task.id);
-        map[task.id] = subs;
+        subsMap[task.id] = subs;
       }
-      setSubtasksByTask(map);
+      setSubtasksByTask(subsMap);
+
+      // links
+      try {
+        const links = await fetchTaskGuideLinks();
+        const merged = { ...links };
+        for (const task of t) {
+          if (!merged[task.id] || merged[task.id].length === 0) {
+            if (task.guide_id) merged[task.id] = [task.guide_id];
+          }
+        }
+        setTaskGuideIdsByTask(merged);
+      } catch (e) {
+        setTaskGuideIdsByTask({});
+        setErr(String(e?.message || e));
+      }
     } catch (e) {
       setErr(String(e?.message || e));
     }
@@ -526,21 +572,11 @@ export default function Dashboard() {
     reloadAll();
   }, [user]);
 
-  /* -------- Task helpers -------- */
   const areaNameById = useMemo(() => {
     const map = {};
     (areas || []).forEach((a) => (map[a.id] = a.name));
     return map;
   }, [areas]);
-
-  function taskMetaLine(task) {
-    const parts = [];
-    const a = task.area_id ? areaNameById[task.area_id] : null;
-    if (a) parts.push(`Bereich: ${a}`);
-    const d = safeDate(task.due_at);
-    if (d) parts.push(`Fällig: ${d.toLocaleString("de-DE")}`);
-    return parts.join(" • ") || "Bereich: —";
-  }
 
   function subStats(taskId) {
     const subs = subtasksByTask[taskId] || [];
@@ -562,25 +598,52 @@ export default function Dashboard() {
     }
   }
 
+  const selectMultiple = (e) => Array.from(e.target.selectedOptions || []).map((o) => o.value);
+
   async function createNewTask() {
     if (!newTitle.trim()) return;
     setErr("");
     try {
       const due = newDueAt ? new Date(newDueAt).toISOString() : null;
+      const firstGuide = newGuideIds?.[0] || null;
+
       const created = await insertTask({
         title: newTitle.trim(),
         area_id: newAreaId || null,
         due_at: due,
         status: newStatus,
-        guide_id: newGuideId || null,
+        guide_id: firstGuide,
       });
+
+      if (newGuideIds && newGuideIds.length > 0) {
+        await setTaskGuideLinks(created.id, newGuideIds);
+        setTaskGuideIdsByTask((p) => ({ ...p, [created.id]: newGuideIds }));
+      } else {
+        setTaskGuideIdsByTask((p) => ({ ...p, [created.id]: [] }));
+      }
+
       setTasks((prev) => [created, ...prev]);
       setSubtasksByTask((prev) => ({ ...prev, [created.id]: [] }));
+
       setNewTitle("");
       setNewAreaId("");
       setNewDueAt("");
       setNewStatus("todo");
-      setNewGuideId("");
+      setNewGuideIds([]);
+    } catch (e) {
+      setErr(String(e?.message || e));
+    }
+  }
+
+  async function setTaskGuides(taskId, guideIds) {
+    setErr("");
+    try {
+      await setTaskGuideLinks(taskId, guideIds);
+      const first = guideIds?.[0] || null;
+      const updated = await updateTask(taskId, { guide_id: first });
+
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)));
+      setTaskGuideIdsByTask((p) => ({ ...p, [taskId]: guideIds || [] }));
     } catch (e) {
       setErr(String(e?.message || e));
     }
@@ -592,10 +655,7 @@ export default function Dashboard() {
     setErr("");
     try {
       const created = await insertSubtask({ task_id: taskId, title: v });
-      setSubtasksByTask((prev) => ({
-        ...prev,
-        [taskId]: [...(prev[taskId] || []), created],
-      }));
+      setSubtasksByTask((prev) => ({ ...prev, [taskId]: [...(prev[taskId] || []), created] }));
       setSubInputByTask((prev) => ({ ...prev, [taskId]: "" }));
     } catch (e) {
       setErr(String(e?.message || e));
@@ -615,30 +675,6 @@ export default function Dashboard() {
     }
   }
 
-  async function setTaskGuide(taskId, guideId) {
-    setErr("");
-    try {
-      const updated = await updateTask(taskId, { guide_id: guideId || null });
-      setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)));
-    } catch (e) {
-      setErr(String(e?.message || e));
-    }
-  }
-
-  async function setSubtaskGuide(taskId, subId, guideId) {
-    setErr("");
-    try {
-      const updated = await updateSubtask(subId, { guide_id: guideId || null });
-      setSubtasksByTask((prev) => ({
-        ...prev,
-        [taskId]: (prev[taskId] || []).map((s) => (s.id === subId ? updated : s)),
-      }));
-    } catch (e) {
-      setErr(String(e?.message || e));
-    }
-  }
-
-  /* -------- Guide viewer -------- */
   async function openGuide(guide) {
     setErr("");
     try {
@@ -663,7 +699,6 @@ export default function Dashboard() {
     setViewerText("");
   }
 
-  /* -------- Calendar -------- */
   const tasksByDay = useMemo(() => {
     const map = {};
     for (const t of tasks || []) {
@@ -679,24 +714,18 @@ export default function Dashboard() {
   const monthGrid = useMemo(() => {
     const cursor = calCursor;
     const startM = startOfMonth(cursor);
-    const endM = endOfMonth(cursor);
-
     const startDay = new Date(startM);
     const dow = (startDay.getDay() + 6) % 7;
     const gridStart = addDays(startDay, -dow);
-
     const days = [];
     for (let i = 0; i < 42; i++) days.push(addDays(gridStart, i));
-    return { startM, endM, days };
+    return { startM, days };
   }, [calCursor]);
 
-  /* -------- Auth UI -------- */
   if (!supabase) {
     return (
       <div style={S.page}>
-        <div style={S.err}>
-          Supabase ist nicht konfiguriert (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY).
-        </div>
+        <div style={S.err}>Supabase ist nicht konfiguriert (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY).</div>
       </div>
     );
   }
@@ -708,22 +737,10 @@ export default function Dashboard() {
           <div style={{ ...S.card, marginTop: 30 }}>
             <div style={{ fontSize: 20, fontWeight: 800 }}>Dashboard Login</div>
             <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
-              <button
-                style={S.pillBtn(authMode === "login")}
-                onClick={() => {
-                  setAuthMode("login");
-                  setAuthMsg("");
-                }}
-              >
+              <button style={S.pillBtn(authMode === "login")} onClick={() => { setAuthMode("login"); setAuthMsg(""); }}>
                 Login
               </button>
-              <button
-                style={S.pillBtn(authMode === "signup")}
-                onClick={() => {
-                  setAuthMode("signup");
-                  setAuthMsg("");
-                }}
-              >
+              <button style={S.pillBtn(authMode === "signup")} onClick={() => { setAuthMode("signup"); setAuthMsg(""); }}>
                 Registrieren
               </button>
             </div>
@@ -740,7 +757,6 @@ export default function Dashboard() {
                     setAuthMsg("");
                     try {
                       await signIn(email, pw);
-                      // immediate UI update (avoid relying only on auth event)
                       const { data } = await supabase.auth.getSession();
                       if (data?.session?.user) setUser(data.session.user);
                     } catch (e) {
@@ -786,21 +802,11 @@ export default function Dashboard() {
         <div style={S.brand}>Dashboard</div>
 
         <div style={S.tabs}>
-          <button style={S.pillBtn(tab === "board")} onClick={() => setTab("board")}>
-            Board
-          </button>
-          <button style={S.pillBtn(tab === "list")} onClick={() => setTab("list")}>
-            Liste
-          </button>
-          <button style={S.pillBtn(tab === "calendar")} onClick={() => setTab("calendar")}>
-            Kalender
-          </button>
-          <button style={S.pillBtn(tab === "guides")} onClick={() => setTab("guides")}>
-            Anleitungen
-          </button>
-          <button style={S.ghostBtn} onClick={reloadAll}>
-            Neu laden
-          </button>
+          <button style={S.pillBtn(tab === "board")} onClick={() => setTab("board")}>Board</button>
+          <button style={S.pillBtn(tab === "list")} onClick={() => setTab("list")}>Liste</button>
+          <button style={S.pillBtn(tab === "calendar")} onClick={() => setTab("calendar")}>Kalender</button>
+          <button style={S.pillBtn(tab === "guides")} onClick={() => setTab("guides")}>Anleitungen</button>
+          <button style={S.ghostBtn} onClick={reloadAll}>Neu laden</button>
         </div>
 
         <div style={S.right}>
@@ -833,9 +839,7 @@ export default function Dashboard() {
             <select style={S.select} value={newAreaId} onChange={(e) => setNewAreaId(e.target.value)}>
               <option value="">Bereich</option>
               {areas.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
+                <option key={a.id} value={a.id}>{a.name}</option>
               ))}
             </select>
 
@@ -846,19 +850,21 @@ export default function Dashboard() {
               <option value="done">Erledigt</option>
             </select>
 
-            <select style={S.select} value={newGuideId} onChange={(e) => setNewGuideId(e.target.value)}>
-              <option value="">Anleitung</option>
+            <select
+              style={S.multiSelect}
+              multiple
+              value={newGuideIds}
+              onChange={(e) => setNewGuideIds(selectMultiple(e))}
+              title="Mehrfachauswahl: Strg/Cmd + Klick"
+            >
               {guides.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.title}
-                </option>
+                <option key={g.id} value={g.id}>{g.title}</option>
               ))}
             </select>
 
-            <button style={S.primary} onClick={createNewTask}>
-              Anlegen
-            </button>
+            <button style={S.primary} onClick={createNewTask}>Anlegen</button>
           </div>
+          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick</div>
         </div>
 
         {tab === "board" && (
@@ -874,8 +880,10 @@ export default function Dashboard() {
                   key={task.id}
                   task={task}
                   areasById={areaNameById}
-                  guidesById={guidesById}
                   guides={guides}
+                  guidesById={guidesById}
+                  guideIds={taskGuideIdsByTask[task.id] || (task.guide_id ? [task.guide_id] : [])}
+                  onSetTaskGuides={(gids) => setTaskGuides(task.id, gids)}
                   subtasks={subtasksByTask[task.id] || []}
                   stats={subStats(task.id)}
                   subInput={subInputByTask[task.id] || ""}
@@ -883,8 +891,6 @@ export default function Dashboard() {
                   onAddSub={() => addSubtask(task.id)}
                   onToggleSub={(sub) => toggleSubtask(task.id, sub)}
                   onToggleTask={() => toggleTaskStatus(task)}
-                  onSetTaskGuide={(gid) => setTaskGuide(task.id, gid)}
-                  onSetSubGuide={(subId, gid) => setSubtaskGuide(task.id, subId, gid)}
                   onOpenGuide={(g) => openGuide(g)}
                 />
               ))}
@@ -903,8 +909,10 @@ export default function Dashboard() {
                   key={task.id}
                   task={task}
                   areasById={areaNameById}
-                  guidesById={guidesById}
                   guides={guides}
+                  guidesById={guidesById}
+                  guideIds={taskGuideIdsByTask[task.id] || (task.guide_id ? [task.guide_id] : [])}
+                  onSetTaskGuides={(gids) => setTaskGuides(task.id, gids)}
                   subtasks={subtasksByTask[task.id] || []}
                   stats={subStats(task.id)}
                   subInput={subInputByTask[task.id] || ""}
@@ -912,8 +920,6 @@ export default function Dashboard() {
                   onAddSub={() => addSubtask(task.id)}
                   onToggleSub={(sub) => toggleSubtask(task.id, sub)}
                   onToggleTask={() => toggleTaskStatus(task)}
-                  onSetTaskGuide={(gid) => setTaskGuide(task.id, gid)}
-                  onSetSubGuide={(subId, gid) => setSubtaskGuide(task.id, subId, gid)}
                   onOpenGuide={(g) => openGuide(g)}
                 />
               ))}
@@ -926,22 +932,14 @@ export default function Dashboard() {
         {tab === "calendar" && (
           <div style={{ ...S.card, marginTop: 14 }}>
             <div style={S.calHeader}>
-              <button style={S.calBtn} onClick={() => setCalCursor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}>
-                ←
-              </button>
-              <div style={{ fontSize: 16, fontWeight: 900 }}>
-                {monthGrid.startM.toLocaleString("de-DE", { month: "long", year: "numeric" })}
-              </div>
-              <button style={S.calBtn} onClick={() => setCalCursor((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}>
-                →
-              </button>
+              <button style={S.calBtn} onClick={() => setCalCursor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}>←</button>
+              <div style={{ fontSize: 16, fontWeight: 900 }}>{monthGrid.startM.toLocaleString("de-DE", { month: "long", year: "numeric" })}</div>
+              <button style={S.calBtn} onClick={() => setCalCursor((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}>→</button>
             </div>
 
             <div style={S.calGrid}>
               {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((h) => (
-                <div key={h} style={S.calDow}>
-                  {h}
-                </div>
+                <div key={h} style={S.calDow}>{h}</div>
               ))}
 
               {monthGrid.days.map((d) => {
@@ -954,7 +952,6 @@ export default function Dashboard() {
                       <div style={{ fontSize: 13, fontWeight: 900 }}>{d.getDate()}</div>
                       {key === ymd(new Date()) ? <div style={S.tag("done")}>Heute</div> : null}
                     </div>
-
                     <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
                       {dayTasks.slice(0, 2).map((t) => (
                         <div
@@ -1029,9 +1026,7 @@ export default function Dashboard() {
                   </button>
                 </div>
 
-                <div style={{ fontSize: 12, opacity: 0.7 }}>
-                  Hinweis: Bucket "guides" + Storage Policies notwendig, sonst schlagen Upload/Öffnen fehl.
-                </div>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>Hinweis: Bucket "guides" + Storage Policies notwendig, sonst schlagen Upload/Öffnen fehl.</div>
               </div>
             </div>
 
@@ -1056,22 +1051,14 @@ export default function Dashboard() {
                     }}
                   >
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 15, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 820 }}>
-                        {g.title}
-                      </div>
-                      {g.description ? (
-                        <div style={{ fontSize: 13, opacity: 0.8, marginTop: 6, whiteSpace: "pre-wrap" }}>{g.description}</div>
-                      ) : null}
-                      {g.file_name ? (
-                        <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>Datei: {g.file_name}</div>
-                      ) : null}
+                      <div style={{ fontSize: 15, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 820 }}>{g.title}</div>
+                      {g.description ? <div style={{ fontSize: 13, opacity: 0.8, marginTop: 6, whiteSpace: "pre-wrap" }}>{g.description}</div> : null}
+                      {g.file_name ? <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>Datei: {g.file_name}</div> : null}
                       <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>Sichtbarkeit: {g.visibility}</div>
                     </div>
 
                     <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                      <button style={S.ghostBtn} onClick={() => openGuide(g)}>
-                        Öffnen
-                      </button>
+                      <button style={S.ghostBtn} onClick={() => openGuide(g)}>Öffnen</button>
                       <button
                         style={S.ghostBtn}
                         onClick={async () => {
@@ -1104,17 +1091,13 @@ export default function Dashboard() {
           <div style={S.modal} onClick={(e) => e.stopPropagation()}>
             <div style={S.modalHead}>
               <div style={S.modalTitle}>{viewerTitle}</div>
-              <button style={S.modalClose} onClick={closeViewer}>
-                Schließen
-              </button>
+              <button style={S.modalClose} onClick={closeViewer}>Schließen</button>
             </div>
             <div style={{ padding: 0 }}>
               {viewerUrl ? (
                 <iframe title="Anleitung" src={viewerUrl} style={{ width: "100%", height: "100%", border: 0 }} />
               ) : (
-                <div style={{ padding: 14, whiteSpace: "pre-wrap", fontSize: 14 }}>
-                  {viewerText || "Kein Inhalt vorhanden."}
-                </div>
+                <div style={{ padding: 14, whiteSpace: "pre-wrap", fontSize: 14 }}>{viewerText || "Kein Inhalt vorhanden."}</div>
               )}
             </div>
           </div>
@@ -1128,8 +1111,10 @@ export default function Dashboard() {
 function TaskCard({
   task,
   areasById,
-  guidesById,
   guides,
+  guidesById,
+  guideIds,
+  onSetTaskGuides,
   subtasks,
   stats,
   subInput,
@@ -1137,19 +1122,18 @@ function TaskCard({
   onAddSub,
   onToggleSub,
   onToggleTask,
-  onSetTaskGuide,
-  onSetSubGuide,
   onOpenGuide,
 }) {
   const statusTone = task.status === "done" ? "done" : "todo";
   const areaName = task.area_id ? areasById[task.area_id] : null;
   const due = safeDate(task.due_at);
-  const guide = task.guide_id ? guidesById[task.guide_id] : null;
+
+  const firstGuide = guideIds?.[0] ? guidesById[guideIds[0]] : null;
 
   return (
     <div style={S.taskCard}>
       <div style={S.taskTop}>
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, width: "100%" }}>
           <div style={S.taskTitleRow}>
             <div style={S.taskTitle}>{task.title}</div>
             <div style={S.tag(statusTone)}>{statusTone}</div>
@@ -1162,23 +1146,22 @@ function TaskCard({
 
           <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <select
-              style={{ ...S.select, minWidth: 240 }}
-              value={task.guide_id || ""}
-              onChange={(e) => onSetTaskGuide(e.target.value || null)}
+              style={{ ...S.multiSelect, minWidth: 260 }}
+              multiple
+              value={guideIds || []}
+              onChange={(e) => onSetTaskGuides(Array.from(e.target.selectedOptions).map((o) => o.value))}
+              title="Mehrfachauswahl: Strg/Cmd + Klick"
             >
-              <option value="">Anleitung</option>
               {guides.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.title}
-                </option>
+                <option key={g.id} value={g.id}>{g.title}</option>
               ))}
             </select>
 
             <button
               style={S.ghostBtn}
               onClick={() => {
-                if (!guide) return;
-                onOpenGuide(guide);
+                if (!firstGuide) return;
+                onOpenGuide(firstGuide);
               }}
             >
               Öffnen
@@ -1195,55 +1178,20 @@ function TaskCard({
             </div>
 
             <div style={S.subtaskInputRow}>
-              <input
-                style={S.input}
-                placeholder="Unteraufgabe hinzufügen..."
-                value={subInput}
-                onChange={(e) => onSubInput(e.target.value)}
-              />
-              <button style={S.plusBtn} onClick={onAddSub}>
-                +
-              </button>
+              <input style={S.input} placeholder="Unteraufgabe hinzufügen..." value={subInput} onChange={(e) => onSubInput(e.target.value)} />
+              <button style={S.plusBtn} onClick={onAddSub}>+</button>
             </div>
 
-            {subtasks.map((s) => {
-              const sg = s.guide_id ? guidesById[s.guide_id] : null;
-              return (
-                <div key={s.id} style={S.subtaskRow}>
-                  <input type="checkbox" checked={!!s.done} onChange={() => onToggleSub(s)} />
-                  <div style={{ textDecoration: s.done ? "line-through" : "none" }}>{s.title}</div>
-
-                  <select
-                    style={{ ...S.select, minWidth: 220, marginLeft: "auto" }}
-                    value={s.guide_id || ""}
-                    onChange={(e) => onSetSubGuide(s.id, e.target.value || null)}
-                  >
-                    <option value="">Anleitung</option>
-                    {guides.map((g) => (
-                      <option key={g.id} value={g.id}>
-                        {g.title}
-                      </option>
-                    ))}
-                  </select>
-
-                  <button
-                    style={S.ghostBtn}
-                    onClick={() => {
-                      if (!sg) return;
-                      onOpenGuide(sg);
-                    }}
-                  >
-                    Öffnen
-                  </button>
-                </div>
-              );
-            })}
+            {subtasks.map((s) => (
+              <div key={s.id} style={S.subtaskRow}>
+                <input type="checkbox" checked={!!s.done} onChange={() => onToggleSub(s)} />
+                <div style={{ textDecoration: s.done ? "line-through" : "none" }}>{s.title}</div>
+              </div>
+            ))}
           </div>
         </div>
 
-        <button style={S.statusBtn} onClick={onToggleTask}>
-          Status
-        </button>
+        <button style={S.statusBtn} onClick={onToggleTask}>Status</button>
       </div>
     </div>
   );
