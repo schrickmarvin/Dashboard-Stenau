@@ -74,9 +74,13 @@ async function loadMyAuthContext() {
     .from("profiles")
     .select("id, email, name, role, role_id, is_active")
     .eq("id", user.id)
-    .single();
+    .maybeSingle();
 
-  if (pErr) throw pErr;
+  // If profile is missing (e.g. trigger not set up yet), fail soft.
+  if (pErr) {
+    console.warn("profiles load failed:", pErr.message);
+    return { user, profile: null, permissions: [] };
+  }
 
   // If you added is_active, block disabled users in UI.
   if (profile && profile.is_active === false) {
@@ -115,7 +119,7 @@ async function loadMyAuthContext() {
     .filter(Boolean);
 
   const permissions = Array.from(new Set([...roleKeys, ...userAllowed]));
-  return { user, profile, permissions };
+  return { user, profile: profile ?? null, permissions };
 }
 
 /* ---------------- Admin Users Panel ---------------- */
@@ -504,7 +508,10 @@ function TasksBoard({ permissions }) {
 
   async function toggleStatus(task) {
     const next = (task.status ?? "todo") === "done" ? "todo" : "done";
-    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id);
+    const { error } = await supabase
+      .from("tasks")
+      .update({ status: next })
+      .eq("id", task.id);
     if (error) {
       setErr(error.message);
       return;
@@ -791,6 +798,7 @@ export default function Dashboard() {
   }
 
   const permissions = auth.permissions || [];
+  const profile = auth.profile; // FIX: was previously undefined in render
 
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return (
@@ -1052,5 +1060,20 @@ const styles = {
     gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr 1.6fr auto",
     gap: 10,
     alignItems: "start",
+  },
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+  },
+  th: {
+    textAlign: "left",
+    padding: 8,
+    borderBottom: "1px solid #ddd",
+    whiteSpace: "nowrap",
+  },
+  td: {
+    padding: 8,
+    borderBottom: "1px solid #eee",
+    verticalAlign: "top",
   },
 };
