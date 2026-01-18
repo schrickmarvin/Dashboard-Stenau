@@ -1,12 +1,6 @@
-// dashboard.js (komplett) – Board + Kalender + Anleitungen + Admin (User/Rollen/Passwort)
-// Voraussetzung:
-// - pages/api/admin/users.js existiert (deine Route läuft ja schon)
-// - public.profiles hat: id, email, name, role, created_at, updated_at
-// - du bist in profiles.role = 'admin' (sonst Admin-Tab unsichtbar)
-// ENV:
-// - NEXT_PUBLIC_SUPABASE_URL
-// - NEXT_PUBLIC_SUPABASE_ANON_KEY
-// - SUPABASE_SERVICE_ROLE_KEY (nur serverseitig in der API Route)
+// Dashboard.js
+// Standalone dashboard component/page (React) for Next.js + Supabase
+// Includes RBAC (role-based access control) blocks + Admin user management UI.
 
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
@@ -15,1682 +9,1048 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const supabase =
-  SUPABASE_URL && SUPABASE_ANON_KEY
-    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-    : null;
+const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
 
-/* ---------------- Utils ---------------- */
-const pad2 = (n) => String(n).padStart(2, "0");
-const safeDate = (v) => {
-  if (!v) return null;
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d;
-};
-const ymd = (d) => {
-  const x = new Date(d);
-  return `${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}`;
-};
-const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
-const addDays = (d, n) => {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-};
-const selectMultiple = (e) =>
-  Array.from(e.target.selectedOptions || []).map((o) => o.value);
-
-async function mustSupabase() {
-  if (!supabase)
-    throw new Error(
-      "Supabase ENV fehlt: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY"
-    );
+/* ---------------- Helpers ---------------- */
+function can(permissions, key) {
+  return Array.isArray(permissions) && permissions.includes(key);
 }
 
-async function signIn(email, password) {
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) throw error;
-}
-async function signUp(email, password) {
-  const { error } = await supabase.auth.signUp({ email, password });
-  if (error) throw error;
-}
-async function signOut() {
-  const { error } = await supabase.auth.signOut();
-  if (error) throw error;
+function isAdminFallback(profile, permissions) {
+  if (can(permissions, "users.manage")) return true;
+  // Fallback if role_permissions query is blocked by RLS but profile.role is still present.
+  // Your schema contains profiles.role (text) and profiles.role_id (uuid).
+  return (profile?.role ?? "").toLowerCase() === "admin";
 }
 
-/* ---------------- Data ---------------- */
-async function fetchAreas() {
-  try {
-    const { data, error } = await supabase
-      .from("areas")
-      .select("id,name")
-      .order("name");
-    if (error) throw error;
-    return data || [];
-  } catch {
-    return [];
-  }
-}
-async function fetchGuides() {
-  const { data, error } = await supabase
-    .from("guides")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return data || [];
-}
-async function fetchTasks() {
-  const { data, error } = await supabase
-    .from("tasks")
-    .select("id,title,area_id,due_at,status,guide_id,created_at")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return data || [];
-}
-async function fetchSubtasksForTask(taskId) {
-  try {
-    const { data, error } = await supabase
-      .from("subtasks")
-      .select("id,task_id,title,done,created_at")
-      .eq("task_id", taskId)
-      .order("created_at", { ascending: true });
-    if (error) throw error;
-    return data || [];
-  } catch {
-    return [];
-  }
-}
-
-/* ---- task_guides join (many-to-many) ---- */
-async function fetchTaskGuideLinks() {
-  // Falls Tabelle noch nicht existiert, wirft Supabase Fehler -> fangen wir oben ab.
-  const { data, error } = await supabase.from("task_guides").select("task_id,guide_id");
-  if (error) throw error;
-  const map = {};
-  for (const r of data || []) {
-    if (!map[r.task_id]) map[r.task_id] = [];
-    map[r.task_id].push(r.guide_id);
-  }
-  for (const k of Object.keys(map)) map[k] = Array.from(new Set(map[k]));
-  return map;
-}
-async function setTaskGuideLinks(taskId, guideIds) {
-  const gids = (guideIds || []).filter(Boolean);
-
-  // delete old
-  const { error: delErr } = await supabase
-    .from("task_guides")
-    .delete()
-    .eq("task_id", taskId);
-  if (delErr) throw delErr;
-
-  if (gids.length === 0) return;
-
-  // insert new
-  const rows = gids.map((gid) => ({ task_id: taskId, guide_id: gid }));
-  const { error: insErr } = await supabase.from("task_guides").insert(rows);
-  if (insErr) throw insErr;
-}
-
-async function insertTask({ title, area_id, due_at, status, guide_id }) {
-  const payload = {
-    title,
-    area_id: area_id || null,
-    due_at: due_at || null,
-    status: status || "todo",
-    guide_id: guide_id || null,
-  };
-  const { data, error } = await supabase
-    .from("tasks")
-    .insert([payload])
-    .select("*")
-    .single();
-  if (error) throw error;
-  return data;
-}
-async function updateTask(id, patch) {
-  const { data, error } = await supabase
-    .from("tasks")
-    .update(patch)
-    .eq("id", id)
-    .select("*")
-    .single();
-  if (error) throw error;
-  return data;
-}
-async function insertSubtask({ task_id, title }) {
-  const { data, error } = await supabase
-    .from("subtasks")
-    .insert([{ task_id, title, done: false }])
-    .select("*")
-    .single();
-  if (error) throw error;
-  return data;
-}
-async function updateSubtask(id, patch) {
-  const { data, error } = await supabase
-    .from("subtasks")
-    .update(patch)
-    .eq("id", id)
-    .select("*")
-    .single();
-  if (error) throw error;
-  return data;
-}
-
-/* ---------------- Guides: Storage ---------------- */
-async function uploadGuideFile(file, guideId) {
-  if (!file) {
-    return { file_path: null, file_name: null, file_mime: null, file_size: null };
-  }
-  const safeName = file.name.replace(/[^\w.\-() ]+/g, "_");
-  const path = `guides/${guideId}/${Date.now()}_${safeName}`;
-
-  const { error: upErr } = await supabase.storage
-    .from("guides")
-    .upload(path, file, { contentType: file.type, upsert: false });
-  if (upErr) throw upErr;
-
-  return {
-    file_path: path,
-    file_name: file.name,
-    file_mime: file.type,
-    file_size: file.size,
-  };
-}
-async function createGuide({ title, description, visibility, file }) {
-  const { data: inserted, error: insErr } = await supabase
-    .from("guides")
-    .insert([{ title, description: description || null, visibility: visibility || "all" }])
-    .select("id")
-    .single();
-  if (insErr) throw insErr;
-
-  const fileMeta = await uploadGuideFile(file, inserted.id);
-
-  const { data: updated, error: upErr } = await supabase
-    .from("guides")
-    .update(fileMeta)
-    .eq("id", inserted.id)
-    .select("*")
-    .single();
-  if (upErr) throw upErr;
-
-  return updated;
-}
-async function deleteGuide(guide) {
-  if (guide?.file_path) {
-    await supabase.storage.from("guides").remove([guide.file_path]);
-  }
-  const { error } = await supabase.from("guides").delete().eq("id", guide.id);
-  if (error) throw error;
-}
-async function signedGuideUrl(guide) {
-  if (!guide?.file_path) return null;
-  const { data, error } = await supabase.storage
-    .from("guides")
-    .createSignedUrl(guide.file_path, 60 * 30);
-  if (error) throw error;
-  return data?.signedUrl || null;
-}
-
-/* ---------------- Admin API helper ---------------- */
-async function adminApi(action, payload) {
-  const { data: sess } = await supabase.auth.getSession();
-  const token = sess?.session?.access_token;
-
-  const res = await fetch("/api/admin/users", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ action, payload }),
+function fmtDateTime(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString("de-DE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
   });
-
-  const out = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(out?.error || "Admin API Fehler");
-  return out;
 }
 
-/* ---------------- Styles ---------------- */
-const S = {
-  page: {
-    minHeight: "100vh",
-    background: "#f3f6fa",
-    fontFamily:
-      'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"',
-    color: "#0f172a",
-    padding: 18,
-  },
-  topbar: {
-    maxWidth: 1300,
-    margin: "0 auto",
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-  },
-  brand: { fontSize: 22, fontWeight: 800, marginRight: 8 },
-  tabs: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
-  pillBtn: (active) => ({
-    border: "1px solid #e5e7eb",
-    background: active ? "#0b7a2b" : "#fff",
-    color: active ? "#fff" : "#0f172a",
-    borderRadius: 999,
-    padding: "8px 14px",
-    cursor: "pointer",
-    fontSize: 14,
-    fontWeight: 700,
-  }),
-  ghostBtn: {
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    color: "#0f172a",
-    borderRadius: 999,
-    padding: "8px 14px",
-    cursor: "pointer",
-    fontSize: 14,
-    fontWeight: 700,
-  },
-  right: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 },
-  email: { fontSize: 13, opacity: 0.75 },
-  logout: {
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    color: "#0f172a",
-    borderRadius: 999,
-    padding: "8px 14px",
-    cursor: "pointer",
-    fontSize: 14,
-    fontWeight: 800,
-  },
-  container: { maxWidth: 1300, margin: "0 auto", marginTop: 14 },
-  card: {
-    background: "#fff",
-    border: "1px solid #e5e7eb",
-    borderRadius: 18,
-    padding: 14,
-    boxShadow: "0 1px 0 rgba(15,23,42,0.04)",
-  },
-  formRow: {
-    display: "grid",
-    gridTemplateColumns: "1.2fr 0.9fr 0.9fr 0.9fr 1.2fr auto",
-    gap: 12,
-    alignItems: "center",
-  },
-  input: {
-    width: "100%",
-    border: "1px solid #e5e7eb",
-    borderRadius: 14,
-    padding: "10px 12px",
-    fontSize: 14,
-    outline: "none",
-    background: "#fff",
-  },
-  select: {
-    width: "100%",
-    border: "1px solid #e5e7eb",
-    borderRadius: 14,
-    padding: "10px 12px",
-    fontSize: 14,
-    outline: "none",
-    background: "#fff",
-    cursor: "pointer",
-  },
-  multiSelect: {
-    width: "100%",
-    border: "1px solid #e5e7eb",
-    borderRadius: 14,
-    padding: "8px 10px",
-    fontSize: 14,
-    outline: "none",
-    background: "#fff",
-  },
-  primary: {
-    border: "0",
-    background: "#0b7a2b",
-    color: "#fff",
-    borderRadius: 14,
-    padding: "10px 16px",
-    cursor: "pointer",
-    fontSize: 14,
-    fontWeight: 900,
-    whiteSpace: "nowrap",
-  },
-  board: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 14,
-    marginTop: 14,
-  },
-  column: {
-    background: "#fff",
-    border: "1px solid #e5e7eb",
-    borderRadius: 18,
-    padding: 14,
-  },
-  colHeader: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    marginBottom: 10,
-  },
-  colTitle: { fontSize: 16, fontWeight: 900 },
-  badgeCount: { fontSize: 12, opacity: 0.7 },
-  taskCard: {
-    border: "1px solid #eef2f7",
-    background: "#fff",
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 12,
-  },
-  taskTop: {
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  taskTitleRow: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
-  taskTitle: { fontSize: 16, fontWeight: 900 },
-  tag: (tone) => ({
-    padding: "4px 10px",
-    borderRadius: 999,
-    fontSize: 12,
-    fontWeight: 800,
-    border: "1px solid #e5e7eb",
-    background: tone === "todo" ? "#ffe9d6" : "#dcfce7",
-    color: "#0f172a",
-  }),
-  meta: { fontSize: 12, opacity: 0.7, marginTop: 6 },
-  statusBtn: {
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    borderRadius: 14,
-    padding: "10px 14px",
-    cursor: "pointer",
-    fontSize: 14,
-    fontWeight: 900,
-  },
-  subtasksWrap: { marginTop: 10 },
-  subtasksHead: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 900 },
-  progressBg: {
-    height: 8,
-    background: "#e5e7eb",
-    borderRadius: 999,
-    overflow: "hidden",
-    marginTop: 6,
-    marginBottom: 10,
-  },
-  progressBar: (pct) => ({ height: "100%", width: `${pct}%`, background: "#0b7a2b" }),
-  subtaskRow: { display: "flex", alignItems: "center", gap: 10, marginTop: 8 },
-  subtaskInputRow: { display: "flex", alignItems: "center", gap: 10, marginTop: 10 },
-  plusBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    border: "0",
-    background: "#0b7a2b",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 18,
-    fontWeight: 900,
-  },
-  calHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 },
-  calBtn: {
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    borderRadius: 14,
-    padding: "8px 12px",
-    cursor: "pointer",
-    fontSize: 14,
-    fontWeight: 900,
-  },
-  calGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 },
-  calCell: (muted) => ({
-    border: "1px solid #eef2f7",
-    borderRadius: 16,
-    padding: 10,
-    minHeight: 86,
-    background: "#fff",
-    opacity: muted ? 0.5 : 1,
-  }),
-  calDow: { fontSize: 12, opacity: 0.7, paddingLeft: 8 },
-  err: {
-    maxWidth: 1300,
-    margin: "14px auto 0",
-    background: "#fff5f5",
-    border: "1px solid #fecaca",
-    borderRadius: 18,
-    padding: 12,
-    color: "#991b1b",
-    fontSize: 13,
-  },
-  modalBg: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(15,23,42,0.45)",
-    display: "grid",
-    placeItems: "center",
-    padding: 18,
-    zIndex: 9999,
-  },
-  modal: {
-    width: "min(1100px, 96vw)",
-    height: "min(780px, 92vh)",
-    background: "#fff",
-    borderRadius: 18,
-    border: "1px solid #e5e7eb",
-    overflow: "hidden",
-    display: "grid",
-    gridTemplateRows: "auto 1fr",
-  },
-  modalHead: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    padding: 12,
-    borderBottom: "1px solid #eef2f7",
-  },
-  modalTitle: { fontSize: 14, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  modalClose: {
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    borderRadius: 14,
-    padding: "8px 12px",
-    cursor: "pointer",
-    fontSize: 14,
-    fontWeight: 900,
-  },
-};
+function fmtDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString("de-DE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
 
-export default function Dashboard() {
-  const [user, setUser] = useState(null);
-  const [authMode, setAuthMode] = useState("login");
-  const [email, setEmail] = useState("");
-  const [pw, setPw] = useState("");
-  const [authMsg, setAuthMsg] = useState("");
+function startOfDayISO(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
 
-  const [tab, setTab] = useState("board");
-  const [err, setErr] = useState("");
+function endOfDayISO(date) {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d.toISOString();
+}
 
-  const [areas, setAreas] = useState([]);
-  const [guides, setGuides] = useState([]);
-  const guidesById = useMemo(
-    () => Object.fromEntries((guides || []).map((g) => [g.id, g])),
-    [guides]
-  );
+/* ---------------- RBAC: Load auth context ---------------- */
+async function loadMyAuthContext() {
+  const {
+    data: { user },
+    error: userErr,
+  } = await supabase.auth.getUser();
 
-  const [tasks, setTasks] = useState([]);
-  const [subtasksByTask, setSubtasksByTask] = useState({});
-  const [subInputByTask, setSubInputByTask] = useState({});
-  const [taskGuideIdsByTask, setTaskGuideIdsByTask] = useState({});
+  if (userErr) throw userErr;
+  if (!user) return { user: null, profile: null, permissions: [] };
 
-  const [newTitle, setNewTitle] = useState("");
-  const [newAreaId, setNewAreaId] = useState("");
-  const [newDueAt, setNewDueAt] = useState("");
-  const [newStatus, setNewStatus] = useState("todo");
-  const [newGuideIds, setNewGuideIds] = useState([]);
+  // IMPORTANT: your profiles table uses 'id' as the user uuid.
+  const { data: profile, error: pErr } = await supabase
+    .from("profiles")
+    .select("id, email, name, role, role_id, is_active")
+    .eq("id", user.id)
+    .single();
 
-  const [calCursor, setCalCursor] = useState(() => new Date());
+  if (pErr) throw pErr;
 
-  const [gTitle, setGTitle] = useState("");
-  const [gDesc, setGDesc] = useState("");
-  const [gVis, setGVis] = useState("all");
-  const [gFile, setGFile] = useState(null);
+  // If you added is_active, block disabled users in UI.
+  if (profile && profile.is_active === false) {
+    return { user, profile, permissions: ["__inactive__"] };
+  }
 
-  const [viewerOpen, setViewerOpen] = useState(false);
-  const [viewerTitle, setViewerTitle] = useState("");
-  const [viewerUrl, setViewerUrl] = useState(null);
-  const [viewerText, setViewerText] = useState("");
+  // Role permissions
+  const { data: rolePerms, error: rpErr } = await supabase
+    .from("role_permissions")
+    .select("permissions:permission_id ( key )")
+    .eq("role_id", profile?.role_id ?? "");
 
-  // Admin
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [adminUsers, setAdminUsers] = useState([]);
-  const [adminLoading, setAdminLoading] = useState(false);
-  const [createEmail, setCreateEmail] = useState("");
-  const [createName, setCreateName] = useState("");
-  const [createRole, setCreateRole] = useState("user");
-  const [createTempPw, setCreateTempPw] = useState("");
-  const [pwUserId, setPwUserId] = useState("");
-  const [pwNew, setPwNew] = useState("");
+  if (rpErr) {
+    // If RLS blocks this for non-admins, you'll want a SQL function/view.
+    // For now, we fail soft.
+    console.warn("role_permissions query blocked or failed:", rpErr.message);
+  }
+
+  // User overrides (optional)
+  const { data: userPerms, error: upErr } = await supabase
+    .from("user_permissions")
+    .select("allowed, permissions:permission_id ( key )")
+    .eq("user_id", user.id);
+
+  if (upErr) {
+    console.warn("user_permissions query blocked or failed:", upErr.message);
+  }
+
+  const roleKeys = (rolePerms ?? [])
+    .map((x) => x?.permissions?.key)
+    .filter(Boolean);
+
+  const userAllowed = (userPerms ?? [])
+    .filter((x) => x?.allowed)
+    .map((x) => x?.permissions?.key)
+    .filter(Boolean);
+
+  const permissions = Array.from(new Set([...roleKeys, ...userAllowed]));
+  return { user, profile, permissions };
+}
+
+/* ---------------- Admin Users Panel ---------------- */
+function UsersAdminPanel({ profile, permissions }) {
+  const [users, setUsers] = useState([]);
+  const [roles, setRoles] = useState([]);
+  const [q, setQ] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const isAdmin = isAdminFallback(profile, permissions);
+
+  async function load() {
+    setErr(null);
+    setLoading(true);
+
+    const { data: rolesData, error: rErr } = await supabase
+      .from("roles")
+      .select("id, key, name")
+      .order("name", { ascending: true });
+
+    if (rErr) {
+      setLoading(false);
+      setErr(rErr.message);
+      return;
+    }
+
+    const { data: usersData, error: uErr } = await supabase
+      .from("profiles")
+      .select("id, email, name, role, role_id, is_active")
+      .order("name", { ascending: true });
+
+    if (uErr) {
+      setLoading(false);
+      setErr(uErr.message);
+      return;
+    }
+
+    setRoles(rolesData ?? []);
+    setUsers(usersData ?? []);
+    setLoading(false);
+  }
 
   useEffect(() => {
-    (async () => {
-      try {
-        await mustSupabase();
-        const { data } = await supabase.auth.getSession();
-        const u = data?.session?.user || null;
-        setUser(u);
-      } catch (e) {
-        setErr(String(e?.message || e));
-      }
-    })();
-  }, []);
+    if (isAdmin) load();
+  }, [isAdmin]);
 
-  useEffect(() => {
-    if (!supabase) return;
-    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
-      setUser(session?.user || null);
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return users;
+    return users.filter((u) => {
+      const s = `${u.name ?? ""} ${u.email ?? ""}`.toLowerCase();
+      return s.includes(needle);
     });
-    return () => sub?.subscription?.unsubscribe?.();
-  }, []);
+  }, [users, q]);
 
-  const areaNameById = useMemo(() => {
-    const map = {};
-    (areas || []).forEach((a) => (map[a.id] = a.name));
-    return map;
-  }, [areas]);
+  async function updateUser(id, patch) {
+    setErr(null);
 
-  function subStats(taskId) {
-    const subs = subtasksByTask[taskId] || [];
-    if (subs.length === 0) return { done: 0, total: 0, pct: 0 };
-    const done = subs.filter((s) => !!s.done).length;
-    const total = subs.length;
-    const pct = Math.round((done / total) * 100);
-    return { done, total, pct };
-  }
-
-  async function reloadAll() {
-    setErr("");
-    try {
-      const [a, g, t] = await Promise.all([fetchAreas(), fetchGuides(), fetchTasks()]);
-      setAreas(a);
-      setGuides(g);
-      setTasks(t);
-
-      const subsMap = {};
-      for (const task of t) subsMap[task.id] = await fetchSubtasksForTask(task.id);
-      setSubtasksByTask(subsMap);
-
-      // Join-Links (falls vorhanden), sonst fallback auf tasks.guide_id
-      try {
-        const links = await fetchTaskGuideLinks();
-        const merged = { ...links };
-        for (const task of t) {
-          if (!merged[task.id] || merged[task.id].length === 0) {
-            if (task.guide_id) merged[task.id] = [task.guide_id];
-          }
-        }
-        setTaskGuideIdsByTask(merged);
-      } catch (e) {
-        // wenn task_guides nicht existiert, trotzdem laufen lassen
-        const fallback = {};
-        for (const task of t) fallback[task.id] = task.guide_id ? [task.guide_id] : [];
-        setTaskGuideIdsByTask(fallback);
-      }
-
-      // admin flag aus profiles.role
-      try {
-        const { data: prof, error: perr } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("id", user?.id || "")
-          .maybeSingle();
-
-        if (!perr) setIsAdmin((prof?.role || "user") === "admin");
-      } catch {
-        setIsAdmin(false);
-      }
-    } catch (e) {
-      setErr(String(e?.message || e));
+    const { error } = await supabase.from("profiles").update(patch).eq("id", id);
+    if (error) {
+      setErr(error.message);
+      return;
     }
+    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
   }
 
-  useEffect(() => {
-    if (!user) return;
-    reloadAll();
-  }, [user]);
-
-  async function loadAdminUsers() {
-    setAdminLoading(true);
-    setErr("");
-    try {
-      // Wir nutzen eine simple "list" Aktion über die API (die du bereits hast / anpassen kannst)
-      const out = await adminApi("list", {});
-      setAdminUsers(out.users || []);
-      setIsAdmin(!!out.isAdmin || true); // falls API kein Flag liefert, UI trotzdem anzeigen (DB check kommt ohnehin)
-    } catch (e) {
-      setErr(String(e?.message || e));
-    } finally {
-      setAdminLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    if (tab !== "admin") return;
-    if (!user) return;
-    loadAdminUsers();
-  }, [tab, user]);
-
-  async function toggleTaskStatus(task) {
-    setErr("");
-    try {
-      const next = task.status === "done" ? "todo" : "done";
-      const updated = await updateTask(task.id, { status: next });
-      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
-    } catch (e) {
-      setErr(String(e?.message || e));
-    }
-  }
-
-  async function createNewTask() {
-    if (!newTitle.trim()) return;
-    setErr("");
-    try {
-      const due = newDueAt ? new Date(newDueAt).toISOString() : null;
-      const firstGuide = newGuideIds?.[0] || null;
-
-      const created = await insertTask({
-        title: newTitle.trim(),
-        area_id: newAreaId || null,
-        due_at: due,
-        status: newStatus,
-        guide_id: firstGuide,
-      });
-
-      // many-to-many (wenn Tabelle existiert)
-      try {
-        if (newGuideIds && newGuideIds.length > 0) {
-          await setTaskGuideLinks(created.id, newGuideIds);
-          setTaskGuideIdsByTask((p) => ({ ...p, [created.id]: newGuideIds }));
-        } else {
-          setTaskGuideIdsByTask((p) => ({ ...p, [created.id]: [] }));
-        }
-      } catch {
-        // ignore falls task_guides nicht da ist
-        setTaskGuideIdsByTask((p) => ({ ...p, [created.id]: newGuideIds || [] }));
-      }
-
-      setTasks((prev) => [created, ...prev]);
-      setSubtasksByTask((prev) => ({ ...prev, [created.id]: [] }));
-
-      setNewTitle("");
-      setNewAreaId("");
-      setNewDueAt("");
-      setNewStatus("todo");
-      setNewGuideIds([]);
-    } catch (e) {
-      setErr(String(e?.message || e));
-    }
-  }
-
-  async function setTaskGuides(taskId, guideIds) {
-    setErr("");
-    try {
-      // join Tabelle
-      await setTaskGuideLinks(taskId, guideIds);
-
-      // tasks.guide_id als "primary" Guide mitpflegen
-      const first = guideIds?.[0] || null;
-      const updated = await updateTask(taskId, { guide_id: first });
-      setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)));
-      setTaskGuideIdsByTask((p) => ({ ...p, [taskId]: guideIds || [] }));
-    } catch (e) {
-      // falls join Tabelle nicht existiert: wenigstens tasks.guide_id setzen
-      try {
-        const first = guideIds?.[0] || null;
-        const updated = await updateTask(taskId, { guide_id: first });
-        setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)));
-        setTaskGuideIdsByTask((p) => ({ ...p, [taskId]: guideIds || [] }));
-      } catch (e2) {
-        setErr(String(e2?.message || e2));
-      }
-    }
-  }
-
-  async function addSubtask(taskId) {
-    const v = (subInputByTask[taskId] || "").trim();
-    if (!v) return;
-    setErr("");
-    try {
-      const created = await insertSubtask({ task_id: taskId, title: v });
-      setSubtasksByTask((prev) => ({
-        ...prev,
-        [taskId]: [...(prev[taskId] || []), created],
-      }));
-      setSubInputByTask((prev) => ({ ...prev, [taskId]: "" }));
-    } catch (e) {
-      setErr(String(e?.message || e));
-    }
-  }
-
-  async function toggleSubtask(taskId, sub) {
-    setErr("");
-    try {
-      const updated = await updateSubtask(sub.id, { done: !sub.done });
-      setSubtasksByTask((prev) => ({
-        ...prev,
-        [taskId]: (prev[taskId] || []).map((s) => (s.id === sub.id ? updated : s)),
-      }));
-    } catch (e) {
-      setErr(String(e?.message || e));
-    }
-  }
-
-  async function openGuide(guide) {
-    setErr("");
-    try {
-      setViewerTitle(guide?.title || "Anleitung");
-      if (guide?.file_path) {
-        const url = await signedGuideUrl(guide);
-        setViewerUrl(url);
-        setViewerText("");
-      } else {
-        setViewerUrl(null);
-        setViewerText(guide?.description || "");
-      }
-      setViewerOpen(true);
-    } catch (e) {
-      setErr(String(e?.message || e));
-    }
-  }
-  function closeViewer() {
-    setViewerOpen(false);
-    setViewerTitle("");
-    setViewerUrl(null);
-    setViewerText("");
-  }
-
-  const tasksByDay = useMemo(() => {
-    const map = {};
-    for (const t of tasks || []) {
-      const d = safeDate(t.due_at);
-      if (!d) continue;
-      const key = ymd(d);
-      if (!map[key]) map[key] = [];
-      map[key].push(t);
-    }
-    return map;
-  }, [tasks]);
-
-  const monthGrid = useMemo(() => {
-    const cursor = calCursor;
-    const startM = startOfMonth(cursor);
-    const startDay = new Date(startM);
-    const dow = (startDay.getDay() + 6) % 7; // Mo=0
-    const gridStart = addDays(startDay, -dow);
-    const days = [];
-    for (let i = 0; i < 42; i++) days.push(addDays(gridStart, i));
-    return { startM, days };
-  }, [calCursor]);
-
-  if (!supabase) {
+  if (!isAdmin) {
     return (
-      <div style={S.page}>
-        <div style={S.err}>
-          Supabase ist nicht konfiguriert (NEXT_PUBLIC_SUPABASE_URL /
-          NEXT_PUBLIC_SUPABASE_ANON_KEY).
-        </div>
+      <div style={styles.panel}>
+        <div style={styles.h3}>Nutzer</div>
+        <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
       </div>
     );
   }
-
-  /* ---------------- Login ---------------- */
-  if (!user) {
-    return (
-      <div style={S.page}>
-        <div style={{ maxWidth: 520, margin: "0 auto" }}>
-          <div style={{ ...S.card, marginTop: 30 }}>
-            <div style={{ fontSize: 20, fontWeight: 900 }}>Dashboard Login</div>
-
-            <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
-              <button
-                style={S.pillBtn(authMode === "login")}
-                onClick={() => {
-                  setAuthMode("login");
-                  setAuthMsg("");
-                }}
-              >
-                Login
-              </button>
-              <button
-                style={S.pillBtn(authMode === "signup")}
-                onClick={() => {
-                  setAuthMode("signup");
-                  setAuthMsg("");
-                }}
-              >
-                Registrieren
-              </button>
-            </div>
-
-            <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
-              <input
-                style={S.input}
-                placeholder="E-Mail"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-              <input
-                style={S.input}
-                placeholder="Passwort"
-                type="password"
-                value={pw}
-                onChange={(e) => setPw(e.target.value)}
-              />
-
-              {authMode === "login" ? (
-                <button
-                  style={S.primary}
-                  onClick={async () => {
-                    setErr("");
-                    setAuthMsg("");
-                    try {
-                      await signIn(email, pw);
-                      const { data } = await supabase.auth.getSession();
-                      if (data?.session?.user) setUser(data.session.user);
-                    } catch (e) {
-                      setAuthMsg(String(e?.message || e));
-                    }
-                  }}
-                >
-                  Login
-                </button>
-              ) : (
-                <button
-                  style={S.primary}
-                  onClick={async () => {
-                    setErr("");
-                    setAuthMsg("");
-                    try {
-                      await signUp(email, pw);
-                      setAuthMsg(
-                        "Registrierung erfolgreich. Falls E-Mail-Bestätigung aktiv ist: bitte Mail prüfen."
-                      );
-                    } catch (e) {
-                      setAuthMsg(String(e?.message || e));
-                    }
-                  }}
-                >
-                  Registrieren
-                </button>
-              )}
-
-              {authMsg ? (
-                <div style={{ fontSize: 13, color: "#991b1b" }}>{authMsg}</div>
-              ) : null}
-              {err ? (
-                <div style={{ fontSize: 13, color: "#991b1b" }}>{err}</div>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const todoTasks = tasks.filter((t) => (t.status || "todo") === "todo");
-  const doneTasks = tasks.filter((t) => (t.status || "todo") === "done");
 
   return (
-    <div style={S.page}>
-      <div style={S.topbar}>
-        <div style={S.brand}>Armaturenbrett</div>
-
-        <div style={S.tabs}>
-          <button
-            style={S.pillBtn(tab === "board")}
-            onClick={() => setTab("board")}
-          >
-            Planke
-          </button>
-          <button
-            style={S.pillBtn(tab === "calendar")}
-            onClick={() => setTab("calendar")}
-          >
-            Kalender
-          </button>
-          <button
-            style={S.pillBtn(tab === "guides")}
-            onClick={() => setTab("guides")}
-          >
-            Anleitungen
-          </button>
-
-          {isAdmin ? (
-            <button
-              style={S.pillBtn(tab === "admin")}
-              onClick={() => setTab("admin")}
-            >
-              Admin
-            </button>
-          ) : null}
-
-          <button style={S.ghostBtn} onClick={reloadAll}>
-            Neu laden
-          </button>
-        </div>
-
-        <div style={S.right}>
-          <div style={S.email}>{user.email}</div>
-          <button
-            style={S.logout}
-            onClick={async () => {
-              setErr("");
-              try {
-                await signOut();
-                setUser(null);
-              } catch (e) {
-                setErr(String(e?.message || e));
-              }
-            }}
-          >
-            melde
+    <div style={styles.panel}>
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Nutzerverwaltung</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Suchen…"
+            style={styles.input}
+          />
+          <button style={styles.btn} onClick={load} disabled={loading}>
+            {loading ? "Lade…" : "Neu laden"}
           </button>
         </div>
       </div>
 
-      {err ? <div style={S.err}>{err}</div> : null}
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-      <div style={S.container}>
-        {/* Aufgabe anlegen */}
-        <div style={S.card}>
-          <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>
-            Aufgabe anlegen
-          </div>
-          <div style={S.formRow}>
-            <input
-              style={S.input}
-              placeholder="Titel"
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-            />
-            <select
-              style={S.select}
-              value={newAreaId}
-              onChange={(e) => setNewAreaId(e.target.value)}
-            >
-              <option value="">Bereich</option>
-              {areas.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-            <input
-              style={S.input}
-              type="datetime-local"
-              value={newDueAt}
-              onChange={(e) => setNewDueAt(e.target.value)}
-            />
-            <select
-              style={S.select}
-              value={newStatus}
-              onChange={(e) => setNewStatus(e.target.value)}
-            >
-              <option value="todo">Zu erledigen</option>
-              <option value="done">Erledigt</option>
-            </select>
-
-            <select
-              style={S.multiSelect}
-              multiple
-              value={newGuideIds}
-              onChange={(e) => setNewGuideIds(selectMultiple(e))}
-              title="Mehrfachauswahl: Strg/Cmd + Klick"
-            >
-              {guides.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.title}
-                </option>
-              ))}
-            </select>
-
-            <button style={S.primary} onClick={createNewTask}>
-              Anlegen
-            </button>
-          </div>
-          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
-            Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick
-          </div>
-        </div>
-
-        {/* Board */}
-        {tab === "board" && (
-          <div style={S.board}>
-            <div style={S.column}>
-              <div style={S.colHeader}>
-                <div style={S.colTitle}>Zu erledigen</div>
-                <div style={S.badgeCount}>{todoTasks.length}</div>
-              </div>
-
-              {todoTasks.map((t) => (
-                <TaskCard
-                  key={t.id}
-                  task={t}
-                  areasById={areaNameById}
-                  guides={guides}
-                  guidesById={guidesById}
-                  guideIds={taskGuideIdsByTask[t.id] || (t.guide_id ? [t.guide_id] : [])}
-                  onSetTaskGuides={(ids) => setTaskGuides(t.id, ids)}
-                  subtasks={subtasksByTask[t.id] || []}
-                  stats={subStats(t.id)}
-                  subInput={subInputByTask[t.id] || ""}
-                  onSubInput={(v) =>
-                    setSubInputByTask((p) => ({ ...p, [t.id]: v }))
-                  }
-                  onAddSub={() => addSubtask(t.id)}
-                  onToggleSub={(sub) => toggleSubtask(t.id, sub)}
-                  onToggleTask={() => toggleTaskStatus(t)}
-                  onOpenGuide={(g) => openGuide(g)}
-                />
-              ))}
-            </div>
-
-            <div style={S.column}>
-              <div style={S.colHeader}>
-                <div style={S.colTitle}>Erledigt</div>
-                <div style={S.badgeCount}>{doneTasks.length}</div>
-              </div>
-
-              {doneTasks.map((t) => (
-                <TaskCard
-                  key={t.id}
-                  task={t}
-                  areasById={areaNameById}
-                  guides={guides}
-                  guidesById={guidesById}
-                  guideIds={taskGuideIdsByTask[t.id] || (t.guide_id ? [t.guide_id] : [])}
-                  onSetTaskGuides={(ids) => setTaskGuides(t.id, ids)}
-                  subtasks={subtasksByTask[t.id] || []}
-                  stats={subStats(t.id)}
-                  subInput={subInputByTask[t.id] || ""}
-                  onSubInput={(v) =>
-                    setSubInputByTask((p) => ({ ...p, [t.id]: v }))
-                  }
-                  onAddSub={() => addSubtask(t.id)}
-                  onToggleSub={(sub) => toggleSubtask(t.id, sub)}
-                  onToggleTask={() => toggleTaskStatus(t)}
-                  onOpenGuide={(g) => openGuide(g)}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Kalender */}
-        {tab === "calendar" && (
-          <div style={{ ...S.card, marginTop: 14 }}>
-            <div style={S.calHeader}>
-              <button
-                style={S.calBtn}
-                onClick={() =>
-                  setCalCursor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))
-                }
-              >
-                ←
-              </button>
-              <div style={{ fontSize: 16, fontWeight: 900 }}>
-                {monthGrid.startM.toLocaleString("de-DE", {
-                  month: "long",
-                  year: "numeric",
-                })}
-              </div>
-              <button
-                style={S.calBtn}
-                onClick={() =>
-                  setCalCursor((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))
-                }
-              >
-                →
-              </button>
-            </div>
-
-            <div style={S.calGrid}>
-              {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((h) => (
-                <div key={h} style={S.calDow}>
-                  {h}
-                </div>
-              ))}
-
-              {monthGrid.days.map((d) => {
-                const inMonth = d.getMonth() === calCursor.getMonth();
-                const key = ymd(d);
-                const dayTasks = tasksByDay[key] || [];
-                return (
-                  <div key={key} style={S.calCell(!inMonth)} title={key}>
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        gap: 10,
-                        alignItems: "center",
-                      }}
-                    >
-                      <div style={{ fontSize: 13, fontWeight: 900 }}>{d.getDate()}</div>
-                      {key === ymd(new Date()) ? (
-                        <div style={S.tag("done")}>Heute</div>
-                      ) : null}
-                    </div>
-
-                    <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
-                      {dayTasks.slice(0, 2).map((t) => (
-                        <div
-                          key={t.id}
-                          style={{
-                            fontSize: 12,
-                            border: "1px solid #eef2f7",
-                            background: "#f8fafc",
-                            borderRadius: 12,
-                            padding: "6px 8px",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {t.title}
-                        </div>
-                      ))}
-                      {dayTasks.length > 2 ? (
-                        <div style={{ fontSize: 12, opacity: 0.65 }}>
-                          +{dayTasks.length - 2} mehr
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Anleitungen */}
-        {tab === "guides" && (
-          <div style={{ display: "grid", gap: 14, marginTop: 14 }}>
-            <div style={S.card}>
-              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>
-                Anleitung erstellen
-              </div>
-
-              <div style={{ display: "grid", gap: 10, maxWidth: 850 }}>
-                <input
-                  style={S.input}
-                  placeholder="Titel"
-                  value={gTitle}
-                  onChange={(e) => setGTitle(e.target.value)}
-                />
-                <textarea
-                  style={{ ...S.input, minHeight: 110, borderRadius: 18 }}
-                  placeholder="Beschreibung / Inhalt (optional)"
-                  value={gDesc}
-                  onChange={(e) => setGDesc(e.target.value)}
-                />
-
-                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+      <div style={{ overflowX: "auto" }}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Name</th>
+              <th style={styles.th}>E-Mail</th>
+              <th style={styles.th}>Rolle</th>
+              <th style={styles.th}>Aktiv</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((u) => (
+              <tr key={u.id}>
+                <td style={styles.td}>
+                  <input
+                    value={u.name ?? ""}
+                    onChange={(e) => updateUser(u.id, { name: e.target.value })}
+                    style={styles.input}
+                  />
+                </td>
+                <td style={styles.td}>{u.email ?? ""}</td>
+                <td style={styles.td}>
                   <select
-                    style={{ ...S.select, maxWidth: 260 }}
-                    value={gVis}
-                    onChange={(e) => setGVis(e.target.value)}
+                    value={u.role_id ?? ""}
+                    onChange={(e) =>
+                      updateUser(u.id, { role_id: e.target.value || null })
+                    }
+                    style={styles.input}
                   >
-                    <option value="all">Sichtbar für alle</option>
-                    <option value="restricted">Eingeschränkt (später Rechte)</option>
+                    <option value="">–</option>
+                    {roles.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
                   </select>
-
-                  <input type="file" onChange={(e) => setGFile(e.target.files?.[0] || null)} />
-
-                  <button
-                    style={S.primary}
-                    onClick={async () => {
-                      if (!gTitle.trim()) return;
-                      setErr("");
-                      try {
-                        const created = await createGuide({
-                          title: gTitle.trim(),
-                          description: gDesc.trim(),
-                          visibility: gVis,
-                          file: gFile,
-                        });
-                        setGuides((prev) => [created, ...prev]);
-                        setGTitle("");
-                        setGDesc("");
-                        setGVis("all");
-                        setGFile(null);
-                      } catch (e) {
-                        setErr(String(e?.message || e));
-                      }
-                    }}
-                  >
-                    Speichern
-                  </button>
-                </div>
-
-                <div style={{ fontSize: 12, opacity: 0.7 }}>
-                  Hinweis: Bucket "guides" + Storage Policies notwendig, sonst schlagen Upload/Öffnen fehl.
-                </div>
-              </div>
-            </div>
-
-            <div style={S.card}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-                <div style={{ fontSize: 16, fontWeight: 900 }}>Anleitungen</div>
-                <div style={{ fontSize: 12, opacity: 0.7 }}>{guides.length}</div>
-              </div>
-
-              <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                {guides.map((g) => (
-                  <div
-                    key={g.id}
-                    style={{
-                      border: "1px solid #eef2f7",
-                      borderRadius: 18,
-                      padding: 14,
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: 12,
-                      alignItems: "flex-start",
-                    }}
-                  >
-                    <div style={{ minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 15,
-                          fontWeight: 900,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          maxWidth: 820,
-                        }}
-                      >
-                        {g.title}
-                      </div>
-
-                      {g.description ? (
-                        <div style={{ fontSize: 13, opacity: 0.8, marginTop: 6, whiteSpace: "pre-wrap" }}>
-                          {g.description}
-                        </div>
-                      ) : null}
-
-                      {g.file_name ? (
-                        <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>
-                          Datei: {g.file_name}
-                        </div>
-                      ) : null}
-
-                      <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>
-                        Sichtbarkeit: {g.visibility}
-                      </div>
-                    </div>
-
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                      <button style={S.ghostBtn} onClick={() => openGuide(g)}>
-                        Öffnen
-                      </button>
-                      <button
-                        style={S.ghostBtn}
-                        onClick={async () => {
-                          if (!confirm("Anleitung wirklich löschen?")) return;
-                          setErr("");
-                          try {
-                            await deleteGuide(g);
-                            setGuides((prev) => prev.filter((x) => x.id !== g.id));
-                            await reloadAll();
-                          } catch (e) {
-                            setErr(String(e?.message || e));
-                          }
-                        }}
-                      >
-                        Löschen
-                      </button>
-                    </div>
-                  </div>
-                ))}
-
-                {guides.length === 0 ? (
-                  <div style={{ fontSize: 13, opacity: 0.7 }}>Keine Anleitungen vorhanden.</div>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Admin */}
-        {tab === "admin" && (
-          <div style={{ display: "grid", gap: 14, marginTop: 14 }}>
-            <div style={S.card}>
-              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>
-                Admin: User & Rechte
-              </div>
-              <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 12 }}>
-                User anlegen/ändern, Rolle vergeben, Passwort setzen (über API Route).
-              </div>
-
-              <div
-                style={{
-                  display: "grid",
-                  gap: 10,
-                  gridTemplateColumns: "1.2fr 1.2fr 0.8fr 1fr auto",
-                  alignItems: "center",
-                }}
-              >
-                <input
-                  style={S.input}
-                  placeholder="E-Mail"
-                  value={createEmail}
-                  onChange={(e) => setCreateEmail(e.target.value)}
-                />
-                <input
-                  style={S.input}
-                  placeholder="Name (optional)"
-                  value={createName}
-                  onChange={(e) => setCreateName(e.target.value)}
-                />
-                <select
-                  style={S.select}
-                  value={createRole}
-                  onChange={(e) => setCreateRole(e.target.value)}
-                >
-                  <option value="user">User</option>
-                  <option value="admin">Admin</option>
-                </select>
-                <input
-                  style={S.input}
-                  placeholder="Temp Passwort (optional)"
-                  value={createTempPw}
-                  onChange={(e) => setCreateTempPw(e.target.value)}
-                />
-                <button
-                  style={S.primary}
-                  onClick={async () => {
-                    if (!createEmail.trim()) return;
-                    setErr("");
-                    try {
-                      // nutzt deine API-Route: createUser
-                      await adminApi("createUser", {
-                        email: createEmail.trim(),
-                        password: createTempPw.trim() || "Start123!Start",
-                        role: createRole,
-                        name: createName.trim(),
-                      });
-
-                      alert("User erstellt.");
-                      setCreateEmail("");
-                      setCreateName("");
-                      setCreateRole("user");
-                      setCreateTempPw("");
-                      await loadAdminUsers();
-                    } catch (e) {
-                      setErr(String(e?.message || e));
+                </td>
+                <td style={styles.td}>
+                  <input
+                    type="checkbox"
+                    checked={u.is_active !== false}
+                    onChange={(e) =>
+                      updateUser(u.id, { is_active: e.target.checked })
                     }
-                  }}
-                >
-                  User anlegen
-                </button>
-              </div>
-
-              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-                Tipp: Wenn du kein Temp-Passwort angibst, wird "Start123!Start" verwendet – kannst du direkt danach ändern.
-              </div>
-            </div>
-
-            <div style={S.card}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                <div style={{ fontSize: 16, fontWeight: 900 }}>Userliste</div>
-                <button style={S.ghostBtn} onClick={loadAdminUsers} disabled={adminLoading}>
-                  {adminLoading ? "Lade..." : "Aktualisieren"}
-                </button>
-              </div>
-
-              <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                {(adminUsers || []).map((u) => (
-                  <div
-                    key={u.id}
-                    style={{
-                      border: "1px solid #eef2f7",
-                      borderRadius: 18,
-                      padding: 12,
-                      display: "grid",
-                      gridTemplateColumns: "1.2fr 1fr 0.6fr auto auto",
-                      gap: 10,
-                      alignItems: "center",
-                    }}
-                  >
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {u.email || u.id}
-                      </div>
-                      <div style={{ fontSize: 12, opacity: 0.7 }}>{u.name || ""}</div>
-                    </div>
-
-                    <input
-                      style={S.input}
-                      value={u.name || ""}
-                      placeholder="Name"
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setAdminUsers((prev) =>
-                          prev.map((x) => (x.id === u.id ? { ...x, name: v } : x))
-                        );
-                      }}
-                    />
-
-                    <select
-                      style={S.select}
-                      value={u.role || "user"}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setAdminUsers((prev) =>
-                          prev.map((x) => (x.id === u.id ? { ...x, role: v } : x))
-                        );
-                      }}
-                    >
-                      <option value="user">User</option>
-                      <option value="admin">Admin</option>
-                    </select>
-
-                    <button
-                      style={S.ghostBtn}
-                      onClick={async () => {
-                        setErr("");
-                        try {
-                          // Rolle ändern
-                          await adminApi("setRole", { userId: u.id, role: u.role || "user" });
-
-                          // Name direkt in profiles setzen (Client darf nur own ändern – daher hier nicht clientseitig updaten)
-                          // Wenn du Name-Update auch für Admin willst: API Route erweitern -> updateProfile action.
-                          alert("Rolle gespeichert. Name-Änderung optional über API nachrüsten.");
-                          await loadAdminUsers();
-                        } catch (e) {
-                          setErr(String(e?.message || e));
-                        }
-                      }}
-                    >
-                      Speichern
-                    </button>
-
-                    <button
-                      style={S.ghostBtn}
-                      onClick={() => {
-                        setPwUserId(u.id);
-                        setPwNew("");
-                      }}
-                    >
-                      Passwort
-                    </button>
-                  </div>
-                ))}
-
-                {adminUsers.length === 0 ? (
-                  <div style={{ fontSize: 13, opacity: 0.7 }}>Keine User gefunden.</div>
-                ) : null}
-              </div>
-
-              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-                Hinweis: Die Userliste kommt aus deiner API. Wenn sie leer bleibt, ergänze in der API Route eine "list" Aktion (siehe unten).
-              </div>
-            </div>
-
-            <div style={S.card}>
-              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>Passwort setzen</div>
-              <div
-                style={{
-                  display: "grid",
-                  gap: 10,
-                  gridTemplateColumns: "1.2fr 1.2fr auto",
-                  alignItems: "center",
-                }}
-              >
-                <input
-                  style={S.input}
-                  placeholder="User-ID"
-                  value={pwUserId}
-                  onChange={(e) => setPwUserId(e.target.value)}
-                />
-                <input
-                  style={S.input}
-                  placeholder="Neues Passwort"
-                  value={pwNew}
-                  onChange={(e) => setPwNew(e.target.value)}
-                />
-                <button
-                  style={S.primary}
-                  onClick={async () => {
-                    if (!pwUserId.trim() || !pwNew.trim()) return;
-                    setErr("");
-                    try {
-                      await adminApi("setPassword", { userId: pwUserId.trim(), password: pwNew.trim() });
-                      alert("Passwort gesetzt.");
-                      setPwNew("");
-                    } catch (e) {
-                      setErr(String(e?.message || e));
-                    }
-                  }}
-                >
-                  Setzen
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+                  />
+                </td>
+              </tr>
+            ))}
+            {filtered.length === 0 ? (
+              <tr>
+                <td style={styles.td} colSpan={4}>
+                  Keine Nutzer gefunden.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
       </div>
 
-      {/* Viewer */}
-      {viewerOpen && (
-        <div style={S.modalBg} onClick={closeViewer}>
-          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <div style={S.modalHead}>
-              <div style={S.modalTitle}>{viewerTitle}</div>
-              <button style={S.modalClose} onClick={closeViewer}>
-                Schließen
-              </button>
-            </div>
-            <div style={{ padding: 0 }}>
-              {viewerUrl ? (
-                <iframe title="Anleitung" src={viewerUrl} style={{ width: "100%", height: "100%", border: 0 }} />
-              ) : (
-                <div style={{ padding: 14, whiteSpace: "pre-wrap", fontSize: 14 }}>
-                  {viewerText || "Kein Inhalt vorhanden."}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <div style={{ marginTop: 12, color: "#666", fontSize: 13 }}>
+        Hinweis: Wenn du einen Nutzer deaktivierst, kann er sich zwar evtl. noch
+        anmelden, aber wird im Dashboard blockiert (UI). Für eine harte Sperre
+        kannst du zusätzlich Policies/Functions nutzen.
+      </div>
     </div>
   );
 }
 
-/* ---------------- Task Card ---------------- */
-function TaskCard({
-  task,
-  areasById,
-  guides,
-  guidesById,
-  guideIds,
-  onSetTaskGuides,
-  subtasks,
-  stats,
-  subInput,
-  onSubInput,
-  onAddSub,
-  onToggleSub,
-  onToggleTask,
-  onOpenGuide,
-}) {
-  const statusTone = task.status === "done" ? "done" : "todo";
-  const areaName = task.area_id ? areasById[task.area_id] : null;
-  const due = safeDate(task.due_at);
-  const firstGuide = guideIds?.[0] ? guidesById[guideIds[0]] : null;
+/* ---------------- Guides (Anleitungen) ---------------- */
+function GuidesPanel({ permissions }) {
+  const [guides, setGuides] = useState([]);
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const canRead = can(permissions, "guides.read") || permissions.length === 0;
+  const canWrite = can(permissions, "guides.write");
+
+  async function load() {
+    setErr(null);
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("guides")
+      .select("id, title, content, created_at")
+      .order("created_at", { ascending: false });
+    if (error) {
+      setErr(error.message);
+      setLoading(false);
+      return;
+    }
+    setGuides(data ?? []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    if (canRead) load();
+  }, [canRead]);
+
+  async function createGuide() {
+    if (!canWrite) return;
+    if (!title.trim()) return;
+    setErr(null);
+    const { error } = await supabase
+      .from("guides")
+      .insert({ title: title.trim(), content: content.trim() });
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTitle("");
+    setContent("");
+    load();
+  }
+
+  if (!canRead) {
+    return (
+      <div style={styles.panel}>
+        <div style={styles.h3}>Anleitungen</div>
+        <div>Keine Berechtigung.</div>
+      </div>
+    );
+  }
 
   return (
-    <div style={S.taskCard}>
-      <div style={S.taskTop}>
-        <div style={{ minWidth: 0, width: "100%" }}>
-          <div style={S.taskTitleRow}>
-            <div style={S.taskTitle}>{task.title}</div>
-            <div style={S.tag(statusTone)}>{statusTone}</div>
-          </div>
+    <div style={styles.panel}>
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Anleitungen</div>
+        <button style={styles.btn} onClick={load} disabled={loading}>
+          {loading ? "Lade…" : "Neu laden"}
+        </button>
+      </div>
 
-          <div style={S.meta}>
-            {areaName ? `Bereich: ${areaName}` : "Bereich: —"}
-            {due ? ` • Fällig: ${due.toLocaleString("de-DE")}` : ""}
-          </div>
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <select
-              style={{ ...S.multiSelect, minWidth: 260 }}
-              multiple
-              value={guideIds || []}
-              onChange={(e) => onSetTaskGuides(Array.from(e.target.selectedOptions).map((o) => o.value))}
-              title="Mehrfachauswahl: Strg/Cmd + Klick"
-            >
-              {guides.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.title}
-                </option>
-              ))}
-            </select>
-
-            <button
-              style={S.ghostBtn}
-              onClick={() => {
-                if (!firstGuide) return;
-                onOpenGuide(firstGuide);
-              }}
-            >
-              Öffnen
-            </button>
-          </div>
-
-          <div style={S.subtasksWrap}>
-            <div style={S.subtasksHead}>
-              Unteraufgaben{" "}
-              <span style={{ fontWeight: 800, opacity: 0.7 }}>
-                {stats.done}/{stats.total}
-              </span>
-            </div>
-            <div style={S.progressBg}>
-              <div style={S.progressBar(stats.pct)} />
-            </div>
-
-            <div style={S.subtaskInputRow}>
-              <input
-                style={S.input}
-                placeholder="Unteraufgabe hinzufügen..."
-                value={subInput}
-                onChange={(e) => onSubInput(e.target.value)}
-              />
-              <button style={S.plusBtn} onClick={onAddSub}>
-                +
+      {canWrite ? (
+        <div style={{ ...styles.card, marginBottom: 14 }}>
+          <div style={styles.h4}>Neue Anleitung</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Titel"
+              style={styles.input}
+            />
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Inhalt / Schritte"
+              rows={5}
+              style={styles.textarea}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button style={styles.btnPrimary} onClick={createGuide}>
+                Anlegen
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
 
-            {subtasks.map((s) => (
-              <div key={s.id} style={S.subtaskRow}>
-                <input type="checkbox" checked={!!s.done} onChange={() => onToggleSub(s)} />
-                <div style={{ textDecoration: s.done ? "line-through" : "none" }}>{s.title}</div>
-              </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+        {guides.map((g) => (
+          <div key={g.id} style={styles.card}>
+            <div style={styles.h4}>{g.title}</div>
+            <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
+              Erstellt: {fmtDateTime(g.created_at)}
+            </div>
+            <div style={{ whiteSpace: "pre-wrap" }}>{g.content}</div>
+          </div>
+        ))}
+        {guides.length === 0 ? (
+          <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Tasks Board (Planke) ---------------- */
+function TasksBoard({ permissions }) {
+  const [tasks, setTasks] = useState([]);
+  const [guides, setGuides] = useState([]);
+  const [form, setForm] = useState({
+    title: "",
+    area: "",
+    due_at: "",
+    status: "todo",
+    notes: "",
+    guideIds: [],
+  });
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const canRead = can(permissions, "tasks.read") || permissions.length === 0;
+  const canWrite = can(permissions, "tasks.write") || permissions.length === 0;
+
+  async function loadAll() {
+    setErr(null);
+    setLoading(true);
+
+    const { data: tData, error: tErr } = await supabase
+      .from("tasks")
+      .select(
+        "id, title, area, due_at, status, notes, created_at, task_guides ( guide_id )"
+      )
+      .order("created_at", { ascending: false });
+
+    if (tErr) {
+      setErr(tErr.message);
+      setLoading(false);
+      return;
+    }
+
+    const { data: gData, error: gErr } = await supabase
+      .from("guides")
+      .select("id, title")
+      .order("title", { ascending: true });
+
+    if (gErr) {
+      // Not fatal for tasks
+      console.warn("guides load failed:", gErr.message);
+    }
+
+    setTasks(tData ?? []);
+    setGuides(gData ?? []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    if (canRead) loadAll();
+  }, [canRead]);
+
+  const columns = useMemo(() => {
+    const todo = [];
+    const done = [];
+    for (const t of tasks) {
+      if ((t.status ?? "todo") === "done") done.push(t);
+      else todo.push(t);
+    }
+    return { todo, done };
+  }, [tasks]);
+
+  async function createTask() {
+    if (!canWrite) return;
+    if (!form.title.trim()) return;
+
+    setErr(null);
+
+    const payload = {
+      title: form.title.trim(),
+      area: form.area || null,
+      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+      status: form.status || "todo",
+      notes: form.notes || null,
+    };
+
+    const { data: inserted, error: insErr } = await supabase
+      .from("tasks")
+      .insert(payload)
+      .select("id")
+      .single();
+
+    if (insErr) {
+      setErr(insErr.message);
+      return;
+    }
+
+    const taskId = inserted?.id;
+
+    // Link selected guides (many-to-many) if table exists
+    if (taskId && Array.isArray(form.guideIds) && form.guideIds.length > 0) {
+      const rows = form.guideIds.map((gid) => ({ task_id: taskId, guide_id: gid }));
+      const { error: linkErr } = await supabase.from("task_guides").insert(rows);
+      if (linkErr) {
+        console.warn("task_guides insert failed:", linkErr.message);
+      }
+    }
+
+    setForm({
+      title: "",
+      area: "",
+      due_at: "",
+      status: "todo",
+      notes: "",
+      guideIds: [],
+    });
+
+    loadAll();
+  }
+
+  async function toggleStatus(task) {
+    const next = (task.status ?? "todo") === "done" ? "todo" : "done";
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
+  }
+
+  function onGuideSelect(e) {
+    const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
+    setForm((f) => ({ ...f, guideIds: selected }));
+  }
+
+  if (!canRead) {
+    return (
+      <div style={styles.panel}>
+        <div style={styles.h3}>Armaturenbrett</div>
+        <div>Keine Berechtigung.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={styles.panel}>
+        <div style={styles.h3}>Aufgabe anlegen</div>
+
+        {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+
+        <div style={styles.taskFormGrid}>
+          <input
+            value={form.title}
+            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+            placeholder="Titel"
+            style={styles.input}
+            disabled={!canWrite}
+          />
+
+          <input
+            value={form.area}
+            onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))}
+            placeholder="Bereich"
+            style={styles.input}
+            disabled={!canWrite}
+          />
+
+          <input
+            type="datetime-local"
+            value={form.due_at}
+            onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))}
+            style={styles.input}
+            disabled={!canWrite}
+          />
+
+          <select
+            value={form.status}
+            onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
+            style={styles.input}
+            disabled={!canWrite}
+          >
+            <option value="todo">Zu erledigen</option>
+            <option value="done">Erledigt</option>
+          </select>
+
+          <select
+            multiple
+            value={form.guideIds}
+            onChange={onGuideSelect}
+            style={{ ...styles.input, height: 94 }}
+            disabled={!canWrite}
+            title="Mehrfachauswahl: Strg/Cmd + Klick"
+          >
+            {guides.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.title}
+              </option>
             ))}
+          </select>
+
+          <textarea
+            value={form.notes}
+            onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+            placeholder="Notizen"
+            rows={4}
+            style={styles.textarea}
+            disabled={!canWrite}
+          />
+
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
+            <button style={styles.btnPrimary} onClick={createTask} disabled={!canWrite}>
+              Anlegen
+            </button>
           </div>
         </div>
 
-        <button style={S.statusBtn} onClick={onToggleTask}>
-          Status
+        <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>
+          Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick
+        </div>
+      </div>
+
+      <div style={styles.columns}>
+        <TaskColumn
+          title="Zu erledigen"
+          count={columns.todo.length}
+          tasks={columns.todo}
+          onToggle={toggleStatus}
+        />
+        <TaskColumn
+          title="Erledigt"
+          count={columns.done.length}
+          tasks={columns.done}
+          onToggle={toggleStatus}
+        />
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button style={styles.btn} onClick={loadAll} disabled={loading}>
+          {loading ? "Lade…" : "Neu laden"}
         </button>
       </div>
     </div>
   );
 }
+
+function TaskColumn({ title, count, tasks, onToggle }) {
+  return (
+    <div style={styles.col}>
+      <div style={styles.colHeader}>
+        <div style={styles.h3}>{title}</div>
+        <div style={styles.badge}>{count}</div>
+      </div>
+
+      <div style={{ display: "grid", gap: 12 }}>
+        {tasks.map((t) => (
+          <div key={t.id} style={styles.card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={styles.h4}>{t.title}</div>
+              <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
+              <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
+                Status
+              </button>
+            </div>
+
+            <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
+              Bereich: {t.area ?? "–"} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
+            </div>
+
+            {t.notes ? (
+              <textarea readOnly value={t.notes} style={{ ...styles.textarea, marginTop: 10 }} rows={4} />
+            ) : null}
+
+            <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
+              Unteraufgaben 0/0
+            </div>
+          </div>
+        ))}
+
+        {tasks.length === 0 ? (
+          <div style={{ color: "#666" }}>Keine Einträge.</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Calendar ---------------- */
+function CalendarPanel({ permissions }) {
+  const canRead = can(permissions, "calendar.read") || permissions.length === 0;
+
+  const [date, setDate] = useState(() => {
+    const d = new Date();
+    return d.toISOString().slice(0, 10);
+  });
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  async function load() {
+    setErr(null);
+    setLoading(true);
+
+    const from = startOfDayISO(date);
+    const to = endOfDayISO(date);
+
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("id, title, area, due_at, status")
+      .gte("due_at", from)
+      .lte("due_at", to)
+      .order("due_at", { ascending: true });
+
+    if (error) {
+      setErr(error.message);
+      setLoading(false);
+      return;
+    }
+
+    setTasks(data ?? []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    if (canRead) load();
+  }, [date, canRead]);
+
+  if (!canRead) {
+    return (
+      <div style={styles.panel}>
+        <div style={styles.h3}>Kalender</div>
+        <div>Keine Berechtigung.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Kalender</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            style={styles.input}
+          />
+          <button style={styles.btn} onClick={load} disabled={loading}>
+            {loading ? "Lade…" : "Neu laden"}
+          </button>
+        </div>
+      </div>
+
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+
+      <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+        {tasks.map((t) => (
+          <div key={t.id} style={styles.card}>
+            <div style={styles.h4}>{t.title}</div>
+            <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
+              {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {t.area ?? "–"} · Status: {t.status ?? "todo"}
+            </div>
+          </div>
+        ))}
+        {tasks.length === 0 ? (
+          <div style={{ color: "#666" }}>Keine Aufgaben für {fmtDate(date)}.</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Main Component ---------------- */
+export default function Dashboard() {
+  const [activeTab, setActiveTab] = useState("board");
+  const [auth, setAuth] = useState({ user: null, profile: null, permissions: [] });
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState(null);
+
+  async function refreshAuth() {
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      const ctx = await loadMyAuthContext();
+      setAuth(ctx);
+    } catch (e) {
+      setAuthError(e?.message || String(e));
+      setAuth({ user: null, profile: null, permissions: [] });
+    }
+    setAuthLoading(false);
+  }
+
+  useEffect(() => {
+    refreshAuth();
+
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      refreshAuth();
+    });
+
+    return () => {
+      sub?.subscription?.unsubscribe?.();
+    };
+  }, []);
+
+  async function signOut() {
+    await supabase.auth.signOut();
+  }
+
+  const permissions = auth.permissions || [];
+
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.panel}>
+          <div style={styles.h3}>Konfiguration fehlt</div>
+          <div>
+            Bitte setze NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (authLoading) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.panel}>Lade…</div>
+      </div>
+    );
+  }
+
+  if (permissions.includes("__inactive__")) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.panel}>
+          <div style={styles.h3}>Zugang deaktiviert</div>
+          <div>Dein Zugang ist aktuell deaktiviert. Bitte melde dich bei der Administration.</div>
+          <div style={{ marginTop: 12 }}>
+            <button style={styles.btn} onClick={signOut}>Abmelden</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // If no user, show minimal login hint.
+  if (!auth.user) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.panel}>
+          <div style={styles.h3}>Bitte anmelden</div>
+          <div style={{ color: "#666" }}>
+            Du bist nicht eingeloggt. Öffne deine Login-Seite oder nutze dein bestehendes Auth-Flow.
+          </div>
+          {authError ? <div style={styles.error}>Fehler: {authError}</div> : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.topbar}>
+        <div style={styles.brand}>Armaturenbrett</div>
+
+        <div style={styles.tabs}>
+          <TabBtn active={activeTab === "board"} onClick={() => setActiveTab("board")}>Planke</TabBtn>
+          <TabBtn active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>Kalender</TabBtn>
+          <TabBtn active={activeTab === "guides"} onClick={() => setActiveTab("guides")}>Anleitungen</TabBtn>
+
+          {isAdminFallback(profile, permissions) ? (
+            <TabBtn active={activeTab === "users"} onClick={() => setActiveTab("users")}>Nutzer</TabBtn>
+          ) : null}
+
+          <button style={styles.btn} onClick={refreshAuth}>Neu laden</button>
+        </div>
+
+        <div style={styles.right}>
+          <div style={{ color: "#555", fontSize: 14 }}>
+            {auth.profile?.email || auth.user.email}
+          </div>
+          <button style={styles.btn} onClick={signOut}>Abmelden</button>
+        </div>
+      </div>
+
+      {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
+
+      {activeTab === "board" ? <TasksBoard permissions={permissions} /> : null}
+      {activeTab === "calendar" ? <CalendarPanel permissions={permissions} /> : null}
+      {activeTab === "guides" ? <GuidesPanel permissions={permissions} /> : null}
+      {activeTab === "users" ? (
+        <UsersAdminPanel profile={profile} permissions={permissions} />
+      ) : null}
+
+      <div style={{ height: 24 }} />
+    </div>
+  );
+}
+
+function TabBtn({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        ...styles.tab,
+        ...(active ? styles.tabActive : null),
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* ---------------- Styles ---------------- */
+const styles = {
+  page: {
+    minHeight: "100vh",
+    background: "#f3f6fb",
+    padding: 18,
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+  },
+  topbar: {
+    display: "flex",
+    gap: 14,
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 14,
+  },
+  brand: {
+    fontSize: 30,
+    fontWeight: 800,
+    letterSpacing: -0.5,
+  },
+  tabs: {
+    display: "flex",
+    gap: 10,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+  tab: {
+    border: "1px solid #d8e0ef",
+    background: "#fff",
+    padding: "10px 14px",
+    borderRadius: 999,
+    cursor: "pointer",
+    fontWeight: 600,
+  },
+  tabActive: {
+    background: "#0b6b2a",
+    borderColor: "#0b6b2a",
+    color: "#fff",
+  },
+  right: {
+    display: "flex",
+    gap: 12,
+    alignItems: "center",
+  },
+  panel: {
+    background: "#fff",
+    border: "1px solid #d8e0ef",
+    borderRadius: 18,
+    padding: 16,
+    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
+    marginBottom: 14,
+  },
+  h3: {
+    fontSize: 18,
+    fontWeight: 800,
+    marginBottom: 10,
+  },
+  h4: {
+    fontSize: 16,
+    fontWeight: 800,
+    marginBottom: 4,
+  },
+  rowBetween: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  columns: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 14,
+  },
+  col: {
+    background: "transparent",
+  },
+  colHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  badge: {
+    minWidth: 28,
+    height: 28,
+    borderRadius: 999,
+    background: "#eef2fb",
+    border: "1px solid #d8e0ef",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontWeight: 700,
+    color: "#333",
+  },
+  pill: {
+    fontSize: 12,
+    padding: "4px 10px",
+    borderRadius: 999,
+    border: "1px solid #d8e0ef",
+    background: "#f7f9ff",
+    fontWeight: 700,
+  },
+  card: {
+    background: "#fff",
+    border: "1px solid #d8e0ef",
+    borderRadius: 18,
+    padding: 14,
+    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
+  },
+  input: {
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    outline: "none",
+    background: "#fff",
+    minWidth: 160,
+  },
+  textarea: {
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    outline: "none",
+    background: "#fff",
+    width: "100%",
+    resize: "vertical",
+  },
+  btn: {
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    background: "#fff",
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+  btnPrimary: {
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: "1px solid #0b6b2a",
+    background: "#0b6b2a",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 800,
+  },
+  error: {
+    background: "#fff3f3",
+    border: "1px solid #ffd2d2",
+    color: "#a40000",
+    padding: 12,
+    borderRadius: 12,
+    marginTop: 10,
+    marginBottom: 10,
+  },
+  taskFormGrid: {
+    display: "grid",
+    gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr 1.6fr auto",
+    gap: 10,
+    alignItems: "start",
+  },
+};
