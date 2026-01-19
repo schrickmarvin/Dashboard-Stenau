@@ -1,3 +1,4 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
 diff --git a/pages/dashboard.js b/pages/dashboard.js
 index f3b066151abe21c8ff7be710d1b6f9a75ed659e7..0fd6b12e901da6461249e7aaceabd6eccfe25d86 100644
 --- a/pages/dashboard.js
@@ -291,3 +292,6 @@ index f3b066151abe21c8ff7be710d1b6f9a75ed659e7..0fd6b12e901da6461249e7aaceabd6ec
 -    verticalAlign: "top",
 -  },
 -};
+ 
+EOF
+)
