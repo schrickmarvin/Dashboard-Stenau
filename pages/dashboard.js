@@ -1,22 +1,20 @@
 // pages/dashboard.js
+// Standalone dashboard page (React) for Next.js + Supabase
+
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 /* ---------------- Supabase ---------------- */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
 const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
 
 /* ---------------- Helpers ---------------- */
-function isAdmin(user) {
-  const role = user?.app_metadata?.role || user?.user_metadata?.role || "";
-  return String(role).toLowerCase() === "admin";
-}
-
 function fmtDateTime(value) {
   if (!value) return "";
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
+  if (Number.isNaN(d.getTime())) return String(value);
   return d.toLocaleString("de-DE", {
     year: "numeric",
     month: "2-digit",
@@ -26,43 +24,112 @@ function fmtDateTime(value) {
   });
 }
 
+function fmtDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString("de-DE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
 function startOfDayISO(dateStr) {
   const d = new Date(dateStr);
   d.setHours(0, 0, 0, 0);
   return d.toISOString();
 }
+
 function endOfDayISO(dateStr) {
   const d = new Date(dateStr);
   d.setHours(23, 59, 59, 999);
   return d.toISOString();
 }
-/* ---------------- Auth Context ---------------- */
+
+function safeLower(v) {
+  return String(v ?? "").trim().toLowerCase();
+}
+
+/* ---------------- Auth context ---------------- */
 async function loadMyAuthContext() {
   const { data, error } = await supabase.auth.getUser();
   if (error) throw error;
 
   const user = data?.user || null;
-  if (!user) return { user: null, profile: null };
+  if (!user) return { user: null, profile: null, role: null, isAdmin: false };
 
+  // Your profiles table uses id = auth.uid()
   const { data: profile, error: pErr } = await supabase
     .from("profiles")
-    .select("id, email, name, is_active")
+    .select("id, email, name, role, role_id, is_active")
     .eq("id", user.id)
     .maybeSingle();
 
   if (pErr) throw pErr;
 
-  return { user, profile: profile || null };
+  // If is_active exists and user disabled
+  if (profile && profile.is_active === false) {
+    return { user, profile, role: null, isAdmin: false, inactive: true };
+  }
+
+  let role = null;
+  if (profile?.role_id) {
+    const { data: r, error: rErr } = await supabase
+      .from("roles")
+      .select("id, key, name")
+      .eq("id", profile.role_id)
+      .maybeSingle();
+    if (!rErr) role = r;
+  }
+
+  const roleKey = safeLower(role?.key || profile?.role);
+  const isAdmin = roleKey === "admin";
+
+  return { user, profile: profile || null, role, isAdmin, inactive: false };
 }
-/* ---------------- Users Admin Panel ---------------- */
-function UsersAdminPanel({ authUser }) {
+
+/* ---------------- Areas (A/B) ---------------- */
+// Option 2: fixed areas A/B (plus whatever exists in table `areas`)
+async function loadAreas() {
+  const { data, error } = await supabase
+    .from("areas")
+    .select("id, key, name")
+    .order("name", { ascending: true });
+
+  if (error) {
+    // If table doesn't exist or RLS blocks, fallback to static
+    console.warn("areas load failed:", error.message);
+    return [
+      { id: "__A__", key: "A", name: "Bereich A" },
+      { id: "__B__", key: "B", name: "Bereich B" },
+    ];
+  }
+
+  const list = (data || []).map((a) => ({
+    id: a.id,
+    key: a.key || a.name,
+    name: a.name || a.key,
+  }));
+
+  // Ensure A/B exist for your workflow
+  const hasA = list.some((x) => safeLower(x.key) === "a" || safeLower(x.name) === "bereich a");
+  const hasB = list.some((x) => safeLower(x.key) === "b" || safeLower(x.name) === "bereich b");
+
+  const extras = [];
+  if (!hasA) extras.push({ id: "__A__", key: "A", name: "Bereich A" });
+  if (!hasB) extras.push({ id: "__B__", key: "B", name: "Bereich B" });
+
+  return [...extras, ...list];
+}
+
+/* ---------------- Admin: Users Panel ---------------- */
+function UsersAdminPanel({ isAdmin }) {
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
-
-  const admin = isAdmin(authUser);
 
   async function load() {
     setErr(null);
@@ -70,23 +137,23 @@ function UsersAdminPanel({ authUser }) {
 
     const { data: rolesData, error: rErr } = await supabase
       .from("roles")
-      .select("id, name")
+      .select("id, key, name")
       .order("name", { ascending: true });
 
     if (rErr) {
-      setErr(rErr.message);
       setLoading(false);
+      setErr(rErr.message);
       return;
     }
 
     const { data: usersData, error: uErr } = await supabase
       .from("profiles")
-      .select("id, email, name, role_id, is_active")
+      .select("id, email, name, role, role_id, is_active")
       .order("name", { ascending: true });
 
     if (uErr) {
-      setErr(uErr.message);
       setLoading(false);
+      setErr(uErr.message);
       return;
     }
 
@@ -96,15 +163,13 @@ function UsersAdminPanel({ authUser }) {
   }
 
   useEffect(() => {
-    if (admin) load();
-  }, [admin]);
+    if (isAdmin) load();
+  }, [isAdmin]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return users;
-    return users.filter((u) =>
-      `${u.name ?? ""} ${u.email ?? ""}`.toLowerCase().includes(needle)
-    );
+    return users.filter((u) => `${u.name ?? ""} ${u.email ?? ""}`.toLowerCase().includes(needle));
   }, [users, q]);
 
   async function updateUser(id, patch) {
@@ -117,11 +182,11 @@ function UsersAdminPanel({ authUser }) {
     setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
   }
 
-  if (!admin) {
+  if (!isAdmin) {
     return (
       <div style={styles.panel}>
         <div style={styles.h3}>Nutzer</div>
-        <div>Keine Berechtigung.</div>
+        <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
       </div>
     );
   }
@@ -131,12 +196,7 @@ function UsersAdminPanel({ authUser }) {
       <div style={styles.rowBetween}>
         <div style={styles.h3}>Nutzerverwaltung</div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Suchen…"
-            style={styles.input}
-          />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Suchen…" style={styles.input} />
           <button style={styles.btn} onClick={load} disabled={loading}>
             {loading ? "Lade…" : "Neu laden"}
           </button>
@@ -169,9 +229,7 @@ function UsersAdminPanel({ authUser }) {
                 <td style={styles.td}>
                   <select
                     value={u.role_id ?? ""}
-                    onChange={(e) =>
-                      updateUser(u.id, { role_id: e.target.value || null })
-                    }
+                    onChange={(e) => updateUser(u.id, { role_id: e.target.value || null })}
                     style={styles.input}
                   >
                     <option value="">–</option>
@@ -186,13 +244,12 @@ function UsersAdminPanel({ authUser }) {
                   <input
                     type="checkbox"
                     checked={u.is_active !== false}
-                    onChange={(e) =>
-                      updateUser(u.id, { is_active: e.target.checked })
-                    }
+                    onChange={(e) => updateUser(u.id, { is_active: e.target.checked })}
                   />
                 </td>
               </tr>
             ))}
+
             {filtered.length === 0 ? (
               <tr>
                 <td style={styles.td} colSpan={4}>
@@ -207,13 +264,13 @@ function UsersAdminPanel({ authUser }) {
   );
 }
 
-/* ---------------- Guides ---------------- */
-function GuidesPanel({ canWrite }) {
+/* ---------------- Guides (Anleitungen) ---------------- */
+function GuidesPanel({ isAdmin }) {
   const [guides, setGuides] = useState([]);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
 
   async function load() {
     setErr(null);
@@ -222,7 +279,11 @@ function GuidesPanel({ canWrite }) {
       .from("guides")
       .select("id, title, content, created_at")
       .order("created_at", { ascending: false });
-    if (error) setErr(error.message);
+    if (error) {
+      setErr(error.message);
+      setLoading(false);
+      return;
+    }
     setGuides(data || []);
     setLoading(false);
   }
@@ -232,13 +293,19 @@ function GuidesPanel({ canWrite }) {
   }, []);
 
   async function createGuide() {
-    if (!canWrite) return;
+    if (!isAdmin) return;
     if (!title.trim()) return;
     setErr(null);
+
     const { error } = await supabase
       .from("guides")
       .insert({ title: title.trim(), content: content.trim() });
-    if (error) return setErr(error.message);
+
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+
     setTitle("");
     setContent("");
     load();
@@ -255,53 +322,47 @@ function GuidesPanel({ canWrite }) {
 
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-      {canWrite ? (
-        <div style={{ ...styles.card, marginBottom: 12 }}>
+      {isAdmin ? (
+        <div style={{ ...styles.card, marginBottom: 14 }}>
           <div style={styles.h4}>Neue Anleitung</div>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Titel"
-            style={styles.input}
-          />
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="Inhalt"
-            style={styles.textarea}
-            rows={5}
-          />
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <button style={styles.btnPrimary} onClick={createGuide}>
-              Anlegen
-            </button>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titel" style={styles.input} />
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Inhalt / Schritte"
+              rows={5}
+              style={styles.textarea}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button style={styles.btnPrimary} onClick={createGuide}>
+                Anlegen
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
 
-      <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
         {guides.map((g) => (
           <div key={g.id} style={styles.card}>
             <div style={styles.h4}>{g.title}</div>
-            <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
-              Erstellt: {fmtDateTime(g.created_at)}
-            </div>
+            <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>Erstellt: {fmtDateTime(g.created_at)}</div>
             <div style={{ whiteSpace: "pre-wrap" }}>{g.content}</div>
           </div>
         ))}
-        {guides.length === 0 ? (
-          <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div>
-        ) : null}
+
+        {guides.length === 0 ? <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div> : null}
       </div>
     </div>
   );
 }
 
-/* ---------------- Tasks (Bereich A: area_id -> areas) ---------------- */
-function TasksBoard() {
-  const [tasks, setTasks] = useState([]);
+/* ---------------- Tasks Board (Planke) ---------------- */
+function TasksBoard({ isAdmin }) {
   const [areas, setAreas] = useState([]);
   const [guides, setGuides] = useState([]);
+  const [tasks, setTasks] = useState([]);
 
   const [form, setForm] = useState({
     title: "",
@@ -311,22 +372,17 @@ function TasksBoard() {
     guideIds: [],
   });
 
-  const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
 
   async function loadAll() {
     setErr(null);
     setLoading(true);
 
+    // Tasks: use area_id, due_at, status, title
     const { data: tData, error: tErr } = await supabase
       .from("tasks")
-      .select(
-        `
-        id, title, status, due_at, area_id, created_at,
-        areas ( id, name ),
-        task_guides ( guide_id )
-      `
-      )
+      .select("id, title, area_id, due_at, status, created_at")
       .order("created_at", { ascending: false });
 
     if (tErr) {
@@ -335,29 +391,30 @@ function TasksBoard() {
       return;
     }
 
-    const { data: aData, error: aErr } = await supabase
-      .from("areas")
-      .select("id, name")
-      .order("name", { ascending: true });
+    const [areasList, guidesRes] = await Promise.all([
+      loadAreas(),
+      supabase.from("guides").select("id, title").order("title", { ascending: true }),
+    ]);
 
-    if (aErr) console.warn("areas load failed:", aErr.message);
-
-    const { data: gData, error: gErr } = await supabase
-      .from("guides")
-      .select("id, title")
-      .order("title", { ascending: true });
-
-    if (gErr) console.warn("guides load failed:", gErr.message);
+    if (guidesRes.error) {
+      console.warn("guides load failed:", guidesRes.error.message);
+    }
 
     setTasks(tData || []);
-    setAreas(aData || []);
-    setGuides(gData || []);
+    setAreas(areasList || []);
+    setGuides(guidesRes.data || []);
     setLoading(false);
   }
 
   useEffect(() => {
     loadAll();
   }, []);
+
+  const areaById = useMemo(() => {
+    const m = new Map();
+    for (const a of areas) m.set(a.id, a);
+    return m;
+  }, [areas]);
 
   const columns = useMemo(() => {
     const todo = [];
@@ -369,23 +426,26 @@ function TasksBoard() {
     return { todo, done };
   }, [tasks]);
 
+  function onGuideSelect(e) {
+    const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
+    setForm((f) => ({ ...f, guideIds: selected }));
+  }
+
   async function createTask() {
     if (!form.title.trim()) return;
-
     setErr(null);
 
     const payload = {
       title: form.title.trim(),
-      area_id: form.area_id || null,
-      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
       status: form.status || "todo",
+      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+      // area_id must be uuid or null
+      area_id: form.area_id && !form.area_id.startsWith("__") ? form.area_id : null,
+      // Optional: also store text area if you keep that column (safe try)
+      area: form.area_id && form.area_id.startsWith("__") ? (form.area_id === "__A__" ? "Bereich A" : "Bereich B") : null,
     };
 
-    const { data: inserted, error: insErr } = await supabase
-      .from("tasks")
-      .insert(payload)
-      .select("id")
-      .single();
+    const { data: inserted, error: insErr } = await supabase.from("tasks").insert(payload).select("id").single();
 
     if (insErr) {
       setErr(insErr.message);
@@ -394,52 +454,31 @@ function TasksBoard() {
 
     const taskId = inserted?.id;
 
-    // task_guides (many-to-many)
+    // Many-to-many task_guides (optional)
     if (taskId && Array.isArray(form.guideIds) && form.guideIds.length > 0) {
       const rows = form.guideIds.map((gid) => ({ task_id: taskId, guide_id: gid }));
       const { error: linkErr } = await supabase.from("task_guides").insert(rows);
       if (linkErr) console.warn("task_guides insert failed:", linkErr.message);
     }
 
-    setForm({
-      title: "",
-      area_id: "",
-      due_at: "",
-      status: "todo",
-      guideIds: [],
-    });
-
+    setForm({ title: "", area_id: "", due_at: "", status: "todo", guideIds: [] });
     loadAll();
   }
 
   async function toggleStatus(task) {
     const next = (task.status ?? "todo") === "done" ? "todo" : "done";
-    const { error } = await supabase
-      .from("tasks")
-      .update({ status: next })
-      .eq("id", task.id);
-
-    if (error) return setErr(error.message);
-
-    setTasks((prev) =>
-      prev.map((t) => (t.id === task.id ? { ...t, status: next } : t))
-    );
-  }
-
-  function onGuideSelect(e) {
-    const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
-    setForm((f) => ({ ...f, guideIds: selected }));
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
   }
 
   return (
     <div>
       <div style={styles.panel}>
-        <div style={styles.rowBetween}>
-          <div style={styles.h3}>Aufgabe anlegen</div>
-          <button style={styles.btn} onClick={loadAll} disabled={loading}>
-            {loading ? "Lade…" : "Neu laden"}
-          </button>
-        </div>
+        <div style={styles.h3}>Aufgabe anlegen</div>
 
         {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
@@ -456,7 +495,7 @@ function TasksBoard() {
             onChange={(e) => setForm((f) => ({ ...f, area_id: e.target.value }))}
             style={styles.input}
           >
-            <option value="">– Bereich –</option>
+            <option value="">Bereich</option>
             {areas.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
@@ -500,47 +539,59 @@ function TasksBoard() {
             </button>
           </div>
         </div>
+
+        <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick</div>
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn
-          title="Zu erledigen"
-          tasks={columns.todo}
-          onToggle={toggleStatus}
-        />
-        <TaskColumn
-          title="Erledigt"
-          tasks={columns.done}
-          onToggle={toggleStatus}
-        />
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} />
       </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button style={styles.btn} onClick={loadAll} disabled={loading}>
+          {loading ? "Lade…" : "Neu laden"}
+        </button>
+      </div>
+
+      {!isAdmin ? (
+        <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
+          Hinweis: Aufgaben anlegen ist für alle Nutzer erlaubt. Admin-Funktionen findest du im Tab „Nutzer“.
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function TaskColumn({ title, tasks, onToggle }) {
+function TaskColumn({ title, count, tasks, onToggle, areaById }) {
   return (
     <div style={styles.col}>
       <div style={styles.colHeader}>
         <div style={styles.h3}>{title}</div>
-        <div style={styles.badge}>{tasks.length}</div>
+        <div style={styles.badge}>{count}</div>
       </div>
 
       <div style={{ display: "grid", gap: 12 }}>
-        {tasks.map((t) => (
-          <div key={t.id} style={styles.card}>
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <div style={styles.h4}>{t.title}</div>
-              <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
-                Status
-              </button>
-            </div>
+        {tasks.map((t) => {
+          const areaName = t.area_id ? areaById.get(t.area_id)?.name : t.area || "–";
+          return (
+            <div key={t.id} style={styles.card}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={styles.h4}>{t.title}</div>
+                <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
+                <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
+                  Status
+                </button>
+              </div>
 
-            <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
-              Bereich: {t.areas?.name ?? "–"} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
+              <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
+                Bereich: {areaName} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
+              </div>
+
+              <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>Unteraufgaben 0/0</div>
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
       </div>
@@ -552,22 +603,42 @@ function TaskColumn({ title, tasks, onToggle }) {
 function CalendarPanel() {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [tasks, setTasks] = useState([]);
+  const [areas, setAreas] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    loadAreas().then(setAreas).catch(() => setAreas([]));
+  }, []);
+
+  const areaById = useMemo(() => {
+    const m = new Map();
+    for (const a of areas) m.set(a.id, a);
+    return m;
+  }, [areas]);
 
   async function load() {
     setErr(null);
+    setLoading(true);
+
     const from = startOfDayISO(date);
     const to = endOfDayISO(date);
 
     const { data, error } = await supabase
       .from("tasks")
-      .select("id, title, due_at, status, areas(name)")
+      .select("id, title, area_id, due_at, status")
       .gte("due_at", from)
       .lte("due_at", to)
       .order("due_at", { ascending: true });
 
-    if (error) return setErr(error.message);
+    if (error) {
+      setErr(error.message);
+      setLoading(false);
+      return;
+    }
+
     setTasks(data || []);
+    setLoading(false);
   }
 
   useEffect(() => {
@@ -578,51 +649,67 @@ function CalendarPanel() {
     <div style={styles.panel}>
       <div style={styles.rowBetween}>
         <div style={styles.h3}>Kalender</div>
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={styles.input} />
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={styles.input} />
+          <button style={styles.btn} onClick={load} disabled={loading}>
+            {loading ? "Lade…" : "Neu laden"}
+          </button>
+        </div>
       </div>
 
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-      <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-        {tasks.map((t) => (
-          <div key={t.id} style={styles.card}>
-            <div style={styles.h4}>{t.title}</div>
-            <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-              {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {t.areas?.name ?? "–"} · Status:{" "}
-              {t.status ?? "todo"}
+      <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+        {tasks.map((t) => {
+          const areaName = t.area_id ? areaById.get(t.area_id)?.name : t.area || "–";
+          return (
+            <div key={t.id} style={styles.card}>
+              <div style={styles.h4}>{t.title}</div>
+              <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
+                {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {areaName} · Status: {t.status ?? "todo"}
+              </div>
             </div>
-          </div>
-        ))}
-        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Aufgaben für diesen Tag.</div> : null}
+          );
+        })}
+        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Aufgaben für {fmtDate(date)}.</div> : null}
       </div>
     </div>
   );
 }
 
-/* ---------------- Main ---------------- */
+/* ---------------- Main Component ---------------- */
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("board");
-  const [auth, setAuth] = useState({ user: null, profile: null });
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState(null);
+  const [auth, setAuth] = useState({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState(null);
 
-  async function refresh() {
-    setErr(null);
-    setLoading(true);
+  async function refreshAuth() {
+    setAuthLoading(true);
+    setAuthError(null);
+
     try {
       const ctx = await loadMyAuthContext();
       setAuth(ctx);
     } catch (e) {
-      setErr(e?.message || String(e));
-      setAuth({ user: null, profile: null });
+      console.error("Auth init failed:", e);
+      setAuth({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
+      setAuthError(e?.message || String(e));
+    } finally {
+      setAuthLoading(false);
     }
-    setLoading(false);
   }
 
   useEffect(() => {
-    refresh();
-    const { data: sub } = supabase.auth.onAuthStateChange(() => refresh());
-    return () => sub?.subscription?.unsubscribe?.();
+    refreshAuth();
+
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      refreshAuth();
+    });
+
+    return () => {
+      sub?.subscription?.unsubscribe?.();
+    };
   }, []);
 
   async function signOut() {
@@ -634,13 +721,13 @@ export default function Dashboard() {
       <div style={styles.page}>
         <div style={styles.panel}>
           <div style={styles.h3}>Konfiguration fehlt</div>
-          <div>Bitte NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY setzen.</div>
+          <div>Bitte setze NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY.</div>
         </div>
       </div>
     );
   }
 
-  if (loading) {
+  if (authLoading) {
     return (
       <div style={styles.page}>
         <div style={styles.panel}>Lade…</div>
@@ -648,26 +735,12 @@ export default function Dashboard() {
     );
   }
 
-  if (!auth.user) {
-    return (
-      <div style={styles.page}>
-        <div style={styles.panel}>
-          <div style={styles.h3}>Bitte anmelden</div>
-          {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-          <div style={{ color: "#666" }}>
-            Du bist nicht eingeloggt. Nutze deine Login-Seite (oder den bestehenden Auth-Flow).
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (auth.profile?.is_active === false) {
+  if (auth.inactive) {
     return (
       <div style={styles.page}>
         <div style={styles.panel}>
           <div style={styles.h3}>Zugang deaktiviert</div>
-          <div>Dein Zugang ist deaktiviert. Bitte melde dich bei der Administration.</div>
+          <div>Dein Zugang ist aktuell deaktiviert. Bitte melde dich bei der Administration.</div>
           <div style={{ marginTop: 12 }}>
             <button style={styles.btn} onClick={signOut}>
               Abmelden
@@ -678,7 +751,17 @@ export default function Dashboard() {
     );
   }
 
-  const admin = isAdmin(auth.user);
+  if (!auth.user) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.panel}>
+          <div style={styles.h3}>Bitte anmelden</div>
+          <div style={{ color: "#666" }}>Du bist nicht eingeloggt. Öffne deine Login-Seite oder nutze dein bestehendes Auth-Flow.</div>
+          {authError ? <div style={styles.error}>Fehler: {authError}</div> : null}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={styles.page}>
@@ -695,12 +778,14 @@ export default function Dashboard() {
           <TabBtn active={activeTab === "guides"} onClick={() => setActiveTab("guides")}>
             Anleitungen
           </TabBtn>
-          {admin ? (
+
+          {auth.isAdmin ? (
             <TabBtn active={activeTab === "users"} onClick={() => setActiveTab("users")}>
               Nutzer
             </TabBtn>
           ) : null}
-          <button style={styles.btn} onClick={refresh}>
+
+          <button style={styles.btn} onClick={refreshAuth}>
             Neu laden
           </button>
         </div>
@@ -713,14 +798,14 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {err ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {err}</div> : null}
+      {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
-      {activeTab === "board" ? <TasksBoard /> : null}
+      {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
       {activeTab === "calendar" ? <CalendarPanel /> : null}
-      {activeTab === "guides" ? <GuidesPanel canWrite={admin} /> : null}
-      {activeTab === "users" ? <UsersAdminPanel authUser={auth.user} /> : null}
+      {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
-      <div style={{ height: 20 }} />
+      <div style={{ height: 24 }} />
     </div>
   );
 }
@@ -754,8 +839,17 @@ const styles = {
     justifyContent: "space-between",
     marginBottom: 14,
   },
-  brand: { fontSize: 30, fontWeight: 800, letterSpacing: -0.5 },
-  tabs: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+  brand: {
+    fontSize: 30,
+    fontWeight: 800,
+    letterSpacing: -0.5,
+  },
+  tabs: {
+    display: "flex",
+    gap: 10,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
   tab: {
     border: "1px solid #d8e0ef",
     background: "#fff",
@@ -764,8 +858,16 @@ const styles = {
     cursor: "pointer",
     fontWeight: 600,
   },
-  tabActive: { background: "#0b6b2a", borderColor: "#0b6b2a", color: "#fff" },
-  right: { display: "flex", gap: 12, alignItems: "center" },
+  tabActive: {
+    background: "#0b6b2a",
+    borderColor: "#0b6b2a",
+    color: "#fff",
+  },
+  right: {
+    display: "flex",
+    gap: 12,
+    alignItems: "center",
+  },
   panel: {
     background: "#fff",
     border: "1px solid #d8e0ef",
@@ -774,11 +876,36 @@ const styles = {
     boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
     marginBottom: 14,
   },
-  h3: { fontSize: 18, fontWeight: 800, marginBottom: 10 },
-  h4: { fontSize: 16, fontWeight: 800, marginBottom: 4 },
-  rowBetween: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  columns: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
-  colHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  h3: {
+    fontSize: 18,
+    fontWeight: 800,
+    marginBottom: 10,
+  },
+  h4: {
+    fontSize: 16,
+    fontWeight: 800,
+    marginBottom: 4,
+  },
+  rowBetween: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  columns: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 14,
+  },
+  col: {
+    background: "transparent",
+  },
+  colHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
   badge: {
     minWidth: 28,
     height: 28,
@@ -790,6 +917,14 @@ const styles = {
     justifyContent: "center",
     fontWeight: 700,
     color: "#333",
+  },
+  pill: {
+    fontSize: 12,
+    padding: "4px 10px",
+    borderRadius: 999,
+    border: "1px solid #d8e0ef",
+    background: "#f7f9ff",
+    fontWeight: 700,
   },
   card: {
     background: "#fff",
@@ -841,13 +976,26 @@ const styles = {
     marginTop: 10,
     marginBottom: 10,
   },
-  table: { width: "100%", borderCollapse: "collapse" },
-  th: { textAlign: "left", padding: 8, borderBottom: "1px solid #ddd" },
-  td: { padding: 8, borderBottom: "1px solid #eee" },
   taskFormGrid: {
     display: "grid",
     gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr auto",
     gap: 10,
     alignItems: "start",
+  },
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+  },
+  th: {
+    textAlign: "left",
+    padding: 10,
+    borderBottom: "1px solid #d8e0ef",
+    fontSize: 13,
+    color: "#555",
+  },
+  td: {
+    padding: 10,
+    borderBottom: "1px solid #eef2fb",
+    verticalAlign: "top",
   },
 };
