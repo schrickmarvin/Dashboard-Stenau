@@ -38,9 +38,19 @@ function endOfDayISO(dateStr) {
 }
 
 /* ---------------- Auth Context ---------------- */
-async function loadMyAuthContext() {
-  const { data, error } = await supabase.auth.getUser();
-  if (error) throw error;
+async function refreshAuth() {
+  setAuthLoading(true);
+  try {
+    const ctx = await loadMyAuthContext();
+    setAuth(ctx);
+  } catch (e) {
+    console.error("Auth init failed:", e);
+    setAuth({ user: null, profile: null, permissions: [] });
+  } finally {
+    setAuthLoading(false);
+  }
+}
+
 
   const user = data?.user || null;
   if (!user) return { user: null, profile: null };
