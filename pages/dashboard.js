@@ -92,10 +92,29 @@ async function loadMyAuthContext() {
 /* ---------------- Areas (A/B) ---------------- */
 // Option 2: fixed areas A/B (plus whatever exists in table `areas`)
 async function loadAreas() {
-  const { data, error } = await supabase
-    .from("areas")
-    .select("id, key, name, color")
-    .order("name", { ascending: true });
+  // Some projects have areas.key, some only areas.name.
+  // We try with `key` first, and if Postgres says the column doesn't exist,
+  // we retry without it.
+  let data = null;
+  let error = null;
+
+  {
+    const r1 = await supabase
+      .from("areas")
+      .select("id, key, name, color")
+      .order("name", { ascending: true });
+    data = r1.data;
+    error = r1.error;
+  }
+
+  if (error && String(error.message || "").toLowerCase().includes('column "key" does not exist')) {
+    const r2 = await supabase
+      .from("areas")
+      .select("id, name, color")
+      .order("name", { ascending: true });
+    data = r2.data;
+    error = r2.error;
+  }
 
   if (error) {
     // If table doesn't exist or RLS blocks, fallback to static
@@ -268,17 +287,26 @@ function UsersAdminPanel({ isAdmin }) {
 /* ---------------- Areas (Bereiche) Admin Panel ---------------- */
 function AreasAdminPanel({ isAdmin }) {
   const [areas, setAreas] = useState([]);
-  const [form, setForm] = useState({ key: "", name: "", color: "#6b7280" });
+  const [form, setForm] = useState({ name: "", color: "#6b7280" });
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
   async function load() {
     setErr(null);
     setLoading(true);
-    const res = await supabase
+    // areas table may not have a column named "key" (older schema)
+    let res = await supabase
       .from("areas")
       .select("id, key, name, color, created_at")
       .order("name", { ascending: true });
+
+    if (res.error && String(res.error.message || "").toLowerCase().includes('column "key"')) {
+      res = await supabase
+        .from("areas")
+        .select("id, name, color, created_at")
+        .order("name", { ascending: true });
+    }
+
     if (res.error) {
       setErr(res.error.message);
       setLoading(false);
@@ -304,18 +332,17 @@ function AreasAdminPanel({ isAdmin }) {
 
   async function createArea() {
     if (!isAdmin) return;
-    const key = form.key.trim().toUpperCase();
-    if (!key) return;
-    const name = form.name.trim() || `Bereich ${key}`;
+    const name = (form.name || "").trim();
+    if (!name) return;
     const color = (form.color || "#6b7280").trim();
 
     setErr(null);
-    const res = await supabase.from("areas").insert({ key, name, color });
+    const res = await supabase.from("areas").insert({ name, color });
     if (res.error) {
       setErr(res.error.message);
       return;
     }
-    setForm({ key: "", name: "", color: "#6b7280" });
+    setForm({ name: "", color: "#6b7280" });
     load();
   }
 
@@ -333,17 +360,11 @@ function AreasAdminPanel({ isAdmin }) {
       {isAdmin ? (
         <div style={{ ...styles.card, marginBottom: 14 }}>
           <div style={styles.h4}>Neuen Bereich anlegen</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 1fr auto", gap: 10 }}>
-            <input
-              value={form.key}
-              onChange={(e) => setForm((f) => ({ ...f, key: e.target.value }))}
-              placeholder="Key (z.B. A)"
-              style={styles.input}
-            />
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10 }}>
             <input
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              placeholder="Name"
+              placeholder="Name (z.B. Bereich A)"
               style={styles.input}
             />
             <input
@@ -368,7 +389,6 @@ function AreasAdminPanel({ isAdmin }) {
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>Key</th>
               <th style={styles.th}>Name</th>
               <th style={styles.th}>Farbe</th>
             </tr>
@@ -376,7 +396,6 @@ function AreasAdminPanel({ isAdmin }) {
           <tbody>
             {areas.map((a) => (
               <tr key={a.id}>
-                <td style={styles.td}>{String(a.key || "").toUpperCase()}</td>
                 <td style={styles.td}>
                   {isAdmin ? (
                     <input
@@ -415,7 +434,7 @@ function AreasAdminPanel({ isAdmin }) {
             ))}
             {areas.length === 0 ? (
               <tr>
-                <td style={styles.td} colSpan={3}>
+                <td style={styles.td} colSpan={2}>
                   Keine Bereiche vorhanden.
                 </td>
               </tr>
@@ -598,14 +617,16 @@ function TasksBoard({ isAdmin }) {
     if (!form.title.trim()) return;
     setErr(null);
 
+    const selectedArea = areas.find((a) => a.id === form.area_id) || null;
+
     const payload = {
       title: form.title.trim(),
       status: form.status || "todo",
       due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
       // area_id must be uuid or null
       area_id: form.area_id && !form.area_id.startsWith("__") ? form.area_id : null,
-      // Optional: also store text area if you keep that column (safe try)
-      area: form.area_id && form.area_id.startsWith("__") ? (form.area_id === "__A__" ? "Bereich A" : "Bereich B") : null,
+      // Optional: also store text area if you keep that column
+      area: selectedArea ? selectedArea.name : form.area_id && form.area_id.startsWith("__") ? (form.area_id === "__A__" ? "Bereich A" : "Bereich B") : null,
     };
 
     const { data: inserted, error: insErr } = await supabase.from("tasks").insert(payload).select("id").single();
@@ -827,12 +848,14 @@ function CalendarPanel() {
 
       <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
         {tasks.map((t) => {
-          const areaName = t.area_id ? areaById.get(t.area_id)?.name : t.area || "–";
+          const areaObj = t.area_id ? areaById.get(t.area_id) : null;
+          const areaName = areaObj?.name || t.area || "–";
+          const areaColor = areaObj?.color || (t.area ? "#6b7280" : "#d1d5db");
           return (
             <div key={t.id} style={styles.card}>
               <div style={styles.h4}>{t.title}</div>
               <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span style={{width:10,height:10,borderRadius:999,background:areaColor,display:"inline-block"}} />{areaName}</span> · Status: {t.status ?? "todo"}
+                {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 999, background: areaColor, display: "inline-block" }} />{areaName}</span> · Status: {t.status ?? "todo"}
               </div>
             </div>
           );
