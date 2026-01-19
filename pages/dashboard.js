@@ -174,9 +174,10 @@ function UsersAdminPanel({ profile, permissions }) {
     setLoading(false);
   }
 
-  useEffect(() => {
-    if () load();
-  }, []);
+ useEffect(() => {
+  if (isAdmin) load();
+}, [isAdmin]);
+
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
