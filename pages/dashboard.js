@@ -1,5 +1,4 @@
-import textwrap, os, re, json, pathlib, datetime
-content = r'''// pages/dashboard.js
+// pages/dashboard.js
 // Next.js + Supabase Dashboard
 // Tabs: Planke (Tasks), Kalender, Anleitungen, Bereiche, Nutzer (Admin)
 // Bereich-Logik: tasks.area_id -> areas
@@ -103,7 +102,7 @@ function AreasPanel() {
 
   async function deleteArea(id) {
     setErr(null);
-    const ok = window.confirm("Bereich wirklich löschen?");
+    const ok = window.confirm("Bereich wirklich loeschen?");
     if (!ok) return;
     const { error } = await supabase.from("areas").delete().eq("id", id);
     if (error) return setErr(error.message);
@@ -115,7 +114,7 @@ function AreasPanel() {
       <div style={styles.rowBetween}>
         <div style={styles.h3}>Bereiche</div>
         <button style={styles.btn} onClick={load} disabled={loading}>
-          {loading ? "Lade…" : "Neu laden"}
+          {loading ? "Lade..." : "Neu laden"}
         </button>
       </div>
 
@@ -169,10 +168,10 @@ function AreasPanel() {
                     style={styles.input}
                   />
                 </td>
-                <td style={styles.td}>{a.created_at ? fmtDateTime(a.created_at) : "–"}</td>
+                <td style={styles.td}>{a.created_at ? fmtDateTime(a.created_at) : "-"}</td>
                 <td style={styles.td}>
                   <button style={styles.btn} onClick={() => deleteArea(a.id)}>
-                    Löschen
+                    Loeschen
                   </button>
                 </td>
               </tr>
@@ -189,7 +188,7 @@ function AreasPanel() {
       </div>
 
       <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
-        Hinweis: Wenn du einen Bereich löschst, können Tasks mit diesem Bereich ggf. keinen Namen mehr anzeigen.
+        Hinweis: Wenn du einen Bereich loeschst, koennen Tasks mit diesem Bereich ggf. keinen Namen mehr anzeigen.
       </div>
     </div>
   );
@@ -237,7 +236,7 @@ function GuidesPanel({ canWrite }) {
       <div style={styles.rowBetween}>
         <div style={styles.h3}>Anleitungen</div>
         <button style={styles.btn} onClick={load} disabled={loading}>
-          {loading ? "Lade…" : "Neu laden"}
+          {loading ? "Lade..." : "Neu laden"}
         </button>
       </div>
 
@@ -399,16 +398,11 @@ function TasksBoard() {
 
   async function toggleStatus(task) {
     const next = (task.status ?? "todo") === "done" ? "todo" : "done";
-    const { error } = await supabase
-      .from("tasks")
-      .update({ status: next })
-      .eq("id", task.id);
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id);
 
     if (error) return setErr(error.message);
 
-    setTasks((prev) =>
-      prev.map((t) => (t.id === task.id ? { ...t, status: next } : t))
-    );
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
   }
 
   function onGuideSelect(e) {
@@ -422,7 +416,7 @@ function TasksBoard() {
         <div style={styles.rowBetween}>
           <div style={styles.h3}>Aufgabe anlegen</div>
           <button style={styles.btn} onClick={loadAll} disabled={loading}>
-            {loading ? "Lade…" : "Neu laden"}
+            {loading ? "Lade..." : "Neu laden"}
           </button>
         </div>
 
@@ -441,7 +435,7 @@ function TasksBoard() {
             onChange={(e) => setForm((f) => ({ ...f, area_id: e.target.value }))}
             style={styles.input}
           >
-            <option value="">– Bereich –</option>
+            <option value="">- Bereich -</option>
             {areas.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
@@ -514,11 +508,11 @@ function TaskColumn({ title, tasks, onToggle }) {
             </div>
 
             <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
-              Bereich: {t.areas?.name ?? "–"} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
+              Bereich: {t.areas?.name ?? "-"} · Faellig: {t.due_at ? fmtDateTime(t.due_at) : "-"}
             </div>
           </div>
         ))}
-        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Eintraege.</div> : null}
       </div>
     </div>
   );
@@ -564,12 +558,11 @@ function CalendarPanel() {
           <div key={t.id} style={styles.card}>
             <div style={styles.h4}>{t.title}</div>
             <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-              {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {t.areas?.name ?? "–"} · Status:{" "}
-              {t.status ?? "todo"}
+              {t.due_at ? fmtDateTime(t.due_at) : "-"} · Bereich: {t.areas?.name ?? "-"} · Status: {t.status ?? "todo"}
             </div>
           </div>
         ))}
-        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Aufgaben für diesen Tag.</div> : null}
+        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Aufgaben fuer diesen Tag.</div> : null}
       </div>
     </div>
   );
@@ -621,9 +614,7 @@ function UsersAdminPanel() {
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return users;
-    return users.filter((u) =>
-      `${u.name ?? ""} ${u.email ?? ""}`.toLowerCase().includes(needle)
-    );
+    return users.filter((u) => `${u.name ?? ""} ${u.email ?? ""}`.toLowerCase().includes(needle));
   }, [users, q]);
 
   async function updateUser(id, patch) {
@@ -641,9 +632,9 @@ function UsersAdminPanel() {
       <div style={styles.rowBetween}>
         <div style={styles.h3}>Nutzerverwaltung</div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Suchen…" style={styles.input} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Suchen..." style={styles.input} />
           <button style={styles.btn} onClick={load} disabled={loading}>
-            {loading ? "Lade…" : "Neu laden"}
+            {loading ? "Lade..." : "Neu laden"}
           </button>
         </div>
       </div>
@@ -664,20 +655,12 @@ function UsersAdminPanel() {
             {filtered.map((u) => (
               <tr key={u.id}>
                 <td style={styles.td}>
-                  <input
-                    value={u.name ?? ""}
-                    onChange={(e) => updateUser(u.id, { name: e.target.value })}
-                    style={styles.input}
-                  />
+                  <input value={u.name ?? ""} onChange={(e) => updateUser(u.id, { name: e.target.value })} style={styles.input} />
                 </td>
                 <td style={styles.td}>{u.email ?? ""}</td>
                 <td style={styles.td}>
-                  <select
-                    value={u.role_id ?? ""}
-                    onChange={(e) => updateUser(u.id, { role_id: e.target.value || null })}
-                    style={styles.input}
-                  >
-                    <option value="">–</option>
+                  <select value={u.role_id ?? ""} onChange={(e) => updateUser(u.id, { role_id: e.target.value || null })} style={styles.input}>
+                    <option value="">-</option>
                     {roles.map((r) => (
                       <option key={r.id} value={r.id}>
                         {r.name}
@@ -686,11 +669,7 @@ function UsersAdminPanel() {
                   </select>
                 </td>
                 <td style={styles.td}>
-                  <input
-                    type="checkbox"
-                    checked={u.is_active !== false}
-                    onChange={(e) => updateUser(u.id, { is_active: e.target.checked })}
-                  />
+                  <input type="checkbox" checked={u.is_active !== false} onChange={(e) => updateUser(u.id, { is_active: e.target.checked })} />
                 </td>
               </tr>
             ))}
@@ -724,13 +703,8 @@ export default function Dashboard() {
       const ctx = await loadMyAuthContext();
       setAuth(ctx);
 
-      // Admin check via DB roles (profiles.role_id -> roles.key = 'admin')
       if (ctx?.user?.id && ctx?.profile?.role_id) {
-        const { data, error } = await supabase
-          .from("roles")
-          .select("key")
-          .eq("id", ctx.profile.role_id)
-          .maybeSingle();
+        const { data, error } = await supabase.from("roles").select("key").eq("id", ctx.profile.role_id).maybeSingle();
         if (error) {
           console.warn("roles lookup failed:", error.message);
           setIsAdminDb(false);
@@ -774,7 +748,7 @@ export default function Dashboard() {
   if (authLoading) {
     return (
       <div style={styles.page}>
-        <div style={styles.panel}>Lade…</div>
+        <div style={styles.panel}>Lade...</div>
       </div>
     );
   }
@@ -899,6 +873,7 @@ const styles = {
   h4: { fontSize: 16, fontWeight: 800, marginBottom: 8 },
   rowBetween: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
   columns: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
+  col: { background: "transparent" },
   colHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
   badge: {
     minWidth: 28,
@@ -973,8 +948,3 @@ const styles = {
     alignItems: "start",
   },
 };
-'''
-path = "/mnt/data/dashboard.js"
-with open(path, "w", encoding="utf-8") as f:
-    f.write(content)
-path
