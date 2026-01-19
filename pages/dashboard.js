@@ -36,21 +36,10 @@ function endOfDayISO(dateStr) {
   d.setHours(23, 59, 59, 999);
   return d.toISOString();
 }
-
 /* ---------------- Auth Context ---------------- */
-async function refreshAuth() {
-  setAuthLoading(true);
-  try {
-    const ctx = await loadMyAuthContext();
-    setAuth(ctx);
-  } catch (e) {
-    console.error("Auth init failed:", e);
-    setAuth({ user: null, profile: null, permissions: [] });
-  } finally {
-    setAuthLoading(false);
-  }
-}
-
+async function loadMyAuthContext() {
+  const { data, error } = await supabase.auth.getUser();
+  if (error) throw error;
 
   const user = data?.user || null;
   if (!user) return { user: null, profile: null };
@@ -65,7 +54,6 @@ async function refreshAuth() {
 
   return { user, profile: profile || null };
 }
-
 /* ---------------- Users Admin Panel ---------------- */
 function UsersAdminPanel({ authUser }) {
   const [users, setUsers] = useState([]);
