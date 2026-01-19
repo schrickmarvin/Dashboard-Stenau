@@ -199,14 +199,15 @@ function UsersAdminPanel({ profile, permissions }) {
     setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
   }
 
-  if (!) {
-    return (
-      <div style={styles.panel}>
-        <div style={styles.h3}>Nutzer</div>
-        <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
-      </div>
-    );
-  }
+  if (!isAdmin) {
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h3}>Nutzer</div>
+      <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
+    </div>
+  );
+}
+
 
   return (
     <div style={styles.panel}>
