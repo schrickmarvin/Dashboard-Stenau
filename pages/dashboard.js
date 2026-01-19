@@ -16,12 +16,22 @@ function can(permissions, key) {
   return Array.isArray(permissions) && permissions.includes(key);
 }
 
-function isAdminFallback(profile, permissions) {
+function isAdminFallback(profile, permissions, user) {
+  // Primary: JWT claim
+  const jwtRole =
+    user?.app_metadata?.role ||
+    user?.user_metadata?.role ||
+    null;
+
+  if ((jwtRole ?? "").toLowerCase() === "admin") return true;
+
+  // Secondary: permissions (wenn du die später wieder sauber lädst)
   if (can(permissions, "users.manage")) return true;
-  // Fallback if role_permissions query is blocked by RLS but profile.role is still present.
-  // Your schema contains profiles.role (text) and profiles.role_id (uuid).
+
+  // Last fallback: profiles.role (optional)
   return (profile?.role ?? "").toLowerCase() === "admin";
 }
+
 
 function fmtDateTime(value) {
   if (!value) return "";
@@ -130,7 +140,8 @@ function UsersAdminPanel({ profile, permissions }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
-  const isAdmin = isAdminFallback(profile, permissions);
+  const isAdmin = isAdminFallback(profile, permissions, authUser);
+
 
   async function load() {
     setErr(null);
@@ -164,8 +175,8 @@ function UsersAdminPanel({ profile, permissions }) {
   }
 
   useEffect(() => {
-    if (isAdmin) load();
-  }, [isAdmin]);
+    if () load();
+  }, []);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -187,7 +198,7 @@ function UsersAdminPanel({ profile, permissions }) {
     setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
   }
 
-  if (!isAdmin) {
+  if (!) {
     return (
       <div style={styles.panel}>
         <div style={styles.h3}>Nutzer</div>
@@ -860,9 +871,10 @@ export default function Dashboard() {
           <TabBtn active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>Kalender</TabBtn>
           <TabBtn active={activeTab === "guides"} onClick={() => setActiveTab("guides")}>Anleitungen</TabBtn>
 
-          {isAdminFallback(profile, permissions) ? (
-            <TabBtn active={activeTab === "users"} onClick={() => setActiveTab("users")}>Nutzer</TabBtn>
-          ) : null}
+         {isAdminFallback(auth.profile, permissions, auth.user) ? (
+  <TabBtn active={activeTab === "users"} onClick={() => setActiveTab("users")}>Nutzer</TabBtn>
+) : null}
+
 
           <button style={styles.btn} onClick={refreshAuth}>Neu laden</button>
         </div>
