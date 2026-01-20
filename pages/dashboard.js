@@ -617,28 +617,46 @@ async function loadAreas() {
 function UsersAdminPanel({ isAdmin }) {
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
+  const [areas, setAreas] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
+  const [createLoading, setCreateLoading] = useState(false);
   const [err, setErr] = useState(null);
+  const [passwordDrafts, setPasswordDrafts] = useState({});
+  const [newUser, setNewUser] = useState({
+    email: "",
+    password: "",
+    name: "",
+    roleId: "",
+    areaIds: [],
+  });
+
+  const rolesById = useMemo(() => new Map(roles.map((r) => [r.id, r])), [roles]);
 
   async function load() {
     setErr(null);
     setLoading(true);
 
-    const { data: rolesData, error: rErr } = await supabase
-      .from("roles")
-      .select("id, key, name")
-      .order("name", { ascending: true });
+    const [rolesRes, areasRes] = await Promise.all([
+      supabase.from("roles").select("id, key, name").order("name", { ascending: true }),
+      supabase.from("areas").select("id, name, color").order("name", { ascending: true }),
+    ]);
 
-    if (rErr) {
+    if (rolesRes.error) {
       setLoading(false);
-      setErr(rErr.message);
+      setErr(rolesRes.error.message);
+      return;
+    }
+
+    if (areasRes.error) {
+      setLoading(false);
+      setErr(areasRes.error.message);
       return;
     }
 
     const { data: usersData, error: uErr } = await supabase
       .from("profiles")
-      .select("id, email, name, role, role_id, is_active")
+      .select("id, email, name, role, role_id, is_active, profile_areas ( area_id )")
       .order("name", { ascending: true });
 
     if (uErr) {
@@ -647,7 +665,8 @@ function UsersAdminPanel({ isAdmin }) {
       return;
     }
 
-    setRoles(rolesData || []);
+    setRoles(rolesRes.data || []);
+    setAreas(areasRes.data || []);
     setUsers(usersData || []);
     setLoading(false);
   }
@@ -670,6 +689,144 @@ function UsersAdminPanel({ isAdmin }) {
       return;
     }
     setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+  }
+
+  async function updateUserRole(id, roleId) {
+    const role = roleId ? rolesById.get(roleId) : null;
+    await updateUser(id, {
+      role_id: roleId || null,
+      role: role?.key || null,
+    });
+  }
+
+  async function updateUserAreas(id, areaIds) {
+    setErr(null);
+    const { error: delErr } = await supabase.from("profile_areas").delete().eq("profile_id", id);
+    if (delErr) {
+      setErr(delErr.message);
+      return;
+    }
+
+    if (areaIds.length > 0) {
+      const rows = areaIds.map((areaId) => ({ profile_id: id, area_id: areaId }));
+      const { error: insErr } = await supabase.from("profile_areas").insert(rows);
+      if (insErr) {
+        setErr(insErr.message);
+        return;
+      }
+    }
+
+    setUsers((prev) =>
+      prev.map((u) => (u.id === id ? { ...u, profile_areas: areaIds.map((areaId) => ({ area_id: areaId })) } : u))
+    );
+  }
+
+  async function createUser() {
+    const email = newUser.email.trim();
+    const password = newUser.password.trim();
+    if (!email) {
+      setErr("E-Mail fehlt");
+      return;
+    }
+    if (!password || password.length < 8) {
+      setErr("Passwort fehlt/zu kurz (min. 8 Zeichen)");
+      return;
+    }
+
+    setErr(null);
+    setCreateLoading(true);
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) {
+        setErr("Nicht angemeldet");
+        return;
+      }
+
+      const role = newUser.roleId ? rolesById.get(newUser.roleId)?.key : "user";
+
+      const res = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          action: "createUser",
+          payload: {
+            email,
+            password,
+            role,
+            name: newUser.name.trim() || null,
+          },
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Nutzeranlage fehlgeschlagen");
+
+      const userId = json?.userId;
+      if (!userId) throw new Error("User-ID fehlt nach createUser");
+
+      if (newUser.roleId) {
+        const roleKey = rolesById.get(newUser.roleId)?.key || null;
+        const { error: roleErr } = await supabase
+          .from("profiles")
+          .update({ role_id: newUser.roleId, role: roleKey })
+          .eq("id", userId);
+        if (roleErr) throw roleErr;
+      }
+
+      if (newUser.areaIds.length > 0) {
+        await updateUserAreas(userId, newUser.areaIds);
+      }
+
+      setNewUser({ email: "", password: "", name: "", roleId: "", areaIds: [] });
+      await load();
+    } catch (error) {
+      setErr(error?.message || String(error));
+    } finally {
+      setCreateLoading(false);
+    }
+  }
+
+  async function setPassword(userId) {
+    const password = String(passwordDrafts[userId] || "").trim();
+    if (!password || password.length < 8) {
+      setErr("Passwort fehlt/zu kurz (min. 8 Zeichen)");
+      return;
+    }
+
+    setErr(null);
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) {
+        setErr("Nicht angemeldet");
+        return;
+      }
+
+      const res = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          action: "setPassword",
+          payload: { userId, password },
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Passwort setzen fehlgeschlagen");
+
+      setPasswordDrafts((prev) => ({ ...prev, [userId]: "" }));
+    } catch (error) {
+      setErr(error?.message || String(error));
+    }
   }
 
   if (!isAdmin) {
@@ -695,6 +852,69 @@ function UsersAdminPanel({ isAdmin }) {
 
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
+      <div style={{ ...styles.card, marginBottom: 14 }}>
+        <div style={styles.h4}>Nutzer einladen</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+          <input
+            value={newUser.email}
+            onChange={(e) => setNewUser((prev) => ({ ...prev, email: e.target.value }))}
+            placeholder="E-Mail"
+            style={styles.input}
+          />
+          <input
+            type="password"
+            value={newUser.password}
+            onChange={(e) => setNewUser((prev) => ({ ...prev, password: e.target.value }))}
+            placeholder="Startpasswort (min. 8 Zeichen)"
+            style={styles.input}
+          />
+          <input
+            value={newUser.name}
+            onChange={(e) => setNewUser((prev) => ({ ...prev, name: e.target.value }))}
+            placeholder="Name"
+            style={styles.input}
+          />
+          <select
+            value={newUser.roleId}
+            onChange={(e) => setNewUser((prev) => ({ ...prev, roleId: e.target.value }))}
+            style={styles.input}
+          >
+            <option value="">Rolle wählen</option>
+            {roles.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+          <select
+            multiple
+            value={newUser.areaIds}
+            onChange={(e) =>
+              setNewUser((prev) => ({
+                ...prev,
+                areaIds: Array.from(e.target.selectedOptions).map((o) => o.value),
+              }))
+            }
+            style={{ ...styles.input, height: 94 }}
+            title="Mehrfachauswahl: Strg/Cmd + Klick"
+          >
+            {areas.map((area) => (
+              <option key={area.id} value={area.id}>
+                {area.name}
+              </option>
+            ))}
+          </select>
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
+            <button style={styles.btnPrimary} onClick={createUser} disabled={createLoading}>
+              {createLoading ? "Erstelle…" : "Einladen"}
+            </button>
+          </div>
+        </div>
+        <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>
+          Hinweis: Das Passwort wird gesetzt, die E-Mail-Benachrichtigung musst du ggf. separat versenden.
+        </div>
+      </div>
+
       <div style={{ overflowX: "auto" }}>
         <table style={styles.table}>
           <thead>
@@ -702,47 +922,88 @@ function UsersAdminPanel({ isAdmin }) {
               <th style={styles.th}>Name</th>
               <th style={styles.th}>E-Mail</th>
               <th style={styles.th}>Rolle</th>
+              <th style={styles.th}>Bereiche</th>
               <th style={styles.th}>Aktiv</th>
+              <th style={styles.th}>Passwort</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((u) => (
-              <tr key={u.id}>
-                <td style={styles.td}>
-                  <input
-                    value={u.name ?? ""}
-                    onChange={(e) => updateUser(u.id, { name: e.target.value })}
-                    style={styles.input}
-                  />
-                </td>
-                <td style={styles.td}>{u.email ?? ""}</td>
-                <td style={styles.td}>
-                  <select
-                    value={u.role_id ?? ""}
-                    onChange={(e) => updateUser(u.id, { role_id: e.target.value || null })}
-                    style={styles.input}
-                  >
-                    <option value="">–</option>
-                    {roles.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td style={styles.td}>
-                  <input
-                    type="checkbox"
-                    checked={u.is_active !== false}
-                    onChange={(e) => updateUser(u.id, { is_active: e.target.checked })}
-                  />
-                </td>
-              </tr>
-            ))}
+            {filtered.map((u) => {
+              const assignedAreaIds = (u.profile_areas || []).map((pa) => pa.area_id);
+              return (
+                <tr key={u.id}>
+                  <td style={styles.td}>
+                    <input
+                      value={u.name ?? ""}
+                      onChange={(e) => updateUser(u.id, { name: e.target.value })}
+                      style={styles.input}
+                    />
+                  </td>
+                  <td style={styles.td}>{u.email ?? ""}</td>
+                  <td style={styles.td}>
+                    <select
+                      value={u.role_id ?? ""}
+                      onChange={(e) => updateUserRole(u.id, e.target.value || null)}
+                      style={styles.input}
+                    >
+                      <option value="">–</option>
+                      {roles.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td style={styles.td}>
+                    <select
+                      multiple
+                      value={assignedAreaIds}
+                      onChange={(e) =>
+                        updateUserAreas(
+                          u.id,
+                          Array.from(e.target.selectedOptions).map((o) => o.value)
+                        )
+                      }
+                      style={{ ...styles.input, height: 94 }}
+                      title="Mehrfachauswahl: Strg/Cmd + Klick"
+                    >
+                      {areas.map((area) => (
+                        <option key={area.id} value={area.id}>
+                          {area.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td style={styles.td}>
+                    <input
+                      type="checkbox"
+                      checked={u.is_active !== false}
+                      onChange={(e) => updateUser(u.id, { is_active: e.target.checked })}
+                    />
+                  </td>
+                  <td style={styles.td}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input
+                        type="password"
+                        value={passwordDrafts[u.id] ?? ""}
+                        onChange={(e) =>
+                          setPasswordDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))
+                        }
+                        placeholder="Neues Passwort"
+                        style={styles.input}
+                      />
+                      <button style={styles.btnSmall} onClick={() => setPassword(u.id)}>
+                        Setzen
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
 
             {filtered.length === 0 ? (
               <tr>
-                <td style={styles.td} colSpan={4}>
+                <td style={styles.td} colSpan={6}>
                   Keine Nutzer gefunden.
                 </td>
               </tr>
