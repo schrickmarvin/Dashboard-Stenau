@@ -94,19 +94,33 @@ async function loadMyAuthContext() {
 async function loadAreas() {
   const { data, error } = await supabase
     .from("areas")
-    .select("id, name, color")
+    .select("id, key, name")
     .order("name", { ascending: true });
 
   if (error) {
+    // If table doesn't exist or RLS blocks, fallback to static
     console.warn("areas load failed:", error.message);
-    return [];
+    return [
+      { id: "__A__", key: "A", name: "Bereich A" },
+      { id: "__B__", key: "B", name: "Bereich B" },
+    ];
   }
 
-  return (data || []).map((a) => ({
+  const list = (data || []).map((a) => ({
     id: a.id,
-    name: a.name,
-    color: a.color || null,
+    key: a.key || a.name,
+    name: a.name || a.key,
   }));
+
+  // Ensure A/B exist for your workflow
+  const hasA = list.some((x) => safeLower(x.key) === "a" || safeLower(x.name) === "bereich a");
+  const hasB = list.some((x) => safeLower(x.key) === "b" || safeLower(x.name) === "bereich b");
+
+  const extras = [];
+  if (!hasA) extras.push({ id: "__A__", key: "A", name: "Bereich A" });
+  if (!hasB) extras.push({ id: "__B__", key: "B", name: "Bereich B" });
+
+  return [...extras, ...list];
 }
 
 /* ---------------- Admin: Users Panel ---------------- */
@@ -344,133 +358,6 @@ function GuidesPanel({ isAdmin }) {
   );
 }
 
-/* ---------------- Areas (Bereiche) ---------------- */
-function AreasPanel({ isAdmin }) {
-  const [areas, setAreas] = useState([]);
-  const [name, setName] = useState("");
-  const [color, setColor] = useState("#0b6b2a");
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
-  async function load() {
-    setErr(null);
-    setLoading(true);
-    const list = await loadAreas();
-    setAreas(list);
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function createArea() {
-    if (!isAdmin) return;
-    const n = name.trim();
-    if (!n) return;
-    setErr(null);
-
-    const { error } = await supabase.from("areas").insert({ name: n, color: (color || null) });
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setName("");
-    setColor("#0b6b2a");
-    load();
-  }
-
-  async function updateArea(id, patch) {
-    if (!isAdmin) return;
-    setErr(null);
-    const { error } = await supabase.from("areas").update(patch).eq("id", id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
-  }
-
-  return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Bereiche</div>
-        <button style={styles.btn} onClick={load} disabled={loading}>
-          {loading ? "Lade…" : "Neu laden"}
-        </button>
-      </div>
-
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
-      {isAdmin ? (
-        <div style={{ ...styles.card, marginBottom: 14 }}>
-          <div style={styles.h4}>Neuen Bereich anlegen</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 220px auto", gap: 10, alignItems: "center" }}>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Name (z.B. LVP, PPK, Containerdienst)"
-              style={styles.input}
-            />
-            <input type="color" value={color} onChange={(e) => setColor(e.target.value)} style={styles.input} />
-            <button style={styles.btnPrimary} onClick={createArea}>
-              Anlegen
-            </button>
-          </div>
-          <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
-            Hinweis: Aufgaben-Bereich ist frei eintippbar. Wenn der Text genau zu einem Bereich passt, wird automatisch die Farbe gezogen.
-          </div>
-        </div>
-      ) : (
-        <div style={{ marginBottom: 12, color: "#666", fontSize: 13 }}>
-          Du kannst bei Aufgaben den Bereich frei eintippen. Bereiche/Farben pflegt nur die Administration.
-        </div>
-      )}
-
-      <div style={{ overflowX: "auto" }}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Name</th>
-              <th style={styles.th}>Farbe</th>
-            </tr>
-          </thead>
-          <tbody>
-            {areas.map((a) => (
-              <tr key={a.id}>
-                <td style={styles.td}>
-                  {isAdmin ? (
-                    <input value={a.name || ""} onChange={(e) => updateArea(a.id, { name: e.target.value })} style={styles.input} />
-                  ) : (
-                    a.name
-                  )}
-                </td>
-                <td style={styles.td}>
-                  {isAdmin ? (
-                    <input type="color" value={a.color || "#0b6b2a"} onChange={(e) => updateArea(a.id, { color: e.target.value })} style={styles.input} />
-                  ) : (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ width: 14, height: 14, borderRadius: 999, background: a.color || "#d8e0ef", border: "1px solid #d8e0ef" }} />
-                      {a.color || "–"}
-                    </span>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {areas.length === 0 ? (
-              <tr>
-                <td style={styles.td} colSpan={2}>
-                  Keine Bereiche vorhanden.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
 /* ---------------- Tasks Board (Planke) ---------------- */
 function TasksBoard({ isAdmin }) {
   const [areas, setAreas] = useState([]);
@@ -479,7 +366,7 @@ function TasksBoard({ isAdmin }) {
 
   const [form, setForm] = useState({
     title: "",
-    area: "",
+    area_id: "",
     due_at: "",
     status: "todo",
     guideIds: [],
@@ -495,7 +382,7 @@ function TasksBoard({ isAdmin }) {
     // Tasks: use area_id, due_at, status, title
     const { data: tData, error: tErr } = await supabase
       .from("tasks")
-      .select("id, title, area, area_id, due_at, status, created_at")
+      .select("id, title, area_id, due_at, status, created_at")
       .order("created_at", { ascending: false });
 
     if (tErr) {
@@ -513,19 +400,7 @@ function TasksBoard({ isAdmin }) {
       console.warn("guides load failed:", guidesRes.error.message);
     }
 
-    const areaByIdTmp = new Map((areasList || []).map((a) => [a.id, a]));
-    const areaByNameTmp = new Map((areasList || []).map((a) => [String(a.name || "").toLowerCase(), a]));
-
-    const decoratedTasks = (tData || []).map((t) => {
-      const areaObj = t.area_id
-        ? areaByIdTmp.get(t.area_id)
-        : (t.area ? areaByNameTmp.get(String(t.area).toLowerCase()) : null);
-      const areaLabel = areaObj?.name || t.area || "";
-      const areaColor = areaObj?.color || null;
-      return { ...t, area_label: areaLabel, area_color: areaColor };
-    });
-
-    setTasks(decoratedTasks);
+    setTasks(tData || []);
     setAreas(areasList || []);
     setGuides(guidesRes.data || []);
     setLoading(false);
@@ -559,17 +434,15 @@ function TasksBoard({ isAdmin }) {
   async function createTask() {
     if (!form.title.trim()) return;
     setErr(null);
-    const areaText = (form.area || "").trim();
-    const matched = areaText
-      ? (areas || []).find((a) => String(a.name || "").toLowerCase() === areaText.toLowerCase())
-      : null;
 
     const payload = {
       title: form.title.trim(),
       status: form.status || "todo",
       due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
-      area_id: matched ? matched.id : null,
-      area: areaText || null,
+      // area_id must be uuid or null
+      area_id: form.area_id && !form.area_id.startsWith("__") ? form.area_id : null,
+      // Optional: also store text area if you keep that column (safe try)
+      area: form.area_id && form.area_id.startsWith("__") ? (form.area_id === "__A__" ? "Bereich A" : "Bereich B") : null,
     };
 
     const { data: inserted, error: insErr } = await supabase.from("tasks").insert(payload).select("id").single();
@@ -588,7 +461,7 @@ function TasksBoard({ isAdmin }) {
       if (linkErr) console.warn("task_guides insert failed:", linkErr.message);
     }
 
-    setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [] });
+    setForm({ title: "", area_id: "", due_at: "", status: "todo", guideIds: [] });
     loadAll();
   }
 
@@ -617,18 +490,18 @@ function TasksBoard({ isAdmin }) {
             style={styles.input}
           />
 
-          <input
-            value={form.area}
-            onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))}
-            placeholder="Bereich"
-            list="areas-list"
+          <select
+            value={form.area_id}
+            onChange={(e) => setForm((f) => ({ ...f, area_id: e.target.value }))}
             style={styles.input}
-          />
-          <datalist id="areas-list">
+          >
+            <option value="">Bereich</option>
             {areas.map((a) => (
-              <option key={a.id} value={a.name} />
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
             ))}
-          </datalist>
+          </select>
 
           <input
             type="datetime-local"
@@ -700,14 +573,11 @@ function TaskColumn({ title, count, tasks, onToggle, areaById }) {
 
       <div style={{ display: "grid", gap: 12 }}>
         {tasks.map((t) => {
-          const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
+          const areaName = t.area_id ? areaById.get(t.area_id)?.name : t.area || "–";
           return (
             <div key={t.id} style={styles.card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <div style={styles.h4}>{t.title}</div>
-              {t.area_color ? (
-                <span title={t.area || t.area_label || ""} style={{...styles.areaDot, background: t.area_color}} />
-              ) : null}
                 <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
                 <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
                   Status
@@ -756,7 +626,7 @@ function CalendarPanel() {
 
     const { data, error } = await supabase
       .from("tasks")
-      .select("id, title, area, area_id, due_at, status")
+      .select("id, title, area_id, due_at, status")
       .gte("due_at", from)
       .lte("due_at", to)
       .order("due_at", { ascending: true });
@@ -791,7 +661,7 @@ function CalendarPanel() {
 
       <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
         {tasks.map((t) => {
-          const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
+          const areaName = t.area_id ? areaById.get(t.area_id)?.name : t.area || "–";
           return (
             <div key={t.id} style={styles.card}>
               <div style={styles.h4}>{t.title}</div>
@@ -905,10 +775,8 @@ export default function Dashboard() {
           <TabBtn active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>
             Kalender
           </TabBtn>
-          
-
-          <TabBtn active={activeTab === "areas"} onClick={() => setActiveTab("areas")}>
-            Bereiche
+          <TabBtn active={activeTab === "guides"} onClick={() => setActiveTab("guides")}>
+            Anleitungen
           </TabBtn>
 
           {auth.isAdmin ? (
@@ -935,7 +803,6 @@ export default function Dashboard() {
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
       {activeTab === "calendar" ? <CalendarPanel /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
       <div style={{ height: 24 }} />
