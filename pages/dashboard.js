@@ -17,6 +17,31 @@ import { createClient } from "@supabase/supabase-js";
     guideIds: [],
   });
   const [subDrafts, setSubDrafts] = useState({});
+  const [guideModal, setGuideModal] = useState({ open: false, loading: false, guide: null, error: null });
+
+  async function openGuide(gid) {
+    if (!gid) return;
+    setGuideModal({ open: true, loading: true, guide: null, error: null });
+    const { data, error } = await supabase
+      .from("guides")
+      .select("id, title, content, created_at")
+      .eq("id", gid)
+      .maybeSingle();
+    if (error) {
+      setGuideModal({ open: true, loading: false, guide: null, error: error.message });
+      return;
+    }
+    if (!data) {
+      setGuideModal({ open: true, loading: false, guide: null, error: "Anleitung nicht gefunden." });
+      return;
+    }
+    setGuideModal({ open: true, loading: false, guide: data, error: null });
+  }
+
+  function closeGuide() {
+    setGuideModal({ open: false, loading: false, guide: null, error: null });
+  }
+
 
   function getSubDraft(taskId, fallbackColor) {
     const d = subDrafts[taskId] || { title: "", guide_id: "", color: fallbackColor || "" };
@@ -290,6 +315,34 @@ import { createClient } from "@supabase/supabase-js";
           Hinweis: Aufgaben anlegen ist für alle Nutzer erlaubt. Admin-Funktionen findest du im Tab „Nutzer“.
         </div>
       ) : null}
+
+      {guideModal.open ? (
+        <div style={styles.modalBackdrop} onMouseDown={closeGuide}>
+          <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div style={styles.h4}>
+                {guideModal.loading ? "Lade…" : guideModal.guide?.title || "Anleitung"}
+              </div>
+              <button type="button" style={styles.btnSmall} onClick={closeGuide}>
+                Schließen
+              </button>
+            </div>
+
+            {guideModal.error ? (
+              <div style={styles.error}>Fehler: {guideModal.error}</div>
+            ) : null}
+
+            {guideModal.loading ? (
+              <div style={{ color: "#666" }}>Lade…</div>
+            ) : guideModal.guide ? (
+              <div style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>
+                {guideModal.guide.content || "—"}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
     </div>
   );
 }
@@ -365,6 +418,19 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
                           </option>
                         ))}
                       </select>
+
+                      {s.guide_id ? (
+                        <button
+                          type="button"
+                          style={styles.btnSmall}
+                          onClick={() => openGuide(s.guide_id)}
+                          title="Anleitung öffnen"
+                        >
+                          Anleitung
+                        </button>
+                      ) : (
+                        <span style={{ width: 78 }} />
+                      )}
 
                       <input
                         type="color"
@@ -1536,6 +1602,41 @@ const styles = {
     color: "#fff",
     cursor: "pointer",
     fontWeight: 800,
+  },
+  btnSmall: {
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid #d8e0ef",
+    background: "#fff",
+    cursor: "pointer",
+    fontWeight: 700,
+    fontSize: 13,
+  },
+  modalBackdrop: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.35)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    zIndex: 9999,
+  },
+  modal: {
+    width: "min(900px, 96vw)",
+    maxHeight: "80vh",
+    overflow: "auto",
+    background: "#fff",
+    border: "1px solid #d8e0ef",
+    borderRadius: 18,
+    padding: 16,
+    boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+  },
+  modalHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
   },
   error: {
     background: "#fff3f3",
