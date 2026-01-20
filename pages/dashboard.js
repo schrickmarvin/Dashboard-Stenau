@@ -1,5 +1,12 @@
 // pages/dashboard.js
-// Standalone dashboard page (React) for Next.js + Supabase
+// Dashboard-Stenau – Final (CRUD + freie Bereiche + Admin-Bereiche + farbige Unteraufgaben)
+//
+// Voraussetzungen (SQL ist laut dir fertig):
+// - areas: id, name (unique), color
+// - tasks: id, title, area (text), area_id (uuid fk areas.id), due_at, status, created_at
+// - subtasks: id, task_id, title, is_done, color
+// - RLS: tasks/subtasks write for authenticated; areas read for all authenticated, write admin-only
+// - Admin: profiles.role = 'admin'
 
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
@@ -7,14 +14,13 @@ import { createClient } from "@supabase/supabase-js";
 /* ---------------- Supabase ---------------- */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
 const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
 
 /* ---------------- Helpers ---------------- */
-function fmtDateTime(value) {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return String(value);
+function fmtDateTime(v) {
+  if (!v) return "";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleString("de-DE", {
     year: "numeric",
     month: "2-digit",
@@ -24,236 +30,228 @@ function fmtDateTime(value) {
   });
 }
 
-function fmtDate(value) {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleDateString("de-DE", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
+function safeStr(v) {
+  return typeof v === "string" ? v : v == null ? "" : String(v);
 }
 
-function startOfDayISO(dateStr) {
-  const d = new Date(dateStr);
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
+function normalizeName(v) {
+  return safeStr(v).trim().toLowerCase();
 }
 
-function endOfDayISO(dateStr) {
-  const d = new Date(dateStr);
-  d.setHours(23, 59, 59, 999);
-  return d.toISOString();
+function areaBadgeStyle(color) {
+  const c = color || "#6b7280";
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "4px 10px",
+    borderRadius: 999,
+    background: c,
+    color: "#fff",
+    fontWeight: 800,
+    fontSize: 12,
+    lineHeight: "16px",
+  };
 }
 
-function safeLower(v) {
-  return String(v ?? "").trim().toLowerCase();
+function colorDotStyle(color) {
+  return {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    background: color || "#6b7280",
+    display: "inline-block",
+  };
 }
 
-/* ---------------- Auth context ---------------- */
+/* ---------------- Auth ---------------- */
 async function loadMyAuthContext() {
   const { data, error } = await supabase.auth.getUser();
   if (error) throw error;
-
   const user = data?.user || null;
-  if (!user) return { user: null, profile: null, role: null, isAdmin: false };
+  if (!user) return { user: null, profile: null };
 
-  // Your profiles table uses id = auth.uid()
   const { data: profile, error: pErr } = await supabase
     .from("profiles")
-    .select("id, email, name, role, role_id, is_active")
+    .select("id, email, name, role, is_active")
     .eq("id", user.id)
     .maybeSingle();
 
   if (pErr) throw pErr;
 
-  // If is_active exists and user disabled
-  if (profile && profile.is_active === false) {
-    return { user, profile, role: null, isAdmin: false, inactive: true };
-  }
-
-  let role = null;
-  if (profile?.role_id) {
-    const { data: r, error: rErr } = await supabase
-      .from("roles")
-      .select("id, key, name")
-      .eq("id", profile.role_id)
-      .maybeSingle();
-    if (!rErr) role = r;
-  }
-
-  const roleKey = safeLower(role?.key || profile?.role);
-  const isAdmin = roleKey === "admin";
-
-  return { user, profile: profile || null, role, isAdmin, inactive: false };
+  return { user, profile: profile || null };
 }
 
-/* ---------------- Areas (A/B) ---------------- */
-// Option 2: fixed areas A/B (plus whatever exists in table `areas`)
-async function loadAreas() {
-  const { data, error } = await supabase
-    .from("areas")
-    .select("id, key, name")
-    .order("name", { ascending: true });
-
-  if (error) {
-    // If table doesn't exist or RLS blocks, fallback to static
-    console.warn("areas load failed:", error.message);
-    return [
-      { id: "__A__", key: "A", name: "Bereich A" },
-      { id: "__B__", key: "B", name: "Bereich B" },
-    ];
-  }
-
-  const list = (data || []).map((a) => ({
-    id: a.id,
-    key: a.key || a.name,
-    name: a.name || a.key,
-  }));
-
-  // Ensure A/B exist for your workflow
-  const hasA = list.some((x) => safeLower(x.key) === "a" || safeLower(x.name) === "bereich a");
-  const hasB = list.some((x) => safeLower(x.key) === "b" || safeLower(x.name) === "bereich b");
-
-  const extras = [];
-  if (!hasA) extras.push({ id: "__A__", key: "A", name: "Bereich A" });
-  if (!hasB) extras.push({ id: "__B__", key: "B", name: "Bereich B" });
-
-  return [...extras, ...list];
+function isAdmin(profile) {
+  return normalizeName(profile?.role) === "admin";
 }
 
-/* ---------------- Admin: Users Panel ---------------- */
-function UsersAdminPanel({ isAdmin }) {
-  const [users, setUsers] = useState([]);
-  const [roles, setRoles] = useState([]);
-  const [q, setQ] = useState("");
+/* ---------------- Areas Tab (Admin-only edit) ---------------- */
+function AreasPanel({ admin, onAreasChanged }) {
+  const [areas, setAreas] = useState([]);
+  const [name, setName] = useState("");
+  const [color, setColor] = useState("#6b7280");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
   async function load() {
     setErr(null);
     setLoading(true);
-
-    const { data: rolesData, error: rErr } = await supabase
-      .from("roles")
-      .select("id, key, name")
+    const { data, error } = await supabase
+      .from("areas")
+      .select("id, name, color, created_at")
       .order("name", { ascending: true });
-
-    if (rErr) {
-      setLoading(false);
-      setErr(rErr.message);
-      return;
-    }
-
-    const { data: usersData, error: uErr } = await supabase
-      .from("profiles")
-      .select("id, email, name, role, role_id, is_active")
-      .order("name", { ascending: true });
-
-    if (uErr) {
-      setLoading(false);
-      setErr(uErr.message);
-      return;
-    }
-
-    setRoles(rolesData || []);
-    setUsers(usersData || []);
+    if (error) setErr(error.message);
+    setAreas(data || []);
     setLoading(false);
   }
 
   useEffect(() => {
-    if (isAdmin) load();
-  }, [isAdmin]);
+    load();
+  }, []);
 
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return users;
-    return users.filter((u) => `${u.name ?? ""} ${u.email ?? ""}`.toLowerCase().includes(needle));
-  }, [users, q]);
+  async function upsertArea() {
+    if (!admin) return;
+    const n = name.trim();
+    if (!n) return;
 
-  async function updateUser(id, patch) {
     setErr(null);
-    const { error } = await supabase.from("profiles").update(patch).eq("id", id);
+
+    // Unique on name -> Upsert works cleanly
+    const { error } = await supabase.from("areas").upsert({ name: n, color });
     if (error) {
       setErr(error.message);
       return;
     }
-    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+    setName("");
+    setColor("#6b7280");
+    await load();
+    onAreasChanged?.();
   }
 
-  if (!isAdmin) {
-    return (
-      <div style={styles.panel}>
-        <div style={styles.h3}>Nutzer</div>
-        <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
-      </div>
+  async function updateArea(id, patch) {
+    if (!admin) return;
+    setErr(null);
+    const { error } = await supabase.from("areas").update(patch).eq("id", id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+    onAreasChanged?.();
+  }
+
+  async function deleteArea(id) {
+    if (!admin) return;
+    const ok = window.confirm(
+      "Bereich wirklich löschen?\n\nHinweis: Aufgaben mit diesem Bereich verlieren dann ggf. ihre Farbzuteilung."
     );
+    if (!ok) return;
+
+    setErr(null);
+    const { error } = await supabase.from("areas").delete().eq("id", id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setAreas((prev) => prev.filter((a) => a.id !== id));
+    onAreasChanged?.();
   }
 
   return (
     <div style={styles.panel}>
       <div style={styles.rowBetween}>
-        <div style={styles.h3}>Nutzerverwaltung</div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Suchen…" style={styles.input} />
-          <button style={styles.btn} onClick={load} disabled={loading}>
-            {loading ? "Lade…" : "Neu laden"}
-          </button>
-        </div>
+        <div style={styles.h3}>Bereiche</div>
+        <button style={styles.btn} onClick={load} disabled={loading}>
+          {loading ? "Lade…" : "Neu laden"}
+        </button>
       </div>
 
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+
+      {!admin ? (
+        <div style={{ color: "#666", marginTop: 10 }}>
+          Du kannst Bereiche ansehen, aber nur Admin darf Bereiche anlegen/ändern/löschen.
+        </div>
+      ) : (
+        <div style={{ ...styles.card, marginTop: 10, marginBottom: 12 }}>
+          <div style={styles.h4}>Bereich anlegen / aktualisieren</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 120px auto", gap: 10 }}>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Name (z.B. Papier)"
+              style={styles.input}
+            />
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              style={{ ...styles.input, padding: 4, height: 42 }}
+              title="Farbe"
+            />
+            <button style={styles.btnPrimary} onClick={upsertArea}>
+              Speichern
+            </button>
+          </div>
+          <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
+            Tipp: Wenn der Name schon existiert, wird nur die Farbe aktualisiert (kein Duplicate-Fehler).
+          </div>
+        </div>
+      )}
 
       <div style={{ overflowX: "auto" }}>
         <table style={styles.table}>
           <thead>
             <tr>
+              <th style={styles.th}>Farbe</th>
               <th style={styles.th}>Name</th>
-              <th style={styles.th}>E-Mail</th>
-              <th style={styles.th}>Rolle</th>
-              <th style={styles.th}>Aktiv</th>
+              <th style={styles.th}>Erstellt</th>
+              <th style={styles.th}></th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((u) => (
-              <tr key={u.id}>
+            {areas.map((a) => (
+              <tr key={a.id}>
                 <td style={styles.td}>
-                  <input
-                    value={u.name ?? ""}
-                    onChange={(e) => updateUser(u.id, { name: e.target.value })}
-                    style={styles.input}
-                  />
-                </td>
-                <td style={styles.td}>{u.email ?? ""}</td>
-                <td style={styles.td}>
-                  <select
-                    value={u.role_id ?? ""}
-                    onChange={(e) => updateUser(u.id, { role_id: e.target.value || null })}
-                    style={styles.input}
-                  >
-                    <option value="">–</option>
-                    {roles.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
+                  <span style={colorDotStyle(a.color)} />
                 </td>
                 <td style={styles.td}>
-                  <input
-                    type="checkbox"
-                    checked={u.is_active !== false}
-                    onChange={(e) => updateUser(u.id, { is_active: e.target.checked })}
-                  />
+                  {admin ? (
+                    <input
+                      value={a.name ?? ""}
+                      onChange={(e) => updateArea(a.id, { name: e.target.value })}
+                      style={styles.input}
+                    />
+                  ) : (
+                    <span>{a.name}</span>
+                  )}
+                </td>
+                <td style={styles.td}>{a.created_at ? fmtDateTime(a.created_at) : "–"}</td>
+                <td style={styles.td}>
+                  {admin ? (
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input
+                        type="color"
+                        value={a.color || "#6b7280"}
+                        onChange={(e) => updateArea(a.id, { color: e.target.value })}
+                        style={{ height: 34, width: 46, padding: 2 }}
+                        title="Farbe ändern"
+                      />
+                      <button style={styles.btn} onClick={() => deleteArea(a.id)}>
+                        Löschen
+                      </button>
+                    </div>
+                  ) : (
+                    <span style={{ color: "#999" }}>—</span>
+                  )}
                 </td>
               </tr>
             ))}
-
-            {filtered.length === 0 ? (
+            {areas.length === 0 ? (
               <tr>
                 <td style={styles.td} colSpan={4}>
-                  Keine Nutzer gefunden.
+                  Keine Bereiche vorhanden.
                 </td>
               </tr>
             ) : null}
@@ -264,11 +262,11 @@ function UsersAdminPanel({ isAdmin }) {
   );
 }
 
-/* ---------------- Guides (Anleitungen) ---------------- */
-function GuidesPanel({ isAdmin }) {
-  const [guides, setGuides] = useState([]);
+/* ---------------- Subtasks CRUD (colored) ---------------- */
+function SubtasksPanel({ taskId, onChanged }) {
+  const [subs, setSubs] = useState([]);
   const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
+  const [color, setColor] = useState("#6b7280");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -276,346 +274,427 @@ function GuidesPanel({ isAdmin }) {
     setErr(null);
     setLoading(true);
     const { data, error } = await supabase
-      .from("guides")
-      .select("id, title, content, created_at")
-      .order("created_at", { ascending: false });
-    if (error) {
-      setErr(error.message);
-      setLoading(false);
-      return;
-    }
-    setGuides(data || []);
+      .from("subtasks")
+      .select("id, task_id, title, is_done, color, created_at, updated_at")
+      .eq("task_id", taskId)
+      .order("created_at", { ascending: true });
+    if (error) setErr(error.message);
+    setSubs(data || []);
     setLoading(false);
   }
 
   useEffect(() => {
     load();
-  }, []);
+  }, [taskId]);
 
-  async function createGuide() {
-    if (!isAdmin) return;
-    if (!title.trim()) return;
+  async function add() {
+    const t = title.trim();
+    if (!t) return;
+
     setErr(null);
-
-    const { error } = await supabase
-      .from("guides")
-      .insert({ title: title.trim(), content: content.trim() });
-
+    const { error } = await supabase.from("subtasks").insert({
+      task_id: taskId,
+      title: t,
+      color,
+    });
     if (error) {
       setErr(error.message);
       return;
     }
-
     setTitle("");
-    setContent("");
-    load();
+    setColor("#6b7280");
+    await load();
+    onChanged?.();
   }
 
+  async function toggleDone(s) {
+    setErr(null);
+    const { error } = await supabase
+      .from("subtasks")
+      .update({ is_done: !s.is_done, updated_at: new Date().toISOString() })
+      .eq("id", s.id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    await load();
+    onChanged?.();
+  }
+
+  async function rename(id, nextTitle) {
+    setErr(null);
+    const t = nextTitle.trim();
+    const { error } = await supabase
+      .from("subtasks")
+      .update({ title: t, updated_at: new Date().toISOString() })
+      .eq("id", id);
+    if (error) setErr(error.message);
+    setSubs((prev) => prev.map((x) => (x.id === id ? { ...x, title: t } : x)));
+    onChanged?.();
+  }
+
+  async function recolor(id, nextColor) {
+    setErr(null);
+    const { error } = await supabase
+      .from("subtasks")
+      .update({ color: nextColor, updated_at: new Date().toISOString() })
+      .eq("id", id);
+    if (error) setErr(error.message);
+    setSubs((prev) => prev.map((x) => (x.id === id ? { ...x, color: nextColor } : x)));
+    onChanged?.();
+  }
+
+  async function remove(id) {
+    const ok = window.confirm("Unteraufgabe wirklich löschen?");
+    if (!ok) return;
+
+    setErr(null);
+    const { error } = await supabase.from("subtasks").delete().eq("id", id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setSubs((prev) => prev.filter((x) => x.id !== id));
+    onChanged?.();
+  }
+
+  const doneCount = subs.filter((s) => s.is_done).length;
+  const total = subs.length;
+
   return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Anleitungen</div>
+    <div style={{ marginTop: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <div style={{ fontSize: 13, color: "#666", fontWeight: 800 }}>
+          Unteraufgaben {doneCount}/{total}
+        </div>
         <button style={styles.btn} onClick={load} disabled={loading}>
-          {loading ? "Lade…" : "Neu laden"}
+          {loading ? "…" : "Reload"}
         </button>
       </div>
 
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+      {err ? <div style={{ ...styles.error, marginTop: 10 }}>{err}</div> : null}
 
-      {isAdmin ? (
-        <div style={{ ...styles.card, marginBottom: 14 }}>
-          <div style={styles.h4}>Neue Anleitung</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titel" style={styles.input} />
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Inhalt / Schritte"
-              rows={5}
-              style={styles.textarea}
+      <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+        {subs.map((s) => (
+          <div key={s.id} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input type="checkbox" checked={!!s.is_done} onChange={() => toggleDone(s)} />
+            <span style={colorDotStyle(s.color)} />
+            <input
+              value={s.title ?? ""}
+              onChange={(e) => rename(s.id, e.target.value)}
+              style={{ ...styles.input, minWidth: 0 }}
             />
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <button style={styles.btnPrimary} onClick={createGuide}>
-                Anlegen
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-        {guides.map((g) => (
-          <div key={g.id} style={styles.card}>
-            <div style={styles.h4}>{g.title}</div>
-            <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>Erstellt: {fmtDateTime(g.created_at)}</div>
-            <div style={{ whiteSpace: "pre-wrap" }}>{g.content}</div>
+            <input
+              type="color"
+              value={s.color || "#6b7280"}
+              onChange={(e) => recolor(s.id, e.target.value)}
+              style={{ height: 34, width: 46, padding: 2 }}
+              title="Farbe"
+            />
+            <button style={styles.btn} onClick={() => remove(s.id)}>
+              Löschen
+            </button>
           </div>
         ))}
 
-        {guides.length === 0 ? <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div> : null}
+        {subs.length === 0 ? <div style={{ color: "#999", fontSize: 13 }}>Noch keine Unteraufgaben.</div> : null}
+      </div>
+
+      <div style={{ ...styles.card, marginTop: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 120px auto", gap: 10, alignItems: "center" }}>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Neue Unteraufgabe"
+            style={styles.input}
+          />
+          <input
+            type="color"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            style={{ ...styles.input, padding: 4, height: 42 }}
+            title="Farbe"
+          />
+          <button style={styles.btnPrimary} onClick={add}>
+            Hinzufügen
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
-/* ---------------- Tasks Board (Planke) ---------------- */
-function TasksBoard({ isAdmin }) {
-  const [areas, setAreas] = useState([]);
-  const [guides, setGuides] = useState([]);
+/* ---------------- Tasks CRUD (free area + area badge by match) ---------------- */
+function TasksBoard({ areas }) {
   const [tasks, setTasks] = useState([]);
-
-  const [form, setForm] = useState({
-    title: "",
-    area_id: "",
-    due_at: "",
-    status: "todo",
-    guideIds: [],
-  });
-
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
-  async function loadAll() {
+  // create form
+  const [newTitle, setNewTitle] = useState("");
+  const [newArea, setNewArea] = useState("");
+  const [newDueAt, setNewDueAt] = useState("");
+  const [newStatus, setNewStatus] = useState("todo");
+
+  // Used to expand subtasks for one task
+  const [openTaskId, setOpenTaskId] = useState(null);
+
+  const areaByName = useMemo(() => {
+    const m = new Map();
+    for (const a of areas || []) m.set(normalizeName(a.name), a);
+    return m;
+  }, [areas]);
+
+  async function load() {
     setErr(null);
     setLoading(true);
 
-    // Tasks: use area_id, due_at, status, title
-    const { data: tData, error: tErr } = await supabase
+    // We rely on DB trigger to fill area_id if matches areas.name (your SQL trigger).
+    const { data, error } = await supabase
       .from("tasks")
-      .select("id, title, area_id, due_at, status, created_at")
+      .select("id, title, area, area_id, status, due_at, created_at")
       .order("created_at", { ascending: false });
 
-    if (tErr) {
-      setErr(tErr.message);
+    if (error) {
+      setErr(error.message);
       setLoading(false);
       return;
     }
-
-    const [areasList, guidesRes] = await Promise.all([
-      loadAreas(),
-      supabase.from("guides").select("id, title").order("title", { ascending: true }),
-    ]);
-
-    if (guidesRes.error) {
-      console.warn("guides load failed:", guidesRes.error.message);
-    }
-
-    setTasks(tData || []);
-    setAreas(areasList || []);
-    setGuides(guidesRes.data || []);
+    setTasks(data || []);
     setLoading(false);
   }
 
   useEffect(() => {
-    loadAll();
+    load();
   }, []);
 
-  const areaById = useMemo(() => {
-    const m = new Map();
-    for (const a of areas) m.set(a.id, a);
-    return m;
-  }, [areas]);
+  async function createTask() {
+    const title = newTitle.trim();
+    const area = newArea.trim();
+
+    if (!title) return;
+
+    setErr(null);
+    const payload = {
+      title,
+      area: area || null,
+      status: newStatus || "todo",
+      due_at: newDueAt ? new Date(newDueAt).toISOString() : null,
+    };
+
+    const { error } = await supabase.from("tasks").insert(payload);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+
+    setNewTitle("");
+    setNewArea("");
+    setNewDueAt("");
+    setNewStatus("todo");
+    await load();
+  }
+
+  async function updateTask(id, patch) {
+    setErr(null);
+    const { error } = await supabase.from("tasks").update(patch).eq("id", id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }
+
+  async function toggleDone(t) {
+    const next = (t.status || "todo") === "done" ? "todo" : "done";
+    await updateTask(t.id, { status: next });
+  }
+
+  async function deleteTask(id) {
+    const ok = window.confirm("Aufgabe wirklich löschen?\n\nUnteraufgaben bleiben ggf. bestehen, wenn keine FK-Cascade gesetzt ist.");
+    if (!ok) return;
+
+    setErr(null);
+    const { error } = await supabase.from("tasks").delete().eq("id", id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+    if (openTaskId === id) setOpenTaskId(null);
+  }
 
   const columns = useMemo(() => {
     const todo = [];
     const done = [];
     for (const t of tasks) {
-      if ((t.status ?? "todo") === "done") done.push(t);
-      else todo.push(t);
+      ((t.status || "todo") === "done" ? done : todo).push(t);
     }
     return { todo, done };
   }, [tasks]);
 
-  function onGuideSelect(e) {
-    const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
-    setForm((f) => ({ ...f, guideIds: selected }));
-  }
+  function renderTaskCard(t) {
+    const areaMatch = areaByName.get(normalizeName(t.area));
+    const badge = areaMatch ? (
+      <span style={areaBadgeStyle(areaMatch.color)}>
+        <span style={colorDotStyle("#fff")} />
+        {areaMatch.name}
+      </span>
+    ) : t.area ? (
+      <span style={{ ...areaBadgeStyle("#6b7280") }}>{t.area}</span>
+    ) : (
+      <span style={{ color: "#999", fontSize: 13 }}>— kein Bereich —</span>
+    );
 
-  async function createTask() {
-    if (!form.title.trim()) return;
-    setErr(null);
+    return (
+      <div key={t.id} style={styles.card}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            value={t.title ?? ""}
+            onChange={(e) => updateTask(t.id, { title: e.target.value })}
+            style={{ ...styles.input, fontWeight: 900 }}
+          />
+          <span style={{ marginLeft: "auto" }} />
+          <button style={styles.btn} onClick={() => toggleDone(t)}>
+            Status
+          </button>
+          <button style={styles.btn} onClick={() => deleteTask(t.id)}>
+            Löschen
+          </button>
+        </div>
 
-    const payload = {
-      title: form.title.trim(),
-      status: form.status || "todo",
-      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
-      // area_id must be uuid or null
-      area_id: form.area_id && !form.area_id.startsWith("__") ? form.area_id : null,
-      // Optional: also store text area if you keep that column (safe try)
-      area: form.area_id && form.area_id.startsWith("__") ? (form.area_id === "__A__" ? "Bereich A" : "Bereich B") : null,
-    };
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+          <div>{badge}</div>
 
-    const { data: inserted, error: insErr } = await supabase.from("tasks").insert(payload).select("id").single();
+          <input
+            list="areas-suggestions"
+            value={t.area ?? ""}
+            onChange={(e) => updateTask(t.id, { area: e.target.value })}
+            placeholder="Bereich (frei eintippbar)"
+            style={{ ...styles.input, minWidth: 220, width: 260 }}
+          />
 
-    if (insErr) {
-      setErr(insErr.message);
-      return;
-    }
+          <input
+            type="datetime-local"
+            value={t.due_at ? new Date(t.due_at).toISOString().slice(0, 16) : ""}
+            onChange={(e) => updateTask(t.id, { due_at: e.target.value ? new Date(e.target.value).toISOString() : null })}
+            style={{ ...styles.input, width: 220 }}
+          />
 
-    const taskId = inserted?.id;
+          <div style={{ color: "#666", fontSize: 13 }}>
+            Erstellt: {fmtDateTime(t.created_at)}{" "}
+            {t.due_at ? `· Fällig: ${fmtDateTime(t.due_at)}` : ""}
+          </div>
 
-    // Many-to-many task_guides (optional)
-    if (taskId && Array.isArray(form.guideIds) && form.guideIds.length > 0) {
-      const rows = form.guideIds.map((gid) => ({ task_id: taskId, guide_id: gid }));
-      const { error: linkErr } = await supabase.from("task_guides").insert(rows);
-      if (linkErr) console.warn("task_guides insert failed:", linkErr.message);
-    }
+          <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => setOpenTaskId(openTaskId === t.id ? null : t.id)}>
+            {openTaskId === t.id ? "Unteraufgaben schließen" : "Unteraufgaben"}
+          </button>
+        </div>
 
-    setForm({ title: "", area_id: "", due_at: "", status: "todo", guideIds: [] });
-    loadAll();
-  }
-
-  async function toggleStatus(task) {
-    const next = (task.status ?? "todo") === "done" ? "todo" : "done";
-    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
+        {openTaskId === t.id ? (
+          <SubtasksPanel taskId={t.id} onChanged={load} />
+        ) : null}
+      </div>
+    );
   }
 
   return (
     <div>
+      <datalist id="areas-suggestions">
+        {(areas || []).map((a) => (
+          <option key={a.id} value={a.name} />
+        ))}
+      </datalist>
+
       <div style={styles.panel}>
-        <div style={styles.h3}>Aufgabe anlegen</div>
+        <div style={styles.rowBetween}>
+          <div style={styles.h3}>Aufgabe anlegen</div>
+          <button style={styles.btn} onClick={load} disabled={loading}>
+            {loading ? "Lade…" : "Neu laden"}
+          </button>
+        </div>
 
         {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
         <div style={styles.taskFormGrid}>
+          <input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titel" style={styles.input} />
+
           <input
-            value={form.title}
-            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-            placeholder="Titel"
+            list="areas-suggestions"
+            value={newArea}
+            onChange={(e) => setNewArea(e.target.value)}
+            placeholder="Bereich (frei eintippbar)"
             style={styles.input}
           />
-
-          <select
-            value={form.area_id}
-            onChange={(e) => setForm((f) => ({ ...f, area_id: e.target.value }))}
-            style={styles.input}
-          >
-            <option value="">Bereich</option>
-            {areas.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
 
           <input
             type="datetime-local"
-            value={form.due_at}
-            onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))}
+            value={newDueAt}
+            onChange={(e) => setNewDueAt(e.target.value)}
             style={styles.input}
           />
 
-          <select
-            value={form.status}
-            onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
-            style={styles.input}
-          >
+          <select value={newStatus} onChange={(e) => setNewStatus(e.target.value)} style={styles.input}>
             <option value="todo">Zu erledigen</option>
             <option value="done">Erledigt</option>
           </select>
 
-          <select
-            multiple
-            value={form.guideIds}
-            onChange={onGuideSelect}
-            style={{ ...styles.input, height: 94 }}
-            title="Mehrfachauswahl: Strg/Cmd + Klick"
-          >
-            {guides.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.title}
-              </option>
-            ))}
-          </select>
-
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
-            <button style={styles.btnPrimary} onClick={createTask}>
-              Anlegen
-            </button>
-          </div>
+          <button style={styles.btnPrimary} onClick={createTask}>
+            Anlegen
+          </button>
         </div>
 
-        <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick</div>
+        <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
+          Hinweis: Farben greifen automatisch, wenn der Bereich-Text exakt (case-insensitive) zu einem Eintrag in „Bereiche“ passt.
+        </div>
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} />
-        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} />
-      </div>
-
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
-        <button style={styles.btn} onClick={loadAll} disabled={loading}>
-          {loading ? "Lade…" : "Neu laden"}
-        </button>
-      </div>
-
-      {!isAdmin ? (
-        <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
-          Hinweis: Aufgaben anlegen ist für alle Nutzer erlaubt. Admin-Funktionen findest du im Tab „Nutzer“.
+        <div style={styles.col}>
+          <div style={styles.colHeader}>
+            <div style={styles.h3}>Zu erledigen</div>
+            <div style={styles.badge}>{columns.todo.length}</div>
+          </div>
+          <div style={{ display: "grid", gap: 12 }}>{columns.todo.map(renderTaskCard)}</div>
+          {columns.todo.length === 0 ? <div style={{ color: "#999" }}>Keine Einträge.</div> : null}
         </div>
-      ) : null}
-    </div>
-  );
-}
 
-function TaskColumn({ title, count, tasks, onToggle, areaById }) {
-  return (
-    <div style={styles.col}>
-      <div style={styles.colHeader}>
-        <div style={styles.h3}>{title}</div>
-        <div style={styles.badge}>{count}</div>
-      </div>
-
-      <div style={{ display: "grid", gap: 12 }}>
-        {tasks.map((t) => {
-          const areaName = t.area_id ? areaById.get(t.area_id)?.name : t.area || "–";
-          return (
-            <div key={t.id} style={styles.card}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <div style={styles.h4}>{t.title}</div>
-                <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
-                <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
-                  Status
-                </button>
-              </div>
-
-              <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                Bereich: {areaName} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
-              </div>
-
-              <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>Unteraufgaben 0/0</div>
-            </div>
-          );
-        })}
-
-        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+        <div style={styles.col}>
+          <div style={styles.colHeader}>
+            <div style={styles.h3}>Erledigt</div>
+            <div style={styles.badge}>{columns.done.length}</div>
+          </div>
+          <div style={{ display: "grid", gap: 12 }}>{columns.done.map(renderTaskCard)}</div>
+          {columns.done.length === 0 ? <div style={{ color: "#999" }}>Keine Einträge.</div> : null}
+        </div>
       </div>
     </div>
   );
 }
 
-/* ---------------- Calendar ---------------- */
-function CalendarPanel() {
+/* ---------------- Calendar (simple) ---------------- */
+function CalendarPanel({ areas }) {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [tasks, setTasks] = useState([]);
-  const [areas, setAreas] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [items, setItems] = useState([]);
   const [err, setErr] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    loadAreas().then(setAreas).catch(() => setAreas([]));
-  }, []);
-
-  const areaById = useMemo(() => {
+  const areaByName = useMemo(() => {
     const m = new Map();
-    for (const a of areas) m.set(a.id, a);
+    for (const a of areas || []) m.set(normalizeName(a.name), a);
     return m;
   }, [areas]);
+
+  function startOfDayISO(dateStr) {
+    const d = new Date(dateStr);
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString();
+  }
+  function endOfDayISO(dateStr) {
+    const d = new Date(dateStr);
+    d.setHours(23, 59, 59, 999);
+    return d.toISOString();
+  }
 
   async function load() {
     setErr(null);
@@ -626,18 +705,13 @@ function CalendarPanel() {
 
     const { data, error } = await supabase
       .from("tasks")
-      .select("id, title, area_id, due_at, status")
+      .select("id, title, area, due_at, status")
       .gte("due_at", from)
       .lte("due_at", to)
       .order("due_at", { ascending: true });
 
-    if (error) {
-      setErr(error.message);
-      setLoading(false);
-      return;
-    }
-
-    setTasks(data || []);
+    if (error) setErr(error.message);
+    setItems(data || []);
     setLoading(false);
   }
 
@@ -660,51 +734,74 @@ function CalendarPanel() {
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
       <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-        {tasks.map((t) => {
-          const areaName = t.area_id ? areaById.get(t.area_id)?.name : t.area || "–";
+        {items.map((t) => {
+          const areaMatch = areaByName.get(normalizeName(t.area));
+          const badge = areaMatch ? (
+            <span style={areaBadgeStyle(areaMatch.color)}>{areaMatch.name}</span>
+          ) : t.area ? (
+            <span style={areaBadgeStyle("#6b7280")}>{t.area}</span>
+          ) : null;
+
           return (
             <div key={t.id} style={styles.card}>
-              <div style={styles.h4}>{t.title}</div>
-              <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {areaName} · Status: {t.status ?? "todo"}
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                <div style={styles.h4}>{t.title}</div>
+                <span style={styles.pill}>{t.status ?? "todo"}</span>
+              </div>
+              <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
+                {t.due_at ? fmtDateTime(t.due_at) : "–"} {badge ? <> · {badge}</> : null}
               </div>
             </div>
           );
         })}
-        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Aufgaben für {fmtDate(date)}.</div> : null}
+        {items.length === 0 ? <div style={{ color: "#999" }}>Keine Aufgaben für diesen Tag.</div> : null}
       </div>
     </div>
   );
 }
 
-/* ---------------- Main Component ---------------- */
+/* ---------------- Main ---------------- */
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("board");
-  const [auth, setAuth] = useState({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
+  const [auth, setAuth] = useState({ user: null, profile: null });
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
 
-  async function refreshAuth() {
-    setAuthLoading(true);
-    setAuthError(null);
+  // areas cached for suggestions + badges
+  const [areas, setAreas] = useState([]);
+  const [areasErr, setAreasErr] = useState(null);
 
+  async function refreshAuth() {
+    setAuthError(null);
+    setAuthLoading(true);
     try {
       const ctx = await loadMyAuthContext();
       setAuth(ctx);
     } catch (e) {
-      console.error("Auth init failed:", e);
-      setAuth({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
+      setAuth({ user: null, profile: null });
       setAuthError(e?.message || String(e));
     } finally {
       setAuthLoading(false);
     }
   }
 
+  async function loadAreas() {
+    setAreasErr(null);
+    const { data, error } = await supabase
+      .from("areas")
+      .select("id, name, color")
+      .order("name", { ascending: true });
+    if (error) setAreasErr(error.message);
+    setAreas(data || []);
+  }
+
   useEffect(() => {
     refreshAuth();
+    loadAreas();
 
     const { data: sub } = supabase.auth.onAuthStateChange(() => {
       refreshAuth();
+      loadAreas();
     });
 
     return () => {
@@ -721,7 +818,7 @@ export default function Dashboard() {
       <div style={styles.page}>
         <div style={styles.panel}>
           <div style={styles.h3}>Konfiguration fehlt</div>
-          <div>Bitte setze NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY.</div>
+          <div>Bitte NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY setzen.</div>
         </div>
       </div>
     );
@@ -735,12 +832,24 @@ export default function Dashboard() {
     );
   }
 
-  if (auth.inactive) {
+  if (!auth.user) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.panel}>
+          <div style={styles.h3}>Bitte anmelden</div>
+          {authError ? <div style={styles.error}>Fehler: {authError}</div> : null}
+          <div style={{ color: "#666" }}>Du bist nicht eingeloggt (nutze deinen Login-Flow).</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (auth.profile?.is_active === false) {
     return (
       <div style={styles.page}>
         <div style={styles.panel}>
           <div style={styles.h3}>Zugang deaktiviert</div>
-          <div>Dein Zugang ist aktuell deaktiviert. Bitte melde dich bei der Administration.</div>
+          <div>Dein Zugang ist deaktiviert. Bitte melde dich bei der Administration.</div>
           <div style={{ marginTop: 12 }}>
             <button style={styles.btn} onClick={signOut}>
               Abmelden
@@ -751,17 +860,7 @@ export default function Dashboard() {
     );
   }
 
-  if (!auth.user) {
-    return (
-      <div style={styles.page}>
-        <div style={styles.panel}>
-          <div style={styles.h3}>Bitte anmelden</div>
-          <div style={{ color: "#666" }}>Du bist nicht eingeloggt. Öffne deine Login-Seite oder nutze dein bestehendes Auth-Flow.</div>
-          {authError ? <div style={styles.error}>Fehler: {authError}</div> : null}
-        </div>
-      </div>
-    );
-  }
+  const admin = isAdmin(auth.profile);
 
   return (
     <div style={styles.page}>
@@ -775,18 +874,12 @@ export default function Dashboard() {
           <TabBtn active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>
             Kalender
           </TabBtn>
-          <TabBtn active={activeTab === "guides"} onClick={() => setActiveTab("guides")}>
-            Anleitungen
+          <TabBtn active={activeTab === "areas"} onClick={() => setActiveTab("areas")}>
+            Bereiche
           </TabBtn>
 
-          {auth.isAdmin ? (
-            <TabBtn active={activeTab === "users"} onClick={() => setActiveTab("users")}>
-              Nutzer
-            </TabBtn>
-          ) : null}
-
-          <button style={styles.btn} onClick={refreshAuth}>
-            Neu laden
+          <button style={styles.btn} onClick={() => { loadAreas(); }}>
+            Bereiche neu laden
           </button>
         </div>
 
@@ -799,11 +892,11 @@ export default function Dashboard() {
       </div>
 
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
+      {areasErr ? <div style={{ ...styles.panel, ...styles.error }}>Areas: {areasErr}</div> : null}
 
-      {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "calendar" ? <CalendarPanel /> : null}
-      {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "board" ? <TasksBoard areas={areas} /> : null}
+      {activeTab === "calendar" ? <CalendarPanel areas={areas} /> : null}
+      {activeTab === "areas" ? <AreasPanel admin={admin} onAreasChanged={loadAreas} /> : null}
 
       <div style={{ height: 24 }} />
     </div>
@@ -856,7 +949,7 @@ const styles = {
     padding: "10px 14px",
     borderRadius: 999,
     cursor: "pointer",
-    fontWeight: 600,
+    fontWeight: 700,
   },
   tabActive: {
     background: "#0b6b2a",
@@ -878,12 +971,12 @@ const styles = {
   },
   h3: {
     fontSize: 18,
-    fontWeight: 800,
+    fontWeight: 900,
     marginBottom: 10,
   },
   h4: {
     fontSize: 16,
-    fontWeight: 800,
+    fontWeight: 900,
     marginBottom: 4,
   },
   rowBetween: {
@@ -897,9 +990,7 @@ const styles = {
     gridTemplateColumns: "1fr 1fr",
     gap: 14,
   },
-  col: {
-    background: "transparent",
-  },
+  col: {},
   colHeader: {
     display: "flex",
     alignItems: "center",
@@ -915,7 +1006,7 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontWeight: 700,
+    fontWeight: 900,
     color: "#333",
   },
   pill: {
@@ -924,7 +1015,7 @@ const styles = {
     borderRadius: 999,
     border: "1px solid #d8e0ef",
     background: "#f7f9ff",
-    fontWeight: 700,
+    fontWeight: 900,
   },
   card: {
     background: "#fff",
@@ -941,22 +1032,13 @@ const styles = {
     background: "#fff",
     minWidth: 160,
   },
-  textarea: {
-    padding: 10,
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
-    outline: "none",
-    background: "#fff",
-    width: "100%",
-    resize: "vertical",
-  },
   btn: {
     padding: "10px 14px",
     borderRadius: 12,
     border: "1px solid #d8e0ef",
     background: "#fff",
     cursor: "pointer",
-    fontWeight: 700,
+    fontWeight: 800,
   },
   btnPrimary: {
     padding: "10px 14px",
@@ -965,7 +1047,7 @@ const styles = {
     background: "#0b6b2a",
     color: "#fff",
     cursor: "pointer",
-    fontWeight: 800,
+    fontWeight: 900,
   },
   error: {
     background: "#fff3f3",
@@ -976,26 +1058,13 @@ const styles = {
     marginTop: 10,
     marginBottom: 10,
   },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { textAlign: "left", padding: 8, borderBottom: "1px solid #ddd" },
+  td: { padding: 8, borderBottom: "1px solid #eee" },
   taskFormGrid: {
     display: "grid",
-    gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr auto",
+    gridTemplateColumns: "1.4fr 1fr 1fr 1fr auto",
     gap: 10,
     alignItems: "start",
-  },
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-  },
-  th: {
-    textAlign: "left",
-    padding: 10,
-    borderBottom: "1px solid #d8e0ef",
-    fontSize: 13,
-    color: "#555",
-  },
-  td: {
-    padding: 10,
-    borderBottom: "1px solid #eef2fb",
-    verticalAlign: "top",
   },
 };
