@@ -1,26 +1,453 @@
 // pages/dashboard.js
-// Dashboard-Stenau-2026 (Single-file)
-// Next.js (pages router) + React + Supabase
-// Features: Tasks board, Calendar, Guides, Users (Admin), Areas (Admin), Area colors, Series task generator (client-side)
+// Standalone dashboard page (React) for Next.js + Supabase
 
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Supabase ---------------- */
+/* ---------------- Supabase ---------------function TasksBoard({ isAdmin }) {
+  const [areas, setAreas] = useState([]);
+  const [guides, setGuides] = useState([]);
+  const [tasks, setTasks] = useState([]);
+
+  const [form, setForm] = useState({
+    title: "",
+    area: "",
+    due_at: "",
+    status: "todo",
+    guideIds: [],
+  });
+  const [subDrafts, setSubDrafts] = useState({});
+
+  function getSubDraft(taskId, fallbackColor) {
+    const d = subDrafts[taskId] || { title: "", guide_id: "", color: fallbackColor || "" };
+    return { ...d, color: d.color || fallbackColor || "" };
+  }
+
+  function setSubDraft(taskId, patch, fallbackColor) {
+    setSubDrafts((prev) => {
+      const cur = prev[taskId] || { title: "", guide_id: "", color: fallbackColor || "" };
+      return { ...prev, [taskId]: { ...cur, ...patch } };
+    });
+  }
+
+
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  async function loadAll() {
+    setErr(null);
+    setLoading(true);
+
+    // Tasks: use area_id, due_at, status, title
+    const { data: tData, error: tErr } = await supabase
+      .from("tasks")
+      .select("id, title, area, area_id, due_at, status, created_at, subtasks ( id, title, is_done, color, created_at, guide_id, guides ( id, title ) )")
+      .order("created_at", { ascending: false });
+
+    if (tErr) {
+      setErr(tErr.message);
+      setLoading(false);
+      return;
+    }
+
+    const [areasList, guidesRes] = await Promise.all([
+      loadAreas(),
+      supabase.from("guides").select("id, title").order("title", { ascending: true }),
+    ]);
+
+    if (guidesRes.error) {
+      console.warn("guides load failed:", guidesRes.error.message);
+    }
+
+    const areaByIdTmp = new Map((areasList || []).map((a) => [a.id, a]));
+    const areaByNameTmp = new Map((areasList || []).map((a) => [String(a.name || "").toLowerCase(), a]));
+
+    const decoratedTasks = (tData || []).map((t) => {
+      const areaObj = t.area_id
+        ? areaByIdTmp.get(t.area_id)
+        : (t.area ? areaByNameTmp.get(String(t.area).toLowerCase()) : null);
+      const areaLabel = areaObj?.name || t.area || "";
+      const areaColor = areaObj?.color || null;
+      return { ...t, area_label: areaLabel, area_color: areaColor };
+    });
+
+    setTasks(decoratedTasks);
+    setAreas(areasList || []);
+    setGuides(guidesRes.data || []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    loadAll();
+  }, []);
+
+  const areaById = useMemo(() => {
+    const m = new Map();
+    for (const a of areas) m.set(a.id, a);
+    return m;
+  }, [areas]);
+
+  const columns = useMemo(() => {
+    const todo = [];
+    const done = [];
+    for (const t of tasks) {
+      if ((t.status ?? "todo") === "done") done.push(t);
+      else todo.push(t);
+    }
+    return { todo, done };
+  }, [tasks]);
+
+  function onGuideSelect(e) {
+    const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
+    setForm((f) => ({ ...f, guideIds: selected }));
+  }
+
+  async function createTask() {
+    if (!form.title.trim()) return;
+    setErr(null);
+    const areaText = (form.area || "").trim();
+    const matched = areaText
+      ? (areas || []).find((a) => String(a.name || "").toLowerCase() === areaText.toLowerCase())
+      : null;
+
+    const payload = {
+      title: form.title.trim(),
+      status: form.status || "todo",
+      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+      area_id: matched ? matched.id : null,
+      area: areaText || null,
+    };
+
+    const { data: inserted, error: insErr } = await supabase.from("tasks").insert(payload).select("id").single();
+
+    if (insErr) {
+      setErr(insErr.message);
+      return;
+    }
+
+    const taskId = inserted?.id;
+
+    // Many-to-many task_guides (optional)
+    if (taskId && Array.isArray(form.guideIds) && form.guideIds.length > 0) {
+      const rows = form.guideIds.map((gid) => ({ task_id: taskId, guide_id: gid }));
+      const { error: linkErr } = await supabase.from("task_guides").insert(rows);
+      if (linkErr) console.warn("task_guides insert failed:", linkErr.message);
+    }
+
+    setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [] });
+    loadAll();
+  }
+
+  async function addSubtask(task, fallbackColor) {
+    if (!canWrite) return;
+    const taskId = task?.id;
+    if (!taskId) return;
+    const d = getSubDraft(taskId, fallbackColor);
+    if (!d.title.trim()) return;
+
+    setErr(null);
+    const payload = {
+      task_id: taskId,
+      title: d.title.trim(),
+      guide_id: d.guide_id ? d.guide_id : null,
+      color: d.color || fallbackColor || null,
+    };
+    const { data: row, error } = await supabase.from("subtasks").insert(payload).select("id, title, is_done, color, created_at, guide_id, guides ( id, title )").single();
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+
+    // clear draft
+    setSubDrafts((prev) => ({ ...prev, [taskId]: { title: "", guide_id: "", color: fallbackColor || "" } }));
+
+    // optimistic update
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, subtasks: [row, ...(t.subtasks || [])] } : t))
+    );
+  }
+
+  async function updateSubtask(subId, patch) {
+    if (!canWrite) return;
+    setErr(null);
+    const { error } = await supabase.from("subtasks").update(patch).eq("id", subId);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) =>
+      prev.map((t) => ({
+        ...t,
+        subtasks: (t.subtasks || []).map((s) => (s.id === subId ? { ...s, ...patch } : s)),
+      }))
+    );
+  }
+
+  async function deleteSubtask(subId) {
+    if (!canWrite) return;
+    setErr(null);
+    const { error } = await supabase.from("subtasks").delete().eq("id", subId);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) =>
+      prev.map((t) => ({ ...t, subtasks: (t.subtasks || []).filter((s) => s.id !== subId) }))
+    );
+  }
+
+  async function toggleStatus(task) {
+    const next = (task.status ?? "todo") === "done" ? "todo" : "done";
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
+  }
+
+  return (
+    <div>
+      <div style={styles.panel}>
+        <div style={styles.h3}>Aufgabe anlegen</div>
+
+        {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+
+        <div style={styles.taskFormGrid}>
+          <input
+            value={form.title}
+            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+            placeholder="Titel"
+            style={styles.input}
+          />
+
+          <input
+            value={form.area}
+            onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))}
+            placeholder="Bereich"
+            list="areas-list"
+            style={styles.input}
+          />
+          <datalist id="areas-list">
+            {areas.map((a) => (
+              <option key={a.id} value={a.name} />
+            ))}
+          </datalist>
+
+          <input
+            type="datetime-local"
+            value={form.due_at}
+            onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))}
+            style={styles.input}
+          />
+
+          <select
+            value={form.status}
+            onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
+            style={styles.input}
+          >
+            <option value="todo">Zu erledigen</option>
+            <option value="done">Erledigt</option>
+          </select>
+
+          <select
+            multiple
+            value={form.guideIds}
+            onChange={onGuideSelect}
+            style={{ ...styles.input, height: 94 }}
+            title="Mehrfachauswahl: Strg/Cmd + Klick"
+          >
+            {guides.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.title}
+              </option>
+            ))}
+          </select>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
+            <button style={styles.btnPrimary} onClick={createTask}>
+              Anlegen
+            </button>
+          </div>
+        </div>
+
+        <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick</div>
+      </div>
+
+      <div style={styles.columns}>
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} />
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button style={styles.btn} onClick={loadAll} disabled={loading}>
+          {loading ? "Lade…" : "Neu laden"}
+        </button>
+      </div>
+
+      {!isAdmin ? (
+        <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
+          Hinweis: Aufgaben anlegen ist für alle Nutzer erlaubt. Admin-Funktionen findest du im Tab „Nutzer“.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite, getSubDraft, setSubDraft, onSubAdd, onSubUpdate, onSubDelete }) {
+  return (
+    <div style={styles.col}>
+      <div style={styles.colHeader}>
+        <div style={styles.h3}>{title}</div>
+        <div style={styles.badge}>{count}</div>
+      </div>
+
+      <div style={{ display: "grid", gap: 12 }}>
+        {tasks.map((t) => {
+          const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
+          return (
+            <div key={t.id} style={styles.card}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={styles.h4}>{t.title}</div>
+              {t.area_color ? (
+                <span title={t.area || t.area_label || ""} style={{...styles.areaDot, background: t.area_color}} />
+              ) : null}
+                <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
+                <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
+                  Status
+                </button>
+              </div>
+
+              <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
+                Bereich: {areaName} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+              <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
+                {(() => {
+                  const subs = Array.isArray(t.subtasks) ? t.subtasks : [];
+                  const done = subs.filter((s) => s.is_done).length;
+                  return `Unteraufgaben ${done}/${subs.length}`;
+                })()}
+              </div>
+
+              {Array.isArray(t.subtasks) && t.subtasks.length > 0 ? (
+                <div style={{ display: "grid", gap: 8 }}>
+                  {t.subtasks.map((s) => (
+                    <div key={s.id} style={styles.subRow}>
+                      <input
+                        type="checkbox"
+                        checked={!!s.is_done}
+                        onChange={(e) => onSubUpdate(s.id, { is_done: e.target.checked })}
+                        disabled={!canWrite}
+                      />
+
+                      <input
+                        value={s.title ?? ""}
+                        onChange={(e) => onSubUpdate(s.id, { title: e.target.value })}
+                        style={{ ...styles.input, minWidth: 220 }}
+                        disabled={!canWrite}
+                      />
+
+                      <select
+                        value={s.guide_id ?? ""}
+                        onChange={(e) =>
+                          onSubUpdate(s.id, { guide_id: e.target.value || null })
+                        }
+                        style={{ ...styles.input, minWidth: 220 }}
+                        disabled={!canWrite}
+                        title="Anleitung verknüpfen"
+                      >
+                        <option value="">– Anleitung –</option>
+                        {(guides || []).map((g) => (
+                          <option key={g.id} value={g.id}>
+                            {g.title}
+                          </option>
+                        ))}
+                      </select>
+
+                      <input
+                        type="color"
+                        value={s.color || t.area_color || "#6b7280"}
+                        onChange={(e) => onSubUpdate(s.id, { color: e.target.value })}
+                        disabled={!canWrite}
+                        title="Farbe"
+                        style={styles.colorInput}
+                      />
+
+                      <button
+                        style={styles.btnSmall}
+                        onClick={() => onSubDelete(s.id)}
+                        disabled={!canWrite}
+                        title="Löschen"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {canWrite ? (
+                <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  {(() => {
+                    const d = getSubDraft(t.id, t.area_color || "#6b7280");
+                    return (
+                      <>
+                        <input
+                          value={d.title}
+                          onChange={(e) => setSubDraft(t.id, { title: e.target.value }, t.area_color || "#6b7280")}
+                          placeholder="Neue Unteraufgabe…"
+                          style={{ ...styles.input, minWidth: 260 }}
+                        />
+                        <select
+                          value={d.guide_id || ""}
+                          onChange={(e) => setSubDraft(t.id, { guide_id: e.target.value }, t.area_color || "#6b7280")}
+                          style={{ ...styles.input, minWidth: 220 }}
+                          title="Anleitung verknüpfen"
+                        >
+                          <option value="">– Anleitung –</option>
+                          {(guides || []).map((g) => (
+                            <option key={g.id} value={g.id}>
+                              {g.title}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="color"
+                          value={d.color || t.area_color || "#6b7280"}
+                          onChange={(e) => setSubDraft(t.id, { color: e.target.value }, t.area_color || "#6b7280")}
+                          title="Farbe"
+                          style={styles.colorInput}
+                        />
+                        <button
+                          style={styles.btnSmallPrimary}
+                          onClick={() => onSubAdd(t, t.area_color || "#6b7280")}
+                          title="Hinzufügen"
+                        >
+                          +
+                        </button>
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : null}
+            </div>
+            </div>
+          );
+        })}
+
+        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+      </div>
+    </div>
+  );
+}
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
 const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
 
 /* ---------------- Helpers ---------------- */
-function can(permissions, key) {
-  return Array.isArray(permissions) && permissions.includes(key);
-}
-
-function isAdminCtx(auth, permissions) {
-  const role = String(auth?.profile?.role || "").toLowerCase();
-  return role === "admin" || can(permissions, "users.manage") || can(permissions, "areas.manage");
-}
-
 function fmtDateTime(value) {
   if (!value) return "";
   const d = new Date(value);
@@ -45,15 +472,6 @@ function fmtDate(value) {
   });
 }
 
-function toISOFromDateAndTime(dateStr, timeStr) {
-  // dateStr: YYYY-MM-DD, timeStr: HH:mm
-  if (!dateStr) return null;
-  const t = timeStr && /^\d{2}:\d{2}$/.test(timeStr) ? timeStr : "08:00";
-  const dt = new Date(`${dateStr}T${t}:00`);
-  if (Number.isNaN(dt.getTime())) return null;
-  return dt.toISOString();
-}
-
 function startOfDayISO(dateStr) {
   const d = new Date(dateStr);
   d.setHours(0, 0, 0, 0);
@@ -66,41 +484,19 @@ function endOfDayISO(dateStr) {
   return d.toISOString();
 }
 
-function addDays(date, n) {
-  const d = new Date(date);
-  d.setDate(d.getDate() + n);
-  return d;
+function safeLower(v) {
+  return String(v ?? "").trim().toLowerCase();
 }
 
-function addMonths(date, n) {
-  const d = new Date(date);
-  const day = d.getDate();
-  d.setMonth(d.getMonth() + n);
-  if (d.getDate() !== day) {
-    d.setDate(0);
-  }
-  return d;
-}
-
-function toDateOnlyISO(d) {
-  const x = new Date(d);
-  if (Number.isNaN(x.getTime())) return "";
-  const y = x.getFullYear();
-  const m = String(x.getMonth() + 1).padStart(2, "0");
-  const day = String(x.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-/* ---------------- RBAC: Load auth context ---------------- */
+/* ---------------- Auth context ---------------- */
 async function loadMyAuthContext() {
-  const {
-    data: { user },
-    error: userErr,
-  } = await supabase.auth.getUser();
+  const { data, error } = await supabase.auth.getUser();
+  if (error) throw error;
 
-  if (userErr) throw userErr;
-  if (!user) return { user: null, profile: null, permissions: [] };
+  const user = data?.user || null;
+  if (!user) return { user: null, profile: null, role: null, isAdmin: false };
 
+  // Your profiles table uses id = auth.uid()
   const { data: profile, error: pErr } = await supabase
     .from("profiles")
     .select("id, email, name, role, role_id, is_active")
@@ -109,250 +505,54 @@ async function loadMyAuthContext() {
 
   if (pErr) throw pErr;
 
+  // If is_active exists and user disabled
   if (profile && profile.is_active === false) {
-    return { user, profile, permissions: ["__inactive__"] };
+    return { user, profile, role: null, isAdmin: false, inactive: true };
   }
 
-  const perms = [];
-
-  const { data: rolePerms, error: rpErr } = await supabase
-    .from("role_permissions")
-    .select("permissions:permission_id ( key )")
-    .eq("role_id", profile?.role_id ?? "");
-
-  if (!rpErr) {
-    for (const x of rolePerms ?? []) {
-      const k = x?.permissions?.key;
-      if (k) perms.push(k);
-    }
+  let role = null;
+  if (profile?.role_id) {
+    const { data: r, error: rErr } = await supabase
+      .from("roles")
+      .select("id, key, name")
+      .eq("id", profile.role_id)
+      .maybeSingle();
+    if (!rErr) role = r;
   }
 
-  const { data: userPerms, error: upErr } = await supabase
-    .from("user_permissions")
-    .select("allowed, permissions:permission_id ( key )")
-    .eq("user_id", user.id);
+  const roleKey = safeLower(role?.key || profile?.role);
+  const isAdmin = roleKey === "admin";
 
-  if (!upErr) {
-    for (const x of userPerms ?? []) {
-      if (x?.allowed) {
-        const k = x?.permissions?.key;
-        if (k) perms.push(k);
-      }
-    }
-  }
-
-  const permissions = Array.from(new Set(perms));
-  return { user, profile: profile || null, permissions };
+  return { user, profile: profile || null, role, isAdmin, inactive: false };
 }
 
-/* ---------------- Areas (Admin) ---------------- */
-function AreasPanel({ auth, permissions, onAreasChanged }) {
-  const admin = isAdminCtx(auth, permissions);
+/* ---------------- Areas (A/B) ---------------- */
+// Option 2: fixed areas A/B (plus whatever exists in table `areas`)
+async function loadAreas() {
+  const { data, error } = await supabase
+    .from("areas")
+    .select("id, name, color")
+    .order("name", { ascending: true });
 
-  const [areas, setAreas] = useState([]);
-  const [name, setName] = useState("");
-  const [color, setColor] = useState("#0b6b2a");
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
-  async function load() {
-    setErr(null);
-    setLoading(true);
-
-    const { data, error } = await supabase
-      .from("areas")
-      .select("id, name, color, created_at")
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      setErr(error.message);
-      setLoading(false);
-      return;
-    }
-
-    setAreas(data ?? []);
-    setLoading(false);
+  if (error) {
+    console.warn("areas load failed:", error.message);
+    return [];
   }
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function createArea() {
-    if (!admin) return;
-    const n = name.trim();
-    if (!n) return;
-
-    setErr(null);
-
-    const { error } = await supabase.from("areas").insert({
-      name: n,
-      color: color || null,
-    });
-
-    if (error) {
-      if (String(error.message || "").toLowerCase().includes("duplicate")) {
-        setErr("Bereich existiert bereits (Name ist eindeutig).");
-      } else {
-        setErr(error.message);
-      }
-      return;
-    }
-
-    setName("");
-    setColor("#0b6b2a");
-    await load();
-    onAreasChanged?.();
-  }
-
-  async function updateArea(id, patch) {
-    if (!admin) return;
-    setErr(null);
-
-    const { error } = await supabase.from("areas").update(patch).eq("id", id);
-    if (error) {
-      if (String(error.message || "").toLowerCase().includes("duplicate")) {
-        setErr("Bereich existiert bereits (Name ist eindeutig).");
-      } else {
-        setErr(error.message);
-      }
-      return;
-    }
-
-    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
-    onAreasChanged?.();
-  }
-
-  async function deleteArea(id) {
-    if (!admin) return;
-    setErr(null);
-
-    const ok = window.confirm("Bereich wirklich löschen?");
-    if (!ok) return;
-
-    const { error } = await supabase.from("areas").delete().eq("id", id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-
-    setAreas((prev) => prev.filter((a) => a.id !== id));
-    onAreasChanged?.();
-  }
-
-  if (!admin) {
-    return (
-      <div style={styles.panel}>
-        <div style={styles.h3}>Bereiche</div>
-        <div>Du hast keine Berechtigung, Bereiche zu bearbeiten.</div>
-        <div style={{ marginTop: 10 }}>
-          <button style={styles.btn} onClick={load} disabled={loading}>
-            {loading ? "Lade…" : "Neu laden"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Bereiche</div>
-        <button style={styles.btn} onClick={load} disabled={loading}>
-          {loading ? "Lade…" : "Neu laden"}
-        </button>
-      </div>
-
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
-      <div style={{ ...styles.card, marginBottom: 14 }}>
-        <div style={styles.h4}>Neuen Bereich anlegen</div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 220px auto", gap: 10, alignItems: "center" }}>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Name (z.B. 1, 2, Gewerbemüll, Papier …)"
-            style={styles.input}
-          />
-          <input
-            type="color"
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            title="Farbe"
-            style={{ ...styles.input, padding: 6, height: 42 }}
-          />
-          <button style={styles.btnPrimary} onClick={createArea}>
-            Anlegen
-          </button>
-        </div>
-
-        <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
-          Hinweis: In Aufgaben ist der Bereich frei eintippbar. Wenn der Text genau zu einem Bereich passt (case-insensitive),
-          wird automatisch die Farbe gezogen.
-        </div>
-      </div>
-
-      <div style={{ overflowX: "auto" }}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Name</th>
-              <th style={styles.th}>Farbe</th>
-              <th style={styles.th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {areas.map((a) => (
-              <tr key={a.id}>
-                <td style={styles.td}>
-                  <input
-                    value={a.name ?? ""}
-                    onChange={(e) => updateArea(a.id, { name: e.target.value })}
-                    style={styles.input}
-                  />
-                </td>
-                <td style={styles.td}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <input
-                      type="color"
-                      value={a.color || "#0b6b2a"}
-                      onChange={(e) => updateArea(a.id, { color: e.target.value })}
-                      style={{ ...styles.input, padding: 6, height: 42, width: 80, minWidth: 80 }}
-                    />
-                    <div style={{ fontFamily: "monospace", color: "#666" }}>{a.color || "—"}</div>
-                  </div>
-                </td>
-                <td style={styles.td}>
-                  <button style={styles.btnDanger} onClick={() => deleteArea(a.id)}>
-                    Löschen
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {areas.length === 0 ? (
-              <tr>
-                <td style={styles.td} colSpan={3}>
-                  Keine Bereiche vorhanden.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
+  return (data || []).map((a) => ({
+    id: a.id,
+    name: a.name,
+    color: a.color || null,
+  }));
 }
 
-/* ---------------- Admin Users Panel ---------------- */
-function UsersAdminPanel({ auth, permissions }) {
+/* ---------------- Admin: Users Panel ---------------- */
+function UsersAdminPanel({ isAdmin }) {
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
-
-  const admin = isAdminCtx(auth, permissions) || can(permissions, "users.manage");
 
   async function load() {
     setErr(null);
@@ -380,22 +580,19 @@ function UsersAdminPanel({ auth, permissions }) {
       return;
     }
 
-    setRoles(rolesData ?? []);
-    setUsers(usersData ?? []);
+    setRoles(rolesData || []);
+    setUsers(usersData || []);
     setLoading(false);
   }
 
   useEffect(() => {
-    if (admin) load();
-  }, [admin]);
+    if (isAdmin) load();
+  }, [isAdmin]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return users;
-    return users.filter((u) => {
-      const s = `${u.name ?? ""} ${u.email ?? ""}`.toLowerCase();
-      return s.includes(needle);
-    });
+    return users.filter((u) => `${u.name ?? ""} ${u.email ?? ""}`.toLowerCase().includes(needle));
   }, [users, q]);
 
   async function updateUser(id, patch) {
@@ -408,7 +605,7 @@ function UsersAdminPanel({ auth, permissions }) {
     setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
   }
 
-  if (!admin) {
+  if (!isAdmin) {
     return (
       <div style={styles.panel}>
         <div style={styles.h3}>Nutzer</div>
@@ -445,11 +642,19 @@ function UsersAdminPanel({ auth, permissions }) {
             {filtered.map((u) => (
               <tr key={u.id}>
                 <td style={styles.td}>
-                  <input value={u.name ?? ""} onChange={(e) => updateUser(u.id, { name: e.target.value })} style={styles.input} />
+                  <input
+                    value={u.name ?? ""}
+                    onChange={(e) => updateUser(u.id, { name: e.target.value })}
+                    style={styles.input}
+                  />
                 </td>
                 <td style={styles.td}>{u.email ?? ""}</td>
                 <td style={styles.td}>
-                  <select value={u.role_id ?? ""} onChange={(e) => updateUser(u.id, { role_id: e.target.value || null })} style={styles.input}>
+                  <select
+                    value={u.role_id ?? ""}
+                    onChange={(e) => updateUser(u.id, { role_id: e.target.value || null })}
+                    style={styles.input}
+                  >
                     <option value="">–</option>
                     {roles.map((r) => (
                       <option key={r.id} value={r.id}>
@@ -459,10 +664,15 @@ function UsersAdminPanel({ auth, permissions }) {
                   </select>
                 </td>
                 <td style={styles.td}>
-                  <input type="checkbox" checked={u.is_active !== false} onChange={(e) => updateUser(u.id, { is_active: e.target.checked })} />
+                  <input
+                    type="checkbox"
+                    checked={u.is_active !== false}
+                    onChange={(e) => updateUser(u.id, { is_active: e.target.checked })}
+                  />
                 </td>
               </tr>
             ))}
+
             {filtered.length === 0 ? (
               <tr>
                 <td style={styles.td} colSpan={4}>
@@ -478,41 +688,42 @@ function UsersAdminPanel({ auth, permissions }) {
 }
 
 /* ---------------- Guides (Anleitungen) ---------------- */
-function GuidesPanel({ permissions }) {
+function GuidesPanel({ isAdmin }) {
   const [guides, setGuides] = useState([]);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
-  const canRead = can(permissions, "guides.read") || permissions.length === 0;
-  const canWrite = can(permissions, "guides.write") || permissions.length === 0;
-
   async function load() {
     setErr(null);
     setLoading(true);
-    const { data, error } = await supabase.from("guides").select("id, title, content, created_at").order("created_at", { ascending: false });
-
+    const { data, error } = await supabase
+      .from("guides")
+      .select("id, title, content, created_at")
+      .order("created_at", { ascending: false });
     if (error) {
       setErr(error.message);
       setLoading(false);
       return;
     }
-    setGuides(data ?? []);
+    setGuides(data || []);
     setLoading(false);
   }
 
   useEffect(() => {
-    if (canRead) load();
-  }, [canRead]);
+    load();
+  }, []);
 
   async function createGuide() {
-    if (!canWrite) return;
+    if (!isAdmin) return;
     if (!title.trim()) return;
-
     setErr(null);
 
-    const { error } = await supabase.from("guides").insert({ title: title.trim(), content: content.trim() });
+    const { error } = await supabase
+      .from("guides")
+      .insert({ title: title.trim(), content: content.trim() });
+
     if (error) {
       setErr(error.message);
       return;
@@ -521,15 +732,6 @@ function GuidesPanel({ permissions }) {
     setTitle("");
     setContent("");
     load();
-  }
-
-  if (!canRead) {
-    return (
-      <div style={styles.panel}>
-        <div style={styles.h3}>Anleitungen</div>
-        <div>Keine Berechtigung.</div>
-      </div>
-    );
   }
 
   return (
@@ -543,12 +745,18 @@ function GuidesPanel({ permissions }) {
 
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-      {canWrite ? (
+      {isAdmin ? (
         <div style={{ ...styles.card, marginBottom: 14 }}>
           <div style={styles.h4}>Neue Anleitung</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
             <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titel" style={styles.input} />
-            <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Inhalt / Schritte" rows={5} style={styles.textarea} />
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Inhalt / Schritte"
+              rows={5}
+              style={styles.textarea}
+            />
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <button style={styles.btnPrimary} onClick={createGuide}>
                 Anlegen
@@ -566,18 +774,145 @@ function GuidesPanel({ permissions }) {
             <div style={{ whiteSpace: "pre-wrap" }}>{g.content}</div>
           </div>
         ))}
+
         {guides.length === 0 ? <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div> : null}
       </div>
     </div>
   );
 }
 
-/* ---------------- Tasks Board (Planke) ---------------- */
-function TasksBoard({ permissions, areas }) {
-  const [tasks, setTasks] = useState([]);
-  const [guides, setGuides] = useState([]);
+/* ---------------- Areas (Bereiche) ---------------- */
+function AreasPanel({ isAdmin }) {
+  const [areas, setAreas] = useState([]);
+  const [name, setName] = useState("");
+  const [color, setColor] = useState("#0b6b2a");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
+
+  async function load() {
+    setErr(null);
+    setLoading(true);
+    const list = await loadAreas();
+    setAreas(list);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function createArea() {
+    if (!isAdmin) return;
+    const n = name.trim();
+    if (!n) return;
+    setErr(null);
+
+    const { error } = await supabase.from("areas").insert({ name: n, color: (color || null) });
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setName("");
+    setColor("#0b6b2a");
+    load();
+  }
+
+  async function updateArea(id, patch) {
+    if (!isAdmin) return;
+    setErr(null);
+    const { error } = await supabase.from("areas").update(patch).eq("id", id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+  }
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Bereiche</div>
+        <button style={styles.btn} onClick={load} disabled={loading}>
+          {loading ? "Lade…" : "Neu laden"}
+        </button>
+      </div>
+
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+
+      {isAdmin ? (
+        <div style={{ ...styles.card, marginBottom: 14 }}>
+          <div style={styles.h4}>Neuen Bereich anlegen</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 220px auto", gap: 10, alignItems: "center" }}>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Name (z.B. LVP, PPK, Containerdienst)"
+              style={styles.input}
+            />
+            <input type="color" value={color} onChange={(e) => setColor(e.target.value)} style={styles.input} />
+            <button style={styles.btnPrimary} onClick={createArea}>
+              Anlegen
+            </button>
+          </div>
+          <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
+            Hinweis: Aufgaben-Bereich ist frei eintippbar. Wenn der Text genau zu einem Bereich passt, wird automatisch die Farbe gezogen.
+          </div>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 12, color: "#666", fontSize: 13 }}>
+          Du kannst bei Aufgaben den Bereich frei eintippen. Bereiche/Farben pflegt nur die Administration.
+        </div>
+      )}
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Name</th>
+              <th style={styles.th}>Farbe</th>
+            </tr>
+          </thead>
+          <tbody>
+            {areas.map((a) => (
+              <tr key={a.id}>
+                <td style={styles.td}>
+                  {isAdmin ? (
+                    <input value={a.name || ""} onChange={(e) => updateArea(a.id, { name: e.target.value })} style={styles.input} />
+                  ) : (
+                    a.name
+                  )}
+                </td>
+                <td style={styles.td}>
+                  {isAdmin ? (
+                    <input type="color" value={a.color || "#0b6b2a"} onChange={(e) => updateArea(a.id, { color: e.target.value })} style={styles.input} />
+                  ) : (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ width: 14, height: 14, borderRadius: 999, background: a.color || "#d8e0ef", border: "1px solid #d8e0ef" }} />
+                      {a.color || "–"}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {areas.length === 0 ? (
+              <tr>
+                <td style={styles.td} colSpan={2}>
+                  Keine Bereiche vorhanden.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Tasks Board (Planke) ---------------- */
+function TasksBoard({ isAdmin }) {
+  const [areas, setAreas] = useState([]);
+  const [guides, setGuides] = useState([]);
+  const [tasks, setTasks] = useState([]);
 
   const [form, setForm] = useState({
     title: "",
@@ -587,38 +922,17 @@ function TasksBoard({ permissions, areas }) {
     guideIds: [],
   });
 
-  // Series UI (global)
-  const [seriesEnabled, setSeriesEnabled] = useState(false);
-  const [seriesType, setSeriesType] = useState("WEEKLY");
-  const [seriesInterval, setSeriesInterval] = useState(1);
-  const [seriesWeekdays, setSeriesWeekdays] = useState([1]); // 1=Mo .. 7=So
-  const [seriesStart, setSeriesStart] = useState(() => toDateOnlyISO(new Date()));
-  const [seriesTime, setSeriesTime] = useState("08:00");
-  const [seriesCount, setSeriesCount] = useState(5);
-
-  const canRead = can(permissions, "tasks.read") || permissions.length === 0;
-  const canWrite = can(permissions, "tasks.write") || permissions.length === 0;
-
-  const areaMap = useMemo(() => {
-    const m = new Map();
-    for (const a of areas ?? []) {
-      if (a?.name) m.set(String(a.name).toLowerCase(), a.color || null);
-    }
-    return m;
-  }, [areas]);
-
-  function areaColor(areaText) {
-    if (!areaText) return null;
-    return areaMap.get(String(areaText).trim().toLowerCase()) || null;
-  }
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
 
   async function loadAll() {
     setErr(null);
     setLoading(true);
 
+    // Tasks: use area_id, due_at, status, title
     const { data: tData, error: tErr } = await supabase
       .from("tasks")
-      .select("id, title, area, due_at, status, is_series, series_id, series_parent_id, created_at")
+      .select("id, title, area, area_id, due_at, status, created_at")
       .order("created_at", { ascending: false });
 
     if (tErr) {
@@ -627,17 +941,42 @@ function TasksBoard({ permissions, areas }) {
       return;
     }
 
-    const { data: gData, error: gErr } = await supabase.from("guides").select("id, title").order("title", { ascending: true });
-    if (gErr) console.warn("guides load failed:", gErr.message);
+    const [areasList, guidesRes] = await Promise.all([
+      loadAreas(),
+      supabase.from("guides").select("id, title").order("title", { ascending: true }),
+    ]);
 
-    setTasks(tData ?? []);
-    setGuides(gData ?? []);
+    if (guidesRes.error) {
+      console.warn("guides load failed:", guidesRes.error.message);
+    }
+
+    const areaByIdTmp = new Map((areasList || []).map((a) => [a.id, a]));
+    const areaByNameTmp = new Map((areasList || []).map((a) => [String(a.name || "").toLowerCase(), a]));
+
+    const decoratedTasks = (tData || []).map((t) => {
+      const areaObj = t.area_id
+        ? areaByIdTmp.get(t.area_id)
+        : (t.area ? areaByNameTmp.get(String(t.area).toLowerCase()) : null);
+      const areaLabel = areaObj?.name || t.area || "";
+      const areaColor = areaObj?.color || null;
+      return { ...t, area_label: areaLabel, area_color: areaColor };
+    });
+
+    setTasks(decoratedTasks);
+    setAreas(areasList || []);
+    setGuides(guidesRes.data || []);
     setLoading(false);
   }
 
   useEffect(() => {
-    if (canRead) loadAll();
-  }, [canRead]);
+    loadAll();
+  }, []);
+
+  const areaById = useMemo(() => {
+    const m = new Map();
+    for (const a of areas) m.set(a.id, a);
+    return m;
+  }, [areas]);
 
   const columns = useMemo(() => {
     const todo = [];
@@ -654,118 +993,38 @@ function TasksBoard({ permissions, areas }) {
     setForm((f) => ({ ...f, guideIds: selected }));
   }
 
-  async function createTaskSingle() {
-    if (!canWrite) return;
+  async function createTask() {
     if (!form.title.trim()) return;
-
     setErr(null);
+    const areaText = (form.area || "").trim();
+    const matched = areaText
+      ? (areas || []).find((a) => String(a.name || "").toLowerCase() === areaText.toLowerCase())
+      : null;
 
     const payload = {
       title: form.title.trim(),
-      area: (form.area || "").trim() || null,
-      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
       status: form.status || "todo",
+      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+      area_id: matched ? matched.id : null,
+      area: areaText || null,
     };
 
-    const { error: insErr } = await supabase.from("tasks").insert(payload);
+    const { data: inserted, error: insErr } = await supabase.from("tasks").insert(payload).select("id").single();
+
     if (insErr) {
       setErr(insErr.message);
       return;
     }
 
-    setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [] });
-    loadAll();
-  }
+    const taskId = inserted?.id;
 
-  function buildSeriesDates() {
-    const start = new Date(`${seriesStart}T00:00:00`);
-    if (Number.isNaN(start.getTime())) return [];
-
-    const interval = Math.max(1, Number(seriesInterval) || 1);
-    const count = Math.max(1, Math.min(200, Number(seriesCount) || 1));
-
-    const dates = [];
-
-    if (seriesType === "DAILY") {
-      let d = start;
-      for (let i = 0; i < count; i++) {
-        dates.push(new Date(d));
-        d = addDays(d, interval);
-      }
-      return dates;
+    // Many-to-many task_guides (optional)
+    if (taskId && Array.isArray(form.guideIds) && form.guideIds.length > 0) {
+      const rows = form.guideIds.map((gid) => ({ task_id: taskId, guide_id: gid }));
+      const { error: linkErr } = await supabase.from("task_guides").insert(rows);
+      if (linkErr) console.warn("task_guides insert failed:", linkErr.message);
     }
 
-    if (seriesType === "MONTHLY") {
-      let d = start;
-      for (let i = 0; i < count; i++) {
-        dates.push(new Date(d));
-        d = addMonths(d, interval);
-      }
-      return dates;
-    }
-
-    const wdSet = new Set((seriesWeekdays || []).map((x) => Number(x)).filter((x) => x >= 1 && x <= 7));
-    if (wdSet.size === 0) wdSet.add(1);
-
-    let d = new Date(start);
-
-    const startWeekStart = new Date(start);
-    const jsDay = startWeekStart.getDay();
-    const offsetToMonday = jsDay === 0 ? -6 : 1 - jsDay;
-    startWeekStart.setDate(startWeekStart.getDate() + offsetToMonday);
-
-    while (dates.length < count) {
-      const curWeekStart = new Date(d);
-      const curJsDay = curWeekStart.getDay();
-      const curOffsetToMonday = curJsDay === 0 ? -6 : 1 - curJsDay;
-      curWeekStart.setDate(curWeekStart.getDate() + curOffsetToMonday);
-
-      const weekIndex = Math.round((curWeekStart - startWeekStart) / (7 * 24 * 3600 * 1000));
-      const inAllowedWeek = weekIndex % interval === 0;
-
-      const wd = d.getDay() === 0 ? 7 : d.getDay();
-      if (inAllowedWeek && wdSet.has(wd)) dates.push(new Date(d));
-
-      d = addDays(d, 1);
-      if (dates.length > 1000) break;
-    }
-    return dates;
-  }
-
-  async function createSeriesNow() {
-    if (!canWrite) return;
-    if (!form.title.trim()) return;
-
-    setErr(null);
-
-    const title = form.title.trim();
-    const area = (form.area || "").trim() || null;
-    const status = form.status || "todo";
-
-    const dates = buildSeriesDates();
-    if (dates.length === 0) {
-      setErr("Serien-Startdatum ist ungültig.");
-      return;
-    }
-
-    const rows = dates.map((d) => ({
-      title,
-      area,
-      status,
-      due_at: toISOFromDateAndTime(toDateOnlyISO(d), seriesTime),
-      is_series: false,
-      series_rule: seriesType,
-      series_interval: Math.max(1, Number(seriesInterval) || 1),
-      series_weekdays: seriesType === "WEEKLY" ? seriesWeekdays : null,
-    }));
-
-    const { error: insErr } = await supabase.from("tasks").insert(rows);
-    if (insErr) {
-      setErr(insErr.message);
-      return;
-    }
-
-    setSeriesEnabled(false);
     setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [] });
     loadAll();
   }
@@ -780,61 +1039,57 @@ function TasksBoard({ permissions, areas }) {
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
   }
 
-  async function deleteTask(task) {
-    if (!canWrite) return;
-    const ok = window.confirm("Aufgabe wirklich löschen?");
-    if (!ok) return;
-
-    setErr(null);
-    const { error } = await supabase.from("tasks").delete().eq("id", task.id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setTasks((prev) => prev.filter((t) => t.id !== task.id));
-  }
-
-  if (!canRead) {
-    return (
-      <div style={styles.panel}>
-        <div style={styles.h3}>Armaturenbrett</div>
-        <div>Keine Berechtigung.</div>
-      </div>
-    );
-  }
-
   return (
     <div>
       <div style={styles.panel}>
-        <div style={styles.rowBetween}>
-          <div style={styles.h3}>Aufgabe anlegen</div>
-          <button style={styles.btn} onClick={loadAll} disabled={loading}>
-            {loading ? "Lade…" : "Neu laden"}
-          </button>
-        </div>
+        <div style={styles.h3}>Aufgabe anlegen</div>
 
         {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
         <div style={styles.taskFormGrid}>
-          <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Titel" style={styles.input} disabled={!canWrite} />
+          <input
+            value={form.title}
+            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+            placeholder="Titel"
+            style={styles.input}
+          />
 
-          <div style={{ display: "grid" }}>
-            <input value={form.area} onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))} placeholder="Bereich" style={styles.input} disabled={!canWrite} list="areas-datalist" />
-            <datalist id="areas-datalist">
-              {(areas ?? []).map((a) => (
-                <option key={a.id} value={a.name} />
-              ))}
-            </datalist>
-          </div>
+          <input
+            value={form.area}
+            onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))}
+            placeholder="Bereich"
+            list="areas-list"
+            style={styles.input}
+          />
+          <datalist id="areas-list">
+            {areas.map((a) => (
+              <option key={a.id} value={a.name} />
+            ))}
+          </datalist>
 
-          <input type="datetime-local" value={form.due_at} onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))} style={styles.input} disabled={!canWrite} />
+          <input
+            type="datetime-local"
+            value={form.due_at}
+            onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))}
+            style={styles.input}
+          />
 
-          <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} style={styles.input} disabled={!canWrite}>
+          <select
+            value={form.status}
+            onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
+            style={styles.input}
+          >
             <option value="todo">Zu erledigen</option>
             <option value="done">Erledigt</option>
           </select>
 
-          <select multiple value={form.guideIds} onChange={onGuideSelect} style={{ ...styles.input, height: 94 }} disabled={!canWrite} title="Mehrfachauswahl: Strg/Cmd + Klick">
+          <select
+            multiple
+            value={form.guideIds}
+            onChange={onGuideSelect}
+            style={{ ...styles.input, height: 94 }}
+            title="Mehrfachauswahl: Strg/Cmd + Klick"
+          >
             {guides.map((g) => (
               <option key={g.id} value={g.id}>
                 {g.title}
@@ -842,89 +1097,37 @@ function TasksBoard({ permissions, areas }) {
             ))}
           </select>
 
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start", gap: 10 }}>
-            <button style={styles.btnPrimary} onClick={createTaskSingle} disabled={!canWrite || seriesEnabled}>
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
+            <button style={styles.btnPrimary} onClick={createTask}>
               Anlegen
             </button>
           </div>
         </div>
 
-        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 800 }}>
-            <input type="checkbox" checked={seriesEnabled} onChange={(e) => setSeriesEnabled(e.target.checked)} disabled={!canWrite} />
-            Serienaufgabe (global)
-          </label>
-
-          {seriesEnabled ? (
-            <>
-              <select value={seriesType} onChange={(e) => setSeriesType(e.target.value)} style={styles.input}>
-                <option value="DAILY">Täglich</option>
-                <option value="WEEKLY">Wöchentlich</option>
-                <option value="MONTHLY">Monatlich</option>
-              </select>
-
-              <input value={seriesInterval} onChange={(e) => setSeriesInterval(e.target.value)} style={{ ...styles.input, width: 90, minWidth: 90 }} type="number" min="1" title="Intervall" />
-
-              {seriesType === "WEEKLY" ? (
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  {[
-                    { k: 1, t: "Mo" },
-                    { k: 2, t: "Di" },
-                    { k: 3, t: "Mi" },
-                    { k: 4, t: "Do" },
-                    { k: 5, t: "Fr" },
-                    { k: 6, t: "Sa" },
-                    { k: 7, t: "So" },
-                  ].map((w) => {
-                    const on = seriesWeekdays.includes(w.k);
-                    return (
-                      <button
-                        key={w.k}
-                        type="button"
-                        onClick={() => {
-                          setSeriesWeekdays((prev) => {
-                            const set = new Set(prev);
-                            if (set.has(w.k)) set.delete(w.k);
-                            else set.add(w.k);
-                            const next = Array.from(set).sort((a, b) => a - b);
-                            return next.length ? next : [1];
-                          });
-                        }}
-                        style={{ ...styles.weekBtn, ...(on ? styles.weekBtnOn : null) }}
-                        title="Wochentag"
-                      >
-                        {w.t}
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
-
-              <input type="date" value={seriesStart} onChange={(e) => setSeriesStart(e.target.value)} style={styles.input} title="Start" />
-              <input type="time" value={seriesTime} onChange={(e) => setSeriesTime(e.target.value)} style={{ ...styles.input, width: 120, minWidth: 120 }} title="Uhrzeit" />
-              <input value={seriesCount} onChange={(e) => setSeriesCount(e.target.value)} style={{ ...styles.input, width: 110, minWidth: 110 }} type="number" min="1" max="200" title="Anzahl" />
-
-              <button style={styles.btn} onClick={createSeriesNow} disabled={!canWrite}>
-                Serien jetzt erzeugen
-              </button>
-            </>
-          ) : null}
-        </div>
-
-        <div style={{ color: "#666", fontSize: 13, marginTop: 10 }}>
-          Hinweis: Farben greifen automatisch, wenn der Bereich-Text exakt (case-insensitive) zu einem Eintrag in „Bereiche“ passt.
-        </div>
+        <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick</div>
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} onDelete={deleteTask} getAreaColor={areaColor} />
-        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} onDelete={deleteTask} getAreaColor={areaColor} />
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} />
       </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button style={styles.btn} onClick={loadAll} disabled={loading}>
+          {loading ? "Lade…" : "Neu laden"}
+        </button>
+      </div>
+
+      {!isAdmin ? (
+        <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
+          Hinweis: Aufgaben anlegen ist für alle Nutzer erlaubt. Admin-Funktionen findest du im Tab „Nutzer“.
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function TaskColumn({ title, count, tasks, onToggle, onDelete, getAreaColor }) {
+function TaskColumn({ title, count, tasks, onToggle, areaById }) {
   return (
     <div style={styles.col}>
       <div style={styles.colHeader}>
@@ -934,23 +1137,22 @@ function TaskColumn({ title, count, tasks, onToggle, onDelete, getAreaColor }) {
 
       <div style={{ display: "grid", gap: 12 }}>
         {tasks.map((t) => {
-          const c = getAreaColor?.(t.area);
+          const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
           return (
-            <div key={t.id} style={{ ...styles.card, borderLeft: c ? `10px solid ${c}` : styles.card.border }}>
+            <div key={t.id} style={styles.card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <div style={styles.h4}>{t.title}</div>
+              {t.area_color ? (
+                <span title={t.area || t.area_label || ""} style={{...styles.areaDot, background: t.area_color}} />
+              ) : null}
                 <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
-
                 <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
                   Status
-                </button>
-                <button style={styles.btnDanger} onClick={() => onDelete(t)}>
-                  Löschen
                 </button>
               </div>
 
               <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                Bereich: {t.area ?? "–"} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
+                Bereich: {areaName} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
               </div>
 
               <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>Unteraufgaben 0/0</div>
@@ -965,29 +1167,22 @@ function TaskColumn({ title, count, tasks, onToggle, onDelete, getAreaColor }) {
 }
 
 /* ---------------- Calendar ---------------- */
-function CalendarPanel({ permissions, areas }) {
-  const canRead = can(permissions, "calendar.read") || permissions.length === 0;
-
-  const [date, setDate] = useState(() => {
-    const d = new Date();
-    return d.toISOString().slice(0, 10);
-  });
+function CalendarPanel() {
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [tasks, setTasks] = useState([]);
+  const [areas, setAreas] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
-  const areaMap = useMemo(() => {
+  useEffect(() => {
+    loadAreas().then(setAreas).catch(() => setAreas([]));
+  }, []);
+
+  const areaById = useMemo(() => {
     const m = new Map();
-    for (const a of areas ?? []) {
-      if (a?.name) m.set(String(a.name).toLowerCase(), a.color || null);
-    }
+    for (const a of areas) m.set(a.id, a);
     return m;
   }, [areas]);
-
-  function areaColor(areaText) {
-    if (!areaText) return null;
-    return areaMap.get(String(areaText).trim().toLowerCase()) || null;
-  }
 
   async function load() {
     setErr(null);
@@ -998,7 +1193,7 @@ function CalendarPanel({ permissions, areas }) {
 
     const { data, error } = await supabase
       .from("tasks")
-      .select("id, title, area, due_at, status")
+      .select("id, title, area, area_id, due_at, status")
       .gte("due_at", from)
       .lte("due_at", to)
       .order("due_at", { ascending: true });
@@ -1009,22 +1204,13 @@ function CalendarPanel({ permissions, areas }) {
       return;
     }
 
-    setTasks(data ?? []);
+    setTasks(data || []);
     setLoading(false);
   }
 
   useEffect(() => {
-    if (canRead) load();
-  }, [date, canRead]);
-
-  if (!canRead) {
-    return (
-      <div style={styles.panel}>
-        <div style={styles.h3}>Kalender</div>
-        <div>Keine Berechtigung.</div>
-      </div>
-    );
-  }
+    load();
+  }, [date]);
 
   return (
     <div style={styles.panel}>
@@ -1042,12 +1228,12 @@ function CalendarPanel({ permissions, areas }) {
 
       <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
         {tasks.map((t) => {
-          const c = areaColor(t.area);
+          const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
           return (
-            <div key={t.id} style={{ ...styles.card, borderLeft: c ? `10px solid ${c}` : styles.card.border }}>
+            <div key={t.id} style={styles.card}>
               <div style={styles.h4}>{t.title}</div>
               <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {t.area ?? "–"} · Status: {t.status ?? "todo"}
+                {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {areaName} · Status: {t.status ?? "todo"}
               </div>
             </div>
           );
@@ -1061,37 +1247,31 @@ function CalendarPanel({ permissions, areas }) {
 /* ---------------- Main Component ---------------- */
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("board");
-  const [auth, setAuth] = useState({ user: null, profile: null, permissions: [] });
+  const [auth, setAuth] = useState({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
 
-  const [areas, setAreas] = useState([]);
-
-  async function loadAreas() {
-    const { data, error } = await supabase.from("areas").select("id, name, color, created_at").order("created_at", { ascending: true });
-    if (!error) setAreas(data ?? []);
-  }
-
   async function refreshAuth() {
-    setAuthError(null);
     setAuthLoading(true);
+    setAuthError(null);
+
     try {
       const ctx = await loadMyAuthContext();
       setAuth(ctx);
     } catch (e) {
+      console.error("Auth init failed:", e);
+      setAuth({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
       setAuthError(e?.message || String(e));
-      setAuth({ user: null, profile: null, permissions: [] });
+    } finally {
+      setAuthLoading(false);
     }
-    setAuthLoading(false);
   }
 
   useEffect(() => {
     refreshAuth();
-    loadAreas();
 
     const { data: sub } = supabase.auth.onAuthStateChange(() => {
       refreshAuth();
-      loadAreas();
     });
 
     return () => {
@@ -1102,9 +1282,6 @@ export default function Dashboard() {
   async function signOut() {
     await supabase.auth.signOut();
   }
-
-  const permissions = auth.permissions || [];
-  const admin = isAdminCtx(auth, permissions);
 
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return (
@@ -1125,7 +1302,7 @@ export default function Dashboard() {
     );
   }
 
-  if (permissions.includes("__inactive__")) {
+  if (auth.inactive) {
     return (
       <div style={styles.page}>
         <div style={styles.panel}>
@@ -1165,23 +1342,19 @@ export default function Dashboard() {
           <TabBtn active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>
             Kalender
           </TabBtn>
-          <TabBtn active={activeTab === "guides"} onClick={() => setActiveTab("guides")}>
-            Anleitungen
+          
+
+          <TabBtn active={activeTab === "areas"} onClick={() => setActiveTab("areas")}>
+            Bereiche
           </TabBtn>
 
-          {admin ? (
-            <TabBtn active={activeTab === "areas"} onClick={() => setActiveTab("areas")}>
-              Bereiche
-            </TabBtn>
-          ) : null}
-
-          {admin ? (
+          {auth.isAdmin ? (
             <TabBtn active={activeTab === "users"} onClick={() => setActiveTab("users")}>
               Nutzer
             </TabBtn>
           ) : null}
 
-          <button style={styles.btn} onClick={() => { refreshAuth(); loadAreas(); }}>
+          <button style={styles.btn} onClick={refreshAuth}>
             Neu laden
           </button>
         </div>
@@ -1196,11 +1369,11 @@ export default function Dashboard() {
 
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
-      {activeTab === "board" ? <TasksBoard permissions={permissions} areas={areas} /> : null}
-      {activeTab === "calendar" ? <CalendarPanel permissions={permissions} areas={areas} /> : null}
-      {activeTab === "guides" ? <GuidesPanel permissions={permissions} /> : null}
-      {activeTab === "areas" ? <AreasPanel auth={auth} permissions={permissions} onAreasChanged={loadAreas} /> : null}
-      {activeTab === "users" ? <UsersAdminPanel auth={auth} permissions={permissions} /> : null}
+      {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "calendar" ? <CalendarPanel /> : null}
+      {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
       <div style={{ height: 24 }} />
     </div>
@@ -1209,7 +1382,13 @@ export default function Dashboard() {
 
 function TabBtn({ active, onClick, children }) {
   return (
-    <button onClick={onClick} style={{ ...styles.tab, ...(active ? styles.tabActive : null) }}>
+    <button
+      onClick={onClick}
+      style={{
+        ...styles.tab,
+        ...(active ? styles.tabActive : null),
+      }}
+    >
       {children}
     </button>
   );
@@ -1247,7 +1426,7 @@ const styles = {
     padding: "10px 14px",
     borderRadius: 999,
     cursor: "pointer",
-    fontWeight: 700,
+    fontWeight: 600,
   },
   tabActive: {
     background: "#0b6b2a",
@@ -1267,25 +1446,159 @@ const styles = {
     boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
     marginBottom: 14,
   },
-  h3: { fontSize: 18, fontWeight: 900, marginBottom: 10 },
-  h4: { fontSize: 16, fontWeight: 900, marginBottom: 4 },
-  rowBetween: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  columns: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
-  col: { background: "transparent" },
-  colHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
-  badge: { minWidth: 28, height: 28, borderRadius: 999, background: "#eef2fb", border: "1px solid #d8e0ef", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, color: "#333" },
-  pill: { fontSize: 12, padding: "4px 10px", borderRadius: 999, border: "1px solid #d8e0ef", background: "#f7f9ff", fontWeight: 800 },
-  card: { background: "#fff", border: "1px solid #d8e0ef", borderRadius: 18, padding: 14, boxShadow: "0 10px 30px rgba(0,0,0,0.05)" },
-  input: { padding: 10, borderRadius: 12, border: "1px solid #d8e0ef", outline: "none", background: "#fff", minWidth: 160 },
-  textarea: { padding: 10, borderRadius: 12, border: "1px solid #d8e0ef", outline: "none", background: "#fff", width: "100%", resize: "vertical" },
-  btn: { padding: "10px 14px", borderRadius: 12, border: "1px solid #d8e0ef", background: "#fff", cursor: "pointer", fontWeight: 800 },
-  btnPrimary: { padding: "10px 14px", borderRadius: 12, border: "1px solid #0b6b2a", background: "#0b6b2a", color: "#fff", cursor: "pointer", fontWeight: 900 },
-  btnDanger: { padding: "10px 14px", borderRadius: 12, border: "1px solid #ffd2d2", background: "#fff3f3", color: "#a40000", cursor: "pointer", fontWeight: 900 },
-  error: { background: "#fff3f3", border: "1px solid #ffd2d2", color: "#a40000", padding: 12, borderRadius: 12, marginTop: 10, marginBottom: 10 },
-  taskFormGrid: { display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr auto", gap: 10, alignItems: "start" },
-  table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
-  th: { textAlign: "left", padding: "10px 10px", borderBottom: "1px solid #e6edf8", color: "#555", fontWeight: 900, fontSize: 13 },
-  td: { padding: "10px 10px", borderBottom: "1px solid #f0f4fc", verticalAlign: "top" },
-  weekBtn: { border: "1px solid #d8e0ef", background: "#fff", padding: "8px 10px", borderRadius: 999, cursor: "pointer", fontWeight: 900, minWidth: 44 },
-  weekBtnOn: { background: "#0b6b2a", borderColor: "#0b6b2a", color: "#fff" },
+  h3: {
+    fontSize: 18,
+    fontWeight: 800,
+    marginBottom: 10,
+  },
+  h4: {
+    fontSize: 16,
+    fontWeight: 800,
+    marginBottom: 4,
+  },
+  rowBetween: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  columns: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 14,
+  },
+  col: {
+    background: "transparent",
+  },
+  colHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  badge: {
+    minWidth: 28,
+    height: 28,
+    borderRadius: 999,
+    background: "#eef2fb",
+    border: "1px solid #d8e0ef",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontWeight: 700,
+    color: "#333",
+  },
+  pill: {
+    fontSize: 12,
+    padding: "4px 10px",
+    borderRadius: 999,
+    border: "1px solid #d8e0ef",
+    background: "#f7f9ff",
+    fontWeight: 700,
+  },
+  card: {
+    background: "#fff",
+    border: "1px solid #d8e0ef",
+    borderRadius: 18,
+    padding: 14,
+    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
+  },
+  input: {
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    outline: "none",
+    background: "#fff",
+    minWidth: 160,
+  },
+  textarea: {
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    outline: "none",
+    background: "#fff",
+    width: "100%",
+    resize: "vertical",
+  },
+  btn: {
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    background: "#fff",
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+  btnPrimary: {
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: "1px solid #0b6b2a",
+    background: "#0b6b2a",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 800,
+  },
+  error: {
+    background: "#fff3f3",
+    border: "1px solid #ffd2d2",
+    color: "#a40000",
+    padding: 12,
+    borderRadius: 12,
+    marginTop: 10,
+    marginBottom: 10,
+  },
+  taskFormGrid: {
+    display: "grid",
+    gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr auto",
+    gap: 10,
+    alignItems: "start",
+  },
+  subRow: {
+    display: "grid",
+    gridTemplateColumns: "24px 1fr 1fr 60px 44px",
+    gap: 10,
+    alignItems: "center",
+  },
+  btnSmall: {
+    padding: "8px 10px",
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    background: "#fff",
+    cursor: "pointer",
+    fontWeight: 800,
+  },
+  btnSmallPrimary: {
+    padding: "8px 12px",
+    borderRadius: 12,
+    border: "1px solid #0b6b2a",
+    background: "#0b6b2a",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 900,
+  },
+  colorInput: {
+    width: 56,
+    height: 38,
+    padding: 0,
+    border: "1px solid #d8e0ef",
+    borderRadius: 12,
+    background: "#fff",
+    cursor: "pointer",
+  },
+
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+  },
+  th: {
+    textAlign: "left",
+    padding: 10,
+    borderBottom: "1px solid #d8e0ef",
+    fontSize: 13,
+    color: "#555",
+  },
+  td: {
+    padding: 10,
+    borderBottom: "1px solid #eef2fb",
+    verticalAlign: "top",
+  },
 };
