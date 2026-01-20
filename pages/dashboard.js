@@ -1,6 +1,4 @@
-from pathlib import Path
-
-code = r'''// pages/dashboard.js
+// pages/dashboard.js
 // Dashboard-Stenau-2026 (Single-file)
 // Next.js (pages router) + React + Supabase
 // Features: Tasks board, Calendar, Guides, Users (Admin), Areas (Admin), Area colors, Series task generator (client-side)
@@ -50,7 +48,7 @@ function fmtDate(value) {
 function toISOFromDateAndTime(dateStr, timeStr) {
   // dateStr: YYYY-MM-DD, timeStr: HH:mm
   if (!dateStr) return null;
-  const t = (timeStr && /^\d{2}:\d{2}$/.test(timeStr)) ? timeStr : "08:00";
+  const t = timeStr && /^\d{2}:\d{2}$/.test(timeStr) ? timeStr : "08:00";
   const dt = new Date(`${dateStr}T${t}:00`);
   if (Number.isNaN(dt.getTime())) return null;
   return dt.toISOString();
@@ -78,7 +76,6 @@ function addMonths(date, n) {
   const d = new Date(date);
   const day = d.getDate();
   d.setMonth(d.getMonth() + n);
-  // If month rollover changed day (e.g., 31 -> 2), pull back to last day of month
   if (d.getDate() !== day) {
     d.setDate(0);
   }
@@ -116,7 +113,6 @@ async function loadMyAuthContext() {
     return { user, profile, permissions: ["__inactive__"] };
   }
 
-  // Permissions: try to read, but fail-soft if RLS blocks it (then permissions=[] => app works "open")
   const perms = [];
 
   const { data: rolePerms, error: rpErr } = await supabase
@@ -163,7 +159,6 @@ function AreasPanel({ auth, permissions, onAreasChanged }) {
     setErr(null);
     setLoading(true);
 
-    // Your schema: areas(id, name UNIQUE, color)
     const { data, error } = await supabase
       .from("areas")
       .select("id, name, color, created_at")
@@ -196,7 +191,6 @@ function AreasPanel({ auth, permissions, onAreasChanged }) {
     });
 
     if (error) {
-      // Friendly duplicate error
       if (String(error.message || "").toLowerCase().includes("duplicate")) {
         setErr("Bereich existiert bereits (Name ist eindeutig).");
       } else {
@@ -428,12 +422,7 @@ function UsersAdminPanel({ auth, permissions }) {
       <div style={styles.rowBetween}>
         <div style={styles.h3}>Nutzerverwaltung</div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Suchen…"
-            style={styles.input}
-          />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Suchen…" style={styles.input} />
           <button style={styles.btn} onClick={load} disabled={loading}>
             {loading ? "Lade…" : "Neu laden"}
           </button>
@@ -456,19 +445,11 @@ function UsersAdminPanel({ auth, permissions }) {
             {filtered.map((u) => (
               <tr key={u.id}>
                 <td style={styles.td}>
-                  <input
-                    value={u.name ?? ""}
-                    onChange={(e) => updateUser(u.id, { name: e.target.value })}
-                    style={styles.input}
-                  />
+                  <input value={u.name ?? ""} onChange={(e) => updateUser(u.id, { name: e.target.value })} style={styles.input} />
                 </td>
                 <td style={styles.td}>{u.email ?? ""}</td>
                 <td style={styles.td}>
-                  <select
-                    value={u.role_id ?? ""}
-                    onChange={(e) => updateUser(u.id, { role_id: e.target.value || null })}
-                    style={styles.input}
-                  >
+                  <select value={u.role_id ?? ""} onChange={(e) => updateUser(u.id, { role_id: e.target.value || null })} style={styles.input}>
                     <option value="">–</option>
                     {roles.map((r) => (
                       <option key={r.id} value={r.id}>
@@ -478,11 +459,7 @@ function UsersAdminPanel({ auth, permissions }) {
                   </select>
                 </td>
                 <td style={styles.td}>
-                  <input
-                    type="checkbox"
-                    checked={u.is_active !== false}
-                    onChange={(e) => updateUser(u.id, { is_active: e.target.checked })}
-                  />
+                  <input type="checkbox" checked={u.is_active !== false} onChange={(e) => updateUser(u.id, { is_active: e.target.checked })} />
                 </td>
               </tr>
             ))}
@@ -514,10 +491,7 @@ function GuidesPanel({ permissions }) {
   async function load() {
     setErr(null);
     setLoading(true);
-    const { data, error } = await supabase
-      .from("guides")
-      .select("id, title, content, created_at")
-      .order("created_at", { ascending: false });
+    const { data, error } = await supabase.from("guides").select("id, title, content, created_at").order("created_at", { ascending: false });
 
     if (error) {
       setErr(error.message);
@@ -538,10 +512,7 @@ function GuidesPanel({ permissions }) {
 
     setErr(null);
 
-    const { error } = await supabase
-      .from("guides")
-      .insert({ title: title.trim(), content: content.trim() });
-
+    const { error } = await supabase.from("guides").insert({ title: title.trim(), content: content.trim() });
     if (error) {
       setErr(error.message);
       return;
@@ -576,19 +547,8 @@ function GuidesPanel({ permissions }) {
         <div style={{ ...styles.card, marginBottom: 14 }}>
           <div style={styles.h4}>Neue Anleitung</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Titel"
-              style={styles.input}
-            />
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Inhalt / Schritte"
-              rows={5}
-              style={styles.textarea}
-            />
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titel" style={styles.input} />
+            <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Inhalt / Schritte" rows={5} style={styles.textarea} />
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <button style={styles.btnPrimary} onClick={createGuide}>
                 Anlegen
@@ -602,22 +562,18 @@ function GuidesPanel({ permissions }) {
         {guides.map((g) => (
           <div key={g.id} style={styles.card}>
             <div style={styles.h4}>{g.title}</div>
-            <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
-              Erstellt: {fmtDateTime(g.created_at)}
-            </div>
+            <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>Erstellt: {fmtDateTime(g.created_at)}</div>
             <div style={{ whiteSpace: "pre-wrap" }}>{g.content}</div>
           </div>
         ))}
-        {guides.length === 0 ? (
-          <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div>
-        ) : null}
+        {guides.length === 0 ? <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div> : null}
       </div>
     </div>
   );
 }
 
 /* ---------------- Tasks Board (Planke) ---------------- */
-function TasksBoard({ permissions, areas, onAreasChanged }) {
+function TasksBoard({ permissions, areas }) {
   const [tasks, setTasks] = useState([]);
   const [guides, setGuides] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -633,7 +589,7 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
 
   // Series UI (global)
   const [seriesEnabled, setSeriesEnabled] = useState(false);
-  const [seriesType, setSeriesType] = useState("WEEKLY"); // DAILY | WEEKLY | MONTHLY
+  const [seriesType, setSeriesType] = useState("WEEKLY");
   const [seriesInterval, setSeriesInterval] = useState(1);
   const [seriesWeekdays, setSeriesWeekdays] = useState([1]); // 1=Mo .. 7=So
   const [seriesStart, setSeriesStart] = useState(() => toDateOnlyISO(new Date()));
@@ -660,12 +616,9 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
     setErr(null);
     setLoading(true);
 
-    // IMPORTANT: do NOT select columns that do not exist (e.g., 'notes')
     const { data: tData, error: tErr } = await supabase
       .from("tasks")
-      .select(
-        "id, title, area, due_at, status, is_series, series_id, series_parent_id, created_at, task_guides ( guide_id )"
-      )
+      .select("id, title, area, due_at, status, is_series, series_id, series_parent_id, created_at")
       .order("created_at", { ascending: false });
 
     if (tErr) {
@@ -674,14 +627,8 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
       return;
     }
 
-    const { data: gData, error: gErr } = await supabase
-      .from("guides")
-      .select("id, title")
-      .order("title", { ascending: true });
-
-    if (gErr) {
-      console.warn("guides load failed:", gErr.message);
-    }
+    const { data: gData, error: gErr } = await supabase.from("guides").select("id, title").order("title", { ascending: true });
+    if (gErr) console.warn("guides load failed:", gErr.message);
 
     setTasks(tData ?? []);
     setGuides(gData ?? []);
@@ -707,17 +654,6 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
     setForm((f) => ({ ...f, guideIds: selected }));
   }
 
-  async function linkGuides(taskId, guideIds) {
-    if (!taskId) return;
-    if (!Array.isArray(guideIds) || guideIds.length === 0) return;
-
-    const rows = guideIds.map((gid) => ({ task_id: taskId, guide_id: gid }));
-    const { error: linkErr } = await supabase.from("task_guides").insert(rows);
-    if (linkErr) {
-      console.warn("task_guides insert failed:", linkErr.message);
-    }
-  }
-
   async function createTaskSingle() {
     if (!canWrite) return;
     if (!form.title.trim()) return;
@@ -731,18 +667,11 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
       status: form.status || "todo",
     };
 
-    const { data: inserted, error: insErr } = await supabase
-      .from("tasks")
-      .insert(payload)
-      .select("id")
-      .single();
-
+    const { error: insErr } = await supabase.from("tasks").insert(payload);
     if (insErr) {
       setErr(insErr.message);
       return;
     }
-
-    await linkGuides(inserted?.id, form.guideIds);
 
     setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [] });
     loadAll();
@@ -753,7 +682,7 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
     if (Number.isNaN(start.getTime())) return [];
 
     const interval = Math.max(1, Number(seriesInterval) || 1);
-    const count = Math.max(1, Math.min(200, Number(seriesCount) || 1)); // hard cap
+    const count = Math.max(1, Math.min(200, Number(seriesCount) || 1));
 
     const dates = [];
 
@@ -775,35 +704,27 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
       return dates;
     }
 
-    // WEEKLY (default)
-    // seriesWeekdays: 1..7 (Mo..So)
     const wdSet = new Set((seriesWeekdays || []).map((x) => Number(x)).filter((x) => x >= 1 && x <= 7));
     if (wdSet.size === 0) wdSet.add(1);
 
     let d = new Date(start);
-    // iterate day-by-day until we have enough
-    // Respect interval weeks: allow days only in weeks that are (weekIndex % interval === 0)
-    // weekIndex: 0 for week containing start date
+
     const startWeekStart = new Date(start);
-    // Move to Monday of that week
-    const jsDay = startWeekStart.getDay(); // 0=So..6=Sa
-    const offsetToMonday = (jsDay === 0) ? -6 : (1 - jsDay);
+    const jsDay = startWeekStart.getDay();
+    const offsetToMonday = jsDay === 0 ? -6 : 1 - jsDay;
     startWeekStart.setDate(startWeekStart.getDate() + offsetToMonday);
 
     while (dates.length < count) {
       const curWeekStart = new Date(d);
       const curJsDay = curWeekStart.getDay();
-      const curOffsetToMonday = (curJsDay === 0) ? -6 : (1 - curJsDay);
+      const curOffsetToMonday = curJsDay === 0 ? -6 : 1 - curJsDay;
       curWeekStart.setDate(curWeekStart.getDate() + curOffsetToMonday);
 
       const weekIndex = Math.round((curWeekStart - startWeekStart) / (7 * 24 * 3600 * 1000));
       const inAllowedWeek = weekIndex % interval === 0;
 
-      // convert JS day to 1..7 (Mo..So)
       const wd = d.getDay() === 0 ? 7 : d.getDay();
-      if (inAllowedWeek && wdSet.has(wd)) {
-        dates.push(new Date(d));
-      }
+      if (inAllowedWeek && wdSet.has(wd)) dates.push(new Date(d));
 
       d = addDays(d, 1);
       if (dates.length > 1000) break;
@@ -827,40 +748,15 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
       return;
     }
 
-    // Create a master template (optional, used for reference)
-    const masterPayload = {
-      title,
-      area,
-      status,
-      is_series: true,
-      series_rule: seriesType,
-      series_interval: Math.max(1, Number(seriesInterval) || 1),
-      series_weekdays: seriesType === "WEEKLY" ? seriesWeekdays : null,
-      due_at: toISOFromDateAndTime(seriesStart, seriesTime),
-    };
-
-    const { data: master, error: mErr } = await supabase
-      .from("tasks")
-      .insert(masterPayload)
-      .select("id")
-      .single();
-
-    if (mErr) {
-      setErr(mErr.message);
-      return;
-    }
-
-    const masterId = master?.id;
-
-    // Insert generated instances
     const rows = dates.map((d) => ({
       title,
       area,
       status,
-      is_series: false,
-      series_id: masterId,
-      series_parent_id: masterId,
       due_at: toISOFromDateAndTime(toDateOnlyISO(d), seriesTime),
+      is_series: false,
+      series_rule: seriesType,
+      series_interval: Math.max(1, Number(seriesInterval) || 1),
+      series_weekdays: seriesType === "WEEKLY" ? seriesWeekdays : null,
     }));
 
     const { error: insErr } = await supabase.from("tasks").insert(rows);
@@ -869,10 +765,6 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
       return;
     }
 
-    // Link guides to master (and optionally to children) — keep it simple: link to master only
-    await linkGuides(masterId, form.guideIds);
-
-    // Reset
     setSeriesEnabled(false);
     setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [] });
     loadAll();
@@ -894,10 +786,6 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
     if (!ok) return;
 
     setErr(null);
-
-    // Delete links first (if exists)
-    await supabase.from("task_guides").delete().eq("task_id", task.id);
-
     const { error } = await supabase.from("tasks").delete().eq("id", task.id);
     if (error) {
       setErr(error.message);
@@ -928,23 +816,10 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
         {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
         <div style={styles.taskFormGrid}>
-          <input
-            value={form.title}
-            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-            placeholder="Titel"
-            style={styles.input}
-            disabled={!canWrite}
-          />
+          <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Titel" style={styles.input} disabled={!canWrite} />
 
           <div style={{ display: "grid" }}>
-            <input
-              value={form.area}
-              onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))}
-              placeholder="Bereich"
-              style={styles.input}
-              disabled={!canWrite}
-              list="areas-datalist"
-            />
+            <input value={form.area} onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))} placeholder="Bereich" style={styles.input} disabled={!canWrite} list="areas-datalist" />
             <datalist id="areas-datalist">
               {(areas ?? []).map((a) => (
                 <option key={a.id} value={a.name} />
@@ -952,32 +827,14 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
             </datalist>
           </div>
 
-          <input
-            type="datetime-local"
-            value={form.due_at}
-            onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))}
-            style={styles.input}
-            disabled={!canWrite}
-          />
+          <input type="datetime-local" value={form.due_at} onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))} style={styles.input} disabled={!canWrite} />
 
-          <select
-            value={form.status}
-            onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
-            style={styles.input}
-            disabled={!canWrite}
-          >
+          <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} style={styles.input} disabled={!canWrite}>
             <option value="todo">Zu erledigen</option>
             <option value="done">Erledigt</option>
           </select>
 
-          <select
-            multiple
-            value={form.guideIds}
-            onChange={onGuideSelect}
-            style={{ ...styles.input, height: 94 }}
-            disabled={!canWrite}
-            title="Mehrfachauswahl: Strg/Cmd + Klick"
-          >
+          <select multiple value={form.guideIds} onChange={onGuideSelect} style={{ ...styles.input, height: 94 }} disabled={!canWrite} title="Mehrfachauswahl: Strg/Cmd + Klick">
             {guides.map((g) => (
               <option key={g.id} value={g.id}>
                 {g.title}
@@ -994,35 +851,19 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
 
         <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <label style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 800 }}>
-            <input
-              type="checkbox"
-              checked={seriesEnabled}
-              onChange={(e) => setSeriesEnabled(e.target.checked)}
-              disabled={!canWrite}
-            />
+            <input type="checkbox" checked={seriesEnabled} onChange={(e) => setSeriesEnabled(e.target.checked)} disabled={!canWrite} />
             Serienaufgabe (global)
           </label>
 
           {seriesEnabled ? (
             <>
-              <select
-                value={seriesType}
-                onChange={(e) => setSeriesType(e.target.value)}
-                style={styles.input}
-              >
+              <select value={seriesType} onChange={(e) => setSeriesType(e.target.value)} style={styles.input}>
                 <option value="DAILY">Täglich</option>
                 <option value="WEEKLY">Wöchentlich</option>
                 <option value="MONTHLY">Monatlich</option>
               </select>
 
-              <input
-                value={seriesInterval}
-                onChange={(e) => setSeriesInterval(e.target.value)}
-                style={{ ...styles.input, width: 90, minWidth: 90 }}
-                type="number"
-                min="1"
-                title="Intervall"
-              />
+              <input value={seriesInterval} onChange={(e) => setSeriesInterval(e.target.value)} style={{ ...styles.input, width: 90, minWidth: 90 }} type="number" min="1" title="Intervall" />
 
               {seriesType === "WEEKLY" ? (
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1049,10 +890,7 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
                             return next.length ? next : [1];
                           });
                         }}
-                        style={{
-                          ...styles.weekBtn,
-                          ...(on ? styles.weekBtnOn : null),
-                        }}
+                        style={{ ...styles.weekBtn, ...(on ? styles.weekBtnOn : null) }}
                         title="Wochentag"
                       >
                         {w.t}
@@ -1062,31 +900,9 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
                 </div>
               ) : null}
 
-              <input
-                type="date"
-                value={seriesStart}
-                onChange={(e) => setSeriesStart(e.target.value)}
-                style={styles.input}
-                title="Start"
-              />
-
-              <input
-                type="time"
-                value={seriesTime}
-                onChange={(e) => setSeriesTime(e.target.value)}
-                style={{ ...styles.input, width: 120, minWidth: 120 }}
-                title="Uhrzeit"
-              />
-
-              <input
-                value={seriesCount}
-                onChange={(e) => setSeriesCount(e.target.value)}
-                style={{ ...styles.input, width: 110, minWidth: 110 }}
-                type="number"
-                min="1"
-                max="200"
-                title="Anzahl"
-              />
+              <input type="date" value={seriesStart} onChange={(e) => setSeriesStart(e.target.value)} style={styles.input} title="Start" />
+              <input type="time" value={seriesTime} onChange={(e) => setSeriesTime(e.target.value)} style={{ ...styles.input, width: 120, minWidth: 120 }} title="Uhrzeit" />
+              <input value={seriesCount} onChange={(e) => setSeriesCount(e.target.value)} style={{ ...styles.input, width: 110, minWidth: 110 }} type="number" min="1" max="200" title="Anzahl" />
 
               <button style={styles.btn} onClick={createSeriesNow} disabled={!canWrite}>
                 Serien jetzt erzeugen
@@ -1101,22 +917,8 @@ function TasksBoard({ permissions, areas, onAreasChanged }) {
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn
-          title="Zu erledigen"
-          count={columns.todo.length}
-          tasks={columns.todo}
-          onToggle={toggleStatus}
-          onDelete={deleteTask}
-          getAreaColor={areaColor}
-        />
-        <TaskColumn
-          title="Erledigt"
-          count={columns.done.length}
-          tasks={columns.done}
-          onToggle={toggleStatus}
-          onDelete={deleteTask}
-          getAreaColor={areaColor}
-        />
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} onDelete={deleteTask} getAreaColor={areaColor} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} onDelete={deleteTask} getAreaColor={areaColor} />
       </div>
     </div>
   );
@@ -1134,26 +936,10 @@ function TaskColumn({ title, count, tasks, onToggle, onDelete, getAreaColor }) {
         {tasks.map((t) => {
           const c = getAreaColor?.(t.area);
           return (
-            <div
-              key={t.id}
-              style={{
-                ...styles.card,
-                borderLeft: c ? `10px solid ${c}` : styles.card.border,
-              }}
-            >
+            <div key={t.id} style={{ ...styles.card, borderLeft: c ? `10px solid ${c}` : styles.card.border }}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <div style={styles.h4}>{t.title}</div>
                 <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
-
-                {t.is_series ? (
-                  <span style={styles.pillSeries} title="Serien-Master (Vorlage)">
-                    Serie Master
-                  </span>
-                ) : t.series_parent_id ? (
-                  <span style={styles.pillSeries} title="Serien-Instanz (aus Vorlage erzeugt)">
-                    Serie
-                  </span>
-                ) : null}
 
                 <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
                   Status
@@ -1167,9 +953,7 @@ function TaskColumn({ title, count, tasks, onToggle, onDelete, getAreaColor }) {
                 Bereich: {t.area ?? "–"} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
               </div>
 
-              <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
-                Unteraufgaben 0/0
-              </div>
+              <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>Unteraufgaben 0/0</div>
             </div>
           );
         })}
@@ -1260,13 +1044,7 @@ function CalendarPanel({ permissions, areas }) {
         {tasks.map((t) => {
           const c = areaColor(t.area);
           return (
-            <div
-              key={t.id}
-              style={{
-                ...styles.card,
-                borderLeft: c ? `10px solid ${c}` : styles.card.border,
-              }}
-            >
+            <div key={t.id} style={{ ...styles.card, borderLeft: c ? `10px solid ${c}` : styles.card.border }}>
               <div style={styles.h4}>{t.title}</div>
               <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
                 {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {t.area ?? "–"} · Status: {t.status ?? "todo"}
@@ -1290,11 +1068,7 @@ export default function Dashboard() {
   const [areas, setAreas] = useState([]);
 
   async function loadAreas() {
-    const { data, error } = await supabase
-      .from("areas")
-      .select("id, name, color, created_at")
-      .order("created_at", { ascending: true });
-
+    const { data, error } = await supabase.from("areas").select("id, name, color, created_at").order("created_at", { ascending: true });
     if (!error) setAreas(data ?? []);
   }
 
@@ -1372,9 +1146,7 @@ export default function Dashboard() {
       <div style={styles.page}>
         <div style={styles.panel}>
           <div style={styles.h3}>Bitte anmelden</div>
-          <div style={{ color: "#666" }}>
-            Du bist nicht eingeloggt. Öffne deine Login-Seite oder nutze dein bestehendes Auth-Flow.
-          </div>
+          <div style={{ color: "#666" }}>Du bist nicht eingeloggt. Öffne deine Login-Seite oder nutze dein bestehendes Auth-Flow.</div>
           {authError ? <div style={styles.error}>Fehler: {authError}</div> : null}
         </div>
       </div>
@@ -1422,20 +1194,12 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {authError ? (
-        <div style={{ ...styles.panel, ...styles.error }}>
-          Fehler: {authError}
-        </div>
-      ) : null}
+      {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
-      {activeTab === "board" ? (
-        <TasksBoard permissions={permissions} areas={areas} onAreasChanged={loadAreas} />
-      ) : null}
+      {activeTab === "board" ? <TasksBoard permissions={permissions} areas={areas} /> : null}
       {activeTab === "calendar" ? <CalendarPanel permissions={permissions} areas={areas} /> : null}
       {activeTab === "guides" ? <GuidesPanel permissions={permissions} /> : null}
-      {activeTab === "areas" ? (
-        <AreasPanel auth={auth} permissions={permissions} onAreasChanged={loadAreas} />
-      ) : null}
+      {activeTab === "areas" ? <AreasPanel auth={auth} permissions={permissions} onAreasChanged={loadAreas} /> : null}
       {activeTab === "users" ? <UsersAdminPanel auth={auth} permissions={permissions} /> : null}
 
       <div style={{ height: 24 }} />
@@ -1503,164 +1267,25 @@ const styles = {
     boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
     marginBottom: 14,
   },
-  h3: {
-    fontSize: 18,
-    fontWeight: 900,
-    marginBottom: 10,
-  },
-  h4: {
-    fontSize: 16,
-    fontWeight: 900,
-    marginBottom: 4,
-  },
-  rowBetween: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  columns: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 14,
-  },
-  col: {
-    background: "transparent",
-  },
-  colHeader: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 10,
-  },
-  badge: {
-    minWidth: 28,
-    height: 28,
-    borderRadius: 999,
-    background: "#eef2fb",
-    border: "1px solid #d8e0ef",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontWeight: 800,
-    color: "#333",
-  },
-  pill: {
-    fontSize: 12,
-    padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px solid #d8e0ef",
-    background: "#f7f9ff",
-    fontWeight: 800,
-  },
-  pillSeries: {
-    fontSize: 12,
-    padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px dashed #d8e0ef",
-    background: "#fff",
-    fontWeight: 900,
-  },
-  card: {
-    background: "#fff",
-    border: "1px solid #d8e0ef",
-    borderRadius: 18,
-    padding: 14,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
-  },
-  input: {
-    padding: 10,
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
-    outline: "none",
-    background: "#fff",
-    minWidth: 160,
-  },
-  textarea: {
-    padding: 10,
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
-    outline: "none",
-    background: "#fff",
-    width: "100%",
-    resize: "vertical",
-  },
-  btn: {
-    padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
-    background: "#fff",
-    cursor: "pointer",
-    fontWeight: 800,
-  },
-  btnPrimary: {
-    padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid #0b6b2a",
-    background: "#0b6b2a",
-    color: "#fff",
-    cursor: "pointer",
-    fontWeight: 900,
-  },
-  btnDanger: {
-    padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid #ffd2d2",
-    background: "#fff3f3",
-    color: "#a40000",
-    cursor: "pointer",
-    fontWeight: 900,
-  },
-  error: {
-    background: "#fff3f3",
-    border: "1px solid #ffd2d2",
-    color: "#a40000",
-    padding: 12,
-    borderRadius: 12,
-    marginTop: 10,
-    marginBottom: 10,
-  },
-  taskFormGrid: {
-    display: "grid",
-    gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr auto",
-    gap: 10,
-    alignItems: "start",
-  },
-  table: {
-    width: "100%",
-    borderCollapse: "separate",
-    borderSpacing: 0,
-  },
-  th: {
-    textAlign: "left",
-    padding: "10px 10px",
-    borderBottom: "1px solid #e6edf8",
-    color: "#555",
-    fontWeight: 900,
-    fontSize: 13,
-  },
-  td: {
-    padding: "10px 10px",
-    borderBottom: "1px solid #f0f4fc",
-    verticalAlign: "top",
-  },
-  weekBtn: {
-    border: "1px solid #d8e0ef",
-    background: "#fff",
-    padding: "8px 10px",
-    borderRadius: 999,
-    cursor: "pointer",
-    fontWeight: 900,
-    minWidth: 44,
-  },
-  weekBtnOn: {
-    background: "#0b6b2a",
-    borderColor: "#0b6b2a",
-    color: "#fff",
-  },
+  h3: { fontSize: 18, fontWeight: 900, marginBottom: 10 },
+  h4: { fontSize: 16, fontWeight: 900, marginBottom: 4 },
+  rowBetween: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  columns: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
+  col: { background: "transparent" },
+  colHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  badge: { minWidth: 28, height: 28, borderRadius: 999, background: "#eef2fb", border: "1px solid #d8e0ef", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, color: "#333" },
+  pill: { fontSize: 12, padding: "4px 10px", borderRadius: 999, border: "1px solid #d8e0ef", background: "#f7f9ff", fontWeight: 800 },
+  card: { background: "#fff", border: "1px solid #d8e0ef", borderRadius: 18, padding: 14, boxShadow: "0 10px 30px rgba(0,0,0,0.05)" },
+  input: { padding: 10, borderRadius: 12, border: "1px solid #d8e0ef", outline: "none", background: "#fff", minWidth: 160 },
+  textarea: { padding: 10, borderRadius: 12, border: "1px solid #d8e0ef", outline: "none", background: "#fff", width: "100%", resize: "vertical" },
+  btn: { padding: "10px 14px", borderRadius: 12, border: "1px solid #d8e0ef", background: "#fff", cursor: "pointer", fontWeight: 800 },
+  btnPrimary: { padding: "10px 14px", borderRadius: 12, border: "1px solid #0b6b2a", background: "#0b6b2a", color: "#fff", cursor: "pointer", fontWeight: 900 },
+  btnDanger: { padding: "10px 14px", borderRadius: 12, border: "1px solid #ffd2d2", background: "#fff3f3", color: "#a40000", cursor: "pointer", fontWeight: 900 },
+  error: { background: "#fff3f3", border: "1px solid #ffd2d2", color: "#a40000", padding: 12, borderRadius: 12, marginTop: 10, marginBottom: 10 },
+  taskFormGrid: { display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr auto", gap: 10, alignItems: "start" },
+  table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
+  th: { textAlign: "left", padding: "10px 10px", borderBottom: "1px solid #e6edf8", color: "#555", fontWeight: 900, fontSize: 13 },
+  td: { padding: "10px 10px", borderBottom: "1px solid #f0f4fc", verticalAlign: "top" },
+  weekBtn: { border: "1px solid #d8e0ef", background: "#fff", padding: "8px 10px", borderRadius: 999, cursor: "pointer", fontWeight: 900, minWidth: 44 },
+  weekBtnOn: { background: "#0b6b2a", borderColor: "#0b6b2a", color: "#fff" },
 };
-'''
-
-out_path = Path("/mnt/data/dashboard.js")
-out_path.write_text(code, encoding="utf-8")
-str(out_path)
