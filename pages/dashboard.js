@@ -4,6 +4,8 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { getStyles, themePresets } from "../styles/dashboardTheme";
+
 
 /* ---------------- Supabase ---------------- */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
