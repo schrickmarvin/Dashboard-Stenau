@@ -1534,8 +1534,8 @@ function GuidesPanel({ isAdmin }) {
   }
 
   async function uploadFiles(guideId, fileList) {
-    if (!isAdmin) return;
-    const arr = Array.from(fileList || []);
+    // Upload für alle angemeldeten Nutzer (Policies regeln Schreibrechte)
+const arr = Array.from(fileList || []);
     if (!guideId || arr.length === 0) return;
 
     setErr(null);
@@ -1646,8 +1646,7 @@ function GuidesPanel({ isAdmin }) {
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontWeight: 800, marginBottom: 8 }}>Dateien</div>
 
-                {isAdmin ? (
-                  <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
                     <input
                       type="file"
                       multiple
@@ -1664,11 +1663,6 @@ function GuidesPanel({ isAdmin }) {
                       <span style={{ color: "#666", fontSize: 13 }}>Mehrere Dateien möglich</span>
                     )}
                   </div>
-                ) : (
-                  <div style={{ color: "#666", fontSize: 13, marginBottom: 10 }}>
-                    Upload nur für Admin. Du kannst vorhandene Dateien herunterladen.
-                  </div>
-                )}
 
                 {gFiles.length === 0 ? (
                   <div style={{ color: "#666" }}>Keine Dateien.</div>
