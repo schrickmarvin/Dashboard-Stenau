@@ -5,11 +5,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Supabase ---------------- */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
 const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
 
+
+/* ---------------- Supabase --------------- */
 
 function TasksBoard({ isAdmin }) {
   const [areas, setAreas] = useState([]);
@@ -927,6 +929,8 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
     </div>
   );
 }
+
+
 /* ---------------- Helpers ---------------- */
 function fmtDateTime(value) {
   if (!value) return "";
@@ -1077,7 +1081,7 @@ function UsersAdminPanel({ isAdmin }) {
 
     const { data: areaLinks, error: linkErr } = await supabase
       .from("profile_areas")
-      .select("profile_id, area_id");
+      .select("user_id, area_id");
 
     if (linkErr) {
       setLoading(false);
@@ -1085,15 +1089,15 @@ function UsersAdminPanel({ isAdmin }) {
       return;
     }
 
-    const areasByProfile = (areaLinks || []).reduce((acc, link) => {
-      if (!acc[link.profile_id]) acc[link.profile_id] = [];
-      acc[link.profile_id].push({ area_id: link.area_id });
+    const areasByUser = (areaLinks || []).reduce((acc, link) => {
+      if (!acc[link.user_id]) acc[link.user_id] = [];
+      acc[link.user_id].push({ area_id: link.area_id });
       return acc;
     }, {});
 
     setRoles(rolesRes.data || []);
     setAreas(areasRes.data || []);
-    setUsers((usersData || []).map((u) => ({ ...u, profile_areas: areasByProfile[u.id] || [] })));
+    setUsers((usersData || []).map((u) => ({ ...u, profile_areas: areasByUser[u.id] || [] })));
     setLoading(false);
   }
 
@@ -1127,14 +1131,14 @@ function UsersAdminPanel({ isAdmin }) {
 
   async function updateUserAreas(id, areaIds) {
     setErr(null);
-    const { error: delErr } = await supabase.from("profile_areas").delete().eq("profile_id", id);
+    const { error: delErr } = await supabase.from("profile_areas").delete().eq("user_id", id);
     if (delErr) {
       setErr(delErr.message);
       return;
     }
 
     if (areaIds.length > 0) {
-      const rows = areaIds.map((areaId) => ({ profile_id: id, area_id: areaId }));
+      const rows = areaIds.map((areaId) => ({ user_id: id, area_id: areaId }));
       const { error: insErr } = await supabase.from("profile_areas").insert(rows);
       if (insErr) {
         setErr(insErr.message);
@@ -2130,8 +2134,3 @@ const styles = {
     verticalAlign: "top",
   },
 };
-
-// Disable static prerender/export for this page (Supabase auth needs browser context)
-export async function getServerSideProps() {
-  return { props: {} };
-}
