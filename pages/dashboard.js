@@ -1,12 +1,11 @@
 diff --git a/pages/dashboard.js b/pages/dashboard.js
-index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..e177d986c0748c665fb4acd24e08159e0ffad48f 100644
+index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..1ae4058496295d3a40787f2f890ddb32975b0528 100644
 --- a/pages/dashboard.js
 +++ b/pages/dashboard.js
-@@ -1,154 +1,224 @@
+@@ -1,154 +1,222 @@
  // pages/dashboard.js
  // Standalone dashboard page (React) for Next.js + Supabase
-+// Hinweis: Datei vollständig übernehmen (keine diff-Markierungen wie "diff --git" einfügen).
- 
+-
  import React, { useEffect, useMemo, useState } from "react";
  import { createClient } from "@supabase/supabase-js";
  
@@ -230,7 +229,7 @@ index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..e177d986c0748c665fb4acd24e08159e
  
      const taskId = inserted?.id;
  
-@@ -209,50 +279,249 @@ import { createClient } from "@supabase/supabase-js";
+@@ -209,50 +277,249 @@ import { createClient } from "@supabase/supabase-js";
    }
  
    async function deleteSubtask(subId) {
@@ -480,7 +479,7 @@ index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..e177d986c0748c665fb4acd24e08159e
            <datalist id="areas-list">
              {areas.map((a) => (
                <option key={a.id} value={a.name} />
-@@ -278,98 +547,246 @@ import { createClient } from "@supabase/supabase-js";
+@@ -278,98 +545,246 @@ import { createClient } from "@supabase/supabase-js";
            <select
              multiple
              value={form.guideIds}
@@ -730,7 +729,7 @@ index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..e177d986c0748c665fb4acd24e08159e
  
                <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
                  Bereich: {areaName} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
-@@ -401,51 +818,51 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
+@@ -401,51 +816,51 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
                          style={{ ...styles.input, minWidth: 220 }}
                          disabled={!canWrite}
                        />
@@ -783,7 +782,7 @@ index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..e177d986c0748c665fb4acd24e08159e
                        >
                          ✕
                        </button>
-@@ -594,176 +1011,453 @@ async function loadMyAuthContext() {
+@@ -594,176 +1009,453 @@ async function loadMyAuthContext() {
  
  /* ---------------- Areas (A/B) ---------------- */
  // Option 2: fixed areas A/B (plus whatever exists in table `areas`)
@@ -837,17 +836,17 @@ index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..e177d986c0748c665fb4acd24e08159e
 +      supabase.from("roles").select("id, key, name").order("name", { ascending: true }),
 +      supabase.from("areas").select("id, name, color").order("name", { ascending: true }),
 +    ]);
-+
+ 
+-    if (rErr) {
 +    if (rolesRes.error) {
-+      setLoading(false);
+       setLoading(false);
+-      setErr(rErr.message);
 +      setErr(rolesRes.error.message);
 +      return;
 +    }
- 
--    if (rErr) {
++
 +    if (areasRes.error) {
-       setLoading(false);
--      setErr(rErr.message);
++      setLoading(false);
 +      setErr(areasRes.error.message);
        return;
      }
@@ -1279,7 +1278,7 @@ index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..e177d986c0748c665fb4acd24e08159e
      const { data, error } = await supabase
        .from("guides")
        .select("id, title, content, created_at")
-@@ -952,308 +1646,50 @@ function AreasPanel({ isAdmin }) {
+@@ -952,308 +1644,50 @@ function AreasPanel({ isAdmin }) {
                    {isAdmin ? (
                      <input type="color" value={a.color || "#0b6b2a"} onChange={(e) => updateArea(a.id, { color: e.target.value })} style={styles.input} />
                    ) : (
@@ -1588,7 +1587,7 @@ index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..e177d986c0748c665fb4acd24e08159e
      const from = startOfDayISO(date);
      const to = endOfDayISO(date);
  
-@@ -1386,51 +1822,50 @@ export default function Dashboard() {
+@@ -1386,51 +1820,50 @@ export default function Dashboard() {
  
    if (!auth.user) {
      return (
@@ -1640,7 +1639,7 @@ index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..e177d986c0748c665fb4acd24e08159e
        </div>
  
        {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
-@@ -1583,111 +2018,109 @@ const styles = {
+@@ -1583,111 +2016,109 @@ const styles = {
      border: "1px solid #d8e0ef",
      outline: "none",
      background: "#fff",
