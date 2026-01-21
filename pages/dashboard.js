@@ -5,13 +5,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+/* ---------------- Supabase ---------------- */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
 const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
 
-
-/* ---------------- Supabase --------------- */
 
 function TasksBoard({ isAdmin }) {
   const [areas, setAreas] = useState([]);
@@ -929,8 +927,6 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
     </div>
   );
 }
-
-
 /* ---------------- Helpers ---------------- */
 function fmtDateTime(value) {
   if (!value) return "";
@@ -1081,7 +1077,7 @@ function UsersAdminPanel({ isAdmin }) {
 
     const { data: areaLinks, error: linkErr } = await supabase
       .from("profile_areas")
-      .select("user_id, area_id");
+      .select("profile_id, area_id");
 
     if (linkErr) {
       setLoading(false);
@@ -1089,15 +1085,15 @@ function UsersAdminPanel({ isAdmin }) {
       return;
     }
 
-    const areasByUser = (areaLinks || []).reduce((acc, link) => {
-      if (!acc[link.user_id]) acc[link.user_id] = [];
-      acc[link.user_id].push({ area_id: link.area_id });
+    const areasByProfile = (areaLinks || []).reduce((acc, link) => {
+      if (!acc[link.profile_id]) acc[link.profile_id] = [];
+      acc[link.profile_id].push({ area_id: link.area_id });
       return acc;
     }, {});
 
     setRoles(rolesRes.data || []);
     setAreas(areasRes.data || []);
-    setUsers((usersData || []).map((u) => ({ ...u, profile_areas: areasByUser[u.id] || [] })));
+    setUsers((usersData || []).map((u) => ({ ...u, profile_areas: areasByProfile[u.id] || [] })));
     setLoading(false);
   }
 
@@ -1131,14 +1127,14 @@ function UsersAdminPanel({ isAdmin }) {
 
   async function updateUserAreas(id, areaIds) {
     setErr(null);
-    const { error: delErr } = await supabase.from("profile_areas").delete().eq("user_id", id);
+    const { error: delErr } = await supabase.from("profile_areas").delete().eq("profile_id", id);
     if (delErr) {
       setErr(delErr.message);
       return;
     }
 
     if (areaIds.length > 0) {
-      const rows = areaIds.map((areaId) => ({ user_id: id, area_id: areaId }));
+      const rows = areaIds.map((areaId) => ({ profile_id: id, area_id: areaId }));
       const { error: insErr } = await supabase.from("profile_areas").insert(rows);
       if (insErr) {
         setErr(insErr.message);
@@ -1446,26 +1442,45 @@ function UsersAdminPanel({ isAdmin }) {
 }
 
 /* ---------------- Guides (Anleitungen) ---------------- */
+
 function GuidesPanel({ isAdmin }) {
   const [guides, setGuides] = useState([]);
+  const [files, setFiles] = useState([]); // guide_files rows
+  const [signedUrls, setSignedUrls] = useState({}); // path -> signed url
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [uploadingGuideId, setUploadingGuideId] = useState(null);
+  const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
   async function load() {
     setErr(null);
     setLoading(true);
-    const { data, error } = await supabase
+
+    const { data: gData, error: gErr } = await supabase
       .from("guides")
-      .select("id, title, content, created_at")
+      .select("id, title, content, created_at, updated_at")
       .order("created_at", { ascending: false });
-    if (error) {
-      setErr(error.message);
+
+    if (gErr) {
+      setErr(gErr.message);
       setLoading(false);
       return;
     }
-    setGuides(data || []);
+
+    const { data: fData, error: fErr } = await supabase
+      .from("guide_files")
+      .select("id, guide_id, bucket, path, filename, mime, size, created_at, created_by")
+      .order("created_at", { ascending: false });
+
+    if (fErr) {
+      // Not fatal – guides still work without files
+      console.warn("guide_files load failed:", fErr.message);
+    }
+
+    setGuides(gData ?? []);
+    setFiles(fData ?? []);
     setLoading(false);
   }
 
@@ -1476,11 +1491,12 @@ function GuidesPanel({ isAdmin }) {
   async function createGuide() {
     if (!isAdmin) return;
     if (!title.trim()) return;
-    setErr(null);
 
-    const { error } = await supabase
-      .from("guides")
-      .insert({ title: title.trim(), content: content.trim() });
+    setErr(null);
+    const { error } = await supabase.from("guides").insert({
+      title: title.trim(),
+      content: content.trim() || null,
+    });
 
     if (error) {
       setErr(error.message);
@@ -1490,6 +1506,95 @@ function GuidesPanel({ isAdmin }) {
     setTitle("");
     setContent("");
     load();
+  }
+
+  function filesForGuide(guideId) {
+    return (files ?? []).filter((f) => f.guide_id === guideId);
+  }
+
+  async function ensureSignedUrl(path) {
+    if (!path) return null;
+    if (signedUrls[path]) return signedUrls[path];
+
+    // 1 hour signed url
+    const { data, error } = await supabase.storage.from("guides").createSignedUrl(path, 60 * 60);
+    if (error) {
+      setErr(error.message);
+      return null;
+    }
+
+    const url = data?.signedUrl || null;
+    if (url) setSignedUrls((prev) => ({ ...prev, [path]: url }));
+    return url;
+  }
+
+  async function onDownload(path) {
+    const url = await ensureSignedUrl(path);
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  async function uploadFiles(guideId, fileList) {
+    if (!isAdmin) return;
+    const arr = Array.from(fileList || []);
+    if (!guideId || arr.length === 0) return;
+
+    setErr(null);
+    setUploading(true);
+    setUploadingGuideId(guideId);
+
+    try {
+      for (const file of arr) {
+        const safeName = String(file.name || "datei").replace(/[^\w.\-]+/g, "_");
+        const key = `${guideId}/${Date.now()}_${safeName}`;
+
+        const up = await supabase.storage.from("guides").upload(key, file, {
+          cacheControl: "3600",
+          upsert: false,
+          contentType: file.type || undefined,
+        });
+
+        if (up.error) throw up.error;
+
+        const ins = await supabase.from("guide_files").insert({
+          guide_id: guideId,
+          bucket: "guides",
+          path: key,
+          filename: file.name,
+          mime: file.type || null,
+          size: file.size ?? null,
+        });
+
+        if (ins.error) throw ins.error;
+      }
+
+      await load();
+    } catch (e) {
+      setErr(e?.message || String(e));
+    } finally {
+      setUploading(false);
+      setUploadingGuideId(null);
+    }
+  }
+
+  async function deleteFile(row) {
+    if (!isAdmin) return;
+    if (!row?.id || !row?.path) return;
+    if (!window.confirm(`Datei wirklich löschen?\n\n${row.filename}`)) return;
+
+    setErr(null);
+    const rm = await supabase.storage.from("guides").remove([row.path]);
+    if (rm.error) {
+      setErr(rm.error.message);
+      return;
+    }
+
+    const del = await supabase.from("guide_files").delete().eq("id", row.id);
+    if (del.error) {
+      setErr(del.error.message);
+      return;
+    }
+
+    setFiles((prev) => (prev ?? []).filter((f) => f.id !== row.id));
   }
 
   return (
@@ -1515,7 +1620,7 @@ function GuidesPanel({ isAdmin }) {
               rows={5}
               style={styles.textarea}
             />
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
               <button style={styles.btnPrimary} onClick={createGuide}>
                 Anlegen
               </button>
@@ -1525,19 +1630,98 @@ function GuidesPanel({ isAdmin }) {
       ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-        {guides.map((g) => (
-          <div key={g.id} style={styles.card}>
-            <div style={styles.h4}>{g.title}</div>
-            <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>Erstellt: {fmtDateTime(g.created_at)}</div>
-            <div style={{ whiteSpace: "pre-wrap" }}>{g.content}</div>
-          </div>
-        ))}
+        {guides.map((g) => {
+          const gFiles = filesForGuide(g.id);
+
+          return (
+            <div key={g.id} style={styles.card}>
+              <div style={styles.h4}>{g.title}</div>
+              <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
+                Erstellt: {fmtDateTime(g.created_at)}
+                {g.updated_at ? ` · Update: ${fmtDateTime(g.updated_at)}` : ""}
+              </div>
+
+              {g.content ? <div style={{ whiteSpace: "pre-wrap" }}>{g.content}</div> : null}
+
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 800, marginBottom: 8 }}>Dateien</div>
+
+                {isAdmin ? (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+                    <input
+                      type="file"
+                      multiple
+                      onChange={(e) => {
+                        const fl = e.target.files;
+                        e.target.value = "";
+                        uploadFiles(g.id, fl);
+                      }}
+                      disabled={uploading}
+                    />
+                    {uploading && uploadingGuideId === g.id ? (
+                      <span style={{ color: "#666", fontSize: 13 }}>Upload läuft…</span>
+                    ) : (
+                      <span style={{ color: "#666", fontSize: 13 }}>Mehrere Dateien möglich</span>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ color: "#666", fontSize: 13, marginBottom: 10 }}>
+                    Upload nur für Admin. Du kannst vorhandene Dateien herunterladen.
+                  </div>
+                )}
+
+                {gFiles.length === 0 ? (
+                  <div style={{ color: "#666" }}>Keine Dateien.</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {gFiles.map((f) => (
+                      <div
+                        key={f.id}
+                        style={{
+                          display: "flex",
+                          gap: 10,
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          border: "1px solid #d8e0ef",
+                          borderRadius: 12,
+                          padding: "10px 12px",
+                          background: "#fff",
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {f.filename}
+                          </div>
+                          <div style={{ color: "#666", fontSize: 12 }}>
+                            {f.size ? `${Math.round(f.size / 1024)} KB` : "—"} · {fmtDateTime(f.created_at)}
+                          </div>
+                        </div>
+
+                        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                          <button style={styles.btn} onClick={() => onDownload(f.path)}>
+                            Download
+                          </button>
+                          {isAdmin ? (
+                            <button style={styles.btnDanger} onClick={() => deleteFile(f)}>
+                              Löschen
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
 
         {guides.length === 0 ? <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div> : null}
       </div>
     </div>
   );
 }
+
 
 /* ---------------- Areas (Bereiche) ---------------- */
 function AreasPanel({ isAdmin }) {
@@ -2036,7 +2220,16 @@ const styles = {
     cursor: "pointer",
     fontWeight: 800,
   },
-  btnSmall: {
+  btnDanger: {
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: "1px solid #ffd2d2",
+    background: "#fff3f3",
+    color: "#a40000",
+    cursor: "pointer",
+    fontWeight: 800,
+  },
+    btnSmall: {
     padding: "8px 10px",
     borderRadius: 12,
     border: "1px solid #d8e0ef",
@@ -2134,3 +2327,8 @@ const styles = {
     verticalAlign: "top",
   },
 };
+
+// Disable static prerender/export for this page (Supabase auth needs browser context)
+export async function getServerSideProps() {
+  return { props: {} };
+}
