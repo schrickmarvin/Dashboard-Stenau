@@ -5,11 +5,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Supabase ---------------- */
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
-
+/* ---------------- Supabase --------------- */
 
 function TasksBoard({ isAdmin }) {
   const [areas, setAreas] = useState([]);
@@ -927,6 +923,11 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
     </div>
   );
 }
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
+
 /* ---------------- Helpers ---------------- */
 function fmtDateTime(value) {
   if (!value) return "";
@@ -1442,25 +1443,41 @@ function UsersAdminPanel({ isAdmin }) {
 }
 
 /* ---------------- Guides (Anleitungen) ---------------- */
-
-function GuidesPanel({ isAdmin }) {
+function GuidesPanel({ authUser, isAdmin }) {
   const [guides, setGuides] = useState([]);
-  const [files, setFiles] = useState([]); // guide_files rows
-  const [signedUrls, setSignedUrls] = useState({}); // path -> signed url
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-  const [uploadingGuideId, setUploadingGuideId] = useState(null);
-  const [uploading, setUploading] = useState(false);
+  const [areas, setAreas] = useState([]);
+  const [form, setForm] = useState({
+    title: "",
+    description: "",
+    content: "",
+    area_id: "",
+    file: null,
+  });
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
-  async function load() {
+  // Alle angemeldeten Nutzer dürfen Anleitungen anlegen & Dateien hochladen
+  const canWrite = !!authUser;
+
+  async function loadAll() {
     setErr(null);
     setLoading(true);
 
+    const { data: aData, error: aErr } = await supabase
+      .from("areas")
+      .select("id, name, color")
+      .order("name", { ascending: true });
+
+    if (aErr) {
+      setErr(aErr.message);
+      setLoading(false);
+      return;
+    }
+
     const { data: gData, error: gErr } = await supabase
       .from("guides")
-      .select("id, title, content, created_at, updated_at")
+      .select("id, title, description, content, area_id, file_path, file_name, file_mime, file_size, created_at")
       .order("created_at", { ascending: false });
 
     if (gErr) {
@@ -1469,593 +1486,236 @@ function GuidesPanel({ isAdmin }) {
       return;
     }
 
-    const { data: fData, error: fErr } = await supabase
-      .from("guide_files")
-      .select("id, guide_id, bucket, path, filename, mime, size, created_at, created_by")
-      .order("created_at", { ascending: false });
-
-    if (fErr) {
-      // Not fatal – guides still work without files
-      console.warn("guide_files load failed:", fErr.message);
-    }
-
+    setAreas(aData ?? []);
     setGuides(gData ?? []);
-    setFiles(fData ?? []);
     setLoading(false);
   }
 
   useEffect(() => {
-    load();
+    loadAll();
   }, []);
 
+  function areaNameById(id) {
+    const a = areas.find((x) => x.id === id);
+    return a ? a.name : "–";
+  }
+
+  async function openGuideFile(g) {
+    if (!g?.file_path) return;
+    try {
+      const { data, error } = await supabase.storage
+        .from("guides")
+        .createSignedUrl(g.file_path, 60 * 30); // 30 Minuten
+      if (error) throw error;
+      if (data?.signedUrl) window.open(data.signedUrl, "_blank");
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  }
+
   async function createGuide() {
-    if (!isAdmin) return;
-    if (!title.trim()) return;
+    if (!canWrite) return;
+    if (!form.title.trim()) return;
 
     setErr(null);
-    const { error } = await supabase.from("guides").insert({
-      title: title.trim(),
-      content: content.trim() || null,
-    });
+    setSaving(true);
 
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-
-    setTitle("");
-    setContent("");
-    load();
-  }
-
-  function filesForGuide(guideId) {
-    return (files ?? []).filter((f) => f.guide_id === guideId);
-  }
-
-  async function ensureSignedUrl(path) {
-    if (!path) return null;
-    if (signedUrls[path]) return signedUrls[path];
-
-    // 1 hour signed url
-    const { data, error } = await supabase.storage.from("guides").createSignedUrl(path, 60 * 60);
-    if (error) {
-      setErr(error.message);
-      return null;
-    }
-
-    const url = data?.signedUrl || null;
-    if (url) setSignedUrls((prev) => ({ ...prev, [path]: url }));
-    return url;
-  }
-
-  async function onDownload(path) {
-    const url = await ensureSignedUrl(path);
-    if (url) window.open(url, "_blank", "noopener,noreferrer");
-  }
-
-  async function uploadFiles(guideId, fileList) {
-    // Upload für alle angemeldeten Nutzer (Policies regeln Schreibrechte)
-const arr = Array.from(fileList || []);
-    if (!guideId || arr.length === 0) return;
-
-    setErr(null);
-    setUploading(true);
-    setUploadingGuideId(guideId);
+    let file_path = null;
+    let file_name = null;
+    let file_mime = null;
+    let file_size = null;
 
     try {
-      for (const file of arr) {
-        const safeName = String(file.name || "datei").replace(/[^\w.\-]+/g, "_");
-        const key = `${guideId}/${Date.now()}_${safeName}`;
+      if (form.file) {
+        const f = form.file;
+        file_name = f.name;
+        file_mime = f.type || null;
+        file_size = typeof f.size === "number" ? f.size : null;
 
-        const up = await supabase.storage.from("guides").upload(key, file, {
+        const safeName = String(f.name || "datei")
+          .replaceAll(" ", "_")
+          .replaceAll("/", "_");
+        const path = `${authUser.id}/${Date.now()}_${safeName}`;
+
+        const { error: upErr } = await supabase.storage.from("guides").upload(path, f, {
           cacheControl: "3600",
           upsert: false,
-          contentType: file.type || undefined,
+          contentType: f.type || undefined,
         });
+        if (upErr) throw upErr;
 
-        if (up.error) throw up.error;
-
-        const ins = await supabase.from("guide_files").insert({
-          guide_id: guideId,
-          bucket: "guides",
-          path: key,
-          filename: file.name,
-          mime: file.type || null,
-          size: file.size ?? null,
-        });
-
-        if (ins.error) throw ins.error;
+        file_path = path;
       }
 
-      await load();
+      const payload = {
+        title: form.title.trim(),
+        description: form.description.trim() || null,
+        content: form.content.trim() || null,
+        area_id: form.area_id ? form.area_id : null,
+        file_path,
+        file_name,
+        file_mime,
+        file_size,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: insErr } = await supabase.from("guides").insert(payload);
+      if (insErr) throw insErr;
+
+      setForm({ title: "", description: "", content: "", area_id: "", file: null });
+      await loadAll();
     } catch (e) {
       setErr(e?.message || String(e));
     } finally {
-      setUploading(false);
-      setUploadingGuideId(null);
+      setSaving(false);
     }
   }
 
-  async function deleteFile(row) {
-    if (!isAdmin) return;
-    if (!row?.id || !row?.path) return;
-    if (!window.confirm(`Datei wirklich löschen?\n\n${row.filename}`)) return;
+  async function deleteGuide(g) {
+    if (!isAdmin) return; // löschen nur Admin
+    if (!g?.id) return;
 
     setErr(null);
-    const rm = await supabase.storage.from("guides").remove([row.path]);
-    if (rm.error) {
-      setErr(rm.error.message);
-      return;
-    }
+    setSaving(true);
+    try {
+      if (g.file_path) {
+        const { error: rmErr } = await supabase.storage.from("guides").remove([g.file_path]);
+        if (rmErr) console.warn("Storage remove failed:", rmErr.message);
+      }
+      const { error } = await supabase.from("guides").delete().eq("id", g.id);
+      if (error) throw error;
 
-    const del = await supabase.from("guide_files").delete().eq("id", row.id);
-    if (del.error) {
-      setErr(del.error.message);
-      return;
+      await loadAll();
+    } catch (e) {
+      setErr(e?.message || String(e));
+    } finally {
+      setSaving(false);
     }
-
-    setFiles((prev) => (prev ?? []).filter((f) => f.id !== row.id));
   }
 
   return (
     <div style={styles.panel}>
       <div style={styles.rowBetween}>
         <div style={styles.h3}>Anleitungen</div>
-        <button style={styles.btn} onClick={load} disabled={loading}>
+        <button style={styles.btn} onClick={loadAll} disabled={loading}>
           {loading ? "Lade…" : "Neu laden"}
         </button>
       </div>
 
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-      {isAdmin ? (
-        <div style={{ ...styles.card, marginBottom: 14 }}>
-          <div style={styles.h4}>Neue Anleitung</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titel" style={styles.input} />
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Inhalt / Schritte"
-              rows={5}
-              style={styles.textarea}
-            />
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <button style={styles.btnPrimary} onClick={createGuide}>
-                Anlegen
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <div style={{ ...styles.card, marginTop: 12, marginBottom: 14 }}>
+        <div style={styles.h4}>Neue Anleitung</div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-        {guides.map((g) => {
-          const gFiles = filesForGuide(g.id);
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 260px", gap: 10 }}>
+          <input
+            value={form.title}
+            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+            placeholder="Titel"
+            style={styles.input}
+            disabled={!canWrite || saving}
+          />
 
-          return (
-            <div key={g.id} style={styles.card}>
-              <div style={styles.h4}>{g.title}</div>
-              <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
-                Erstellt: {fmtDateTime(g.created_at)}
-                {g.updated_at ? ` · Update: ${fmtDateTime(g.updated_at)}` : ""}
-              </div>
-
-              {g.content ? <div style={{ whiteSpace: "pre-wrap" }}>{g.content}</div> : null}
-
-              <div style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 800, marginBottom: 8 }}>Dateien</div>
-
-                <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
-                    <input
-                      type="file"
-                      multiple
-                      onChange={(e) => {
-                        const fl = e.target.files;
-                        e.target.value = "";
-                        uploadFiles(g.id, fl);
-                      }}
-                      disabled={uploading}
-                    />
-                    {uploading && uploadingGuideId === g.id ? (
-                      <span style={{ color: "#666", fontSize: 13 }}>Upload läuft…</span>
-                    ) : (
-                      <span style={{ color: "#666", fontSize: 13 }}>Mehrere Dateien möglich</span>
-                    )}
-                  </div>
-
-                {gFiles.length === 0 ? (
-                  <div style={{ color: "#666" }}>Keine Dateien.</div>
-                ) : (
-                  <div style={{ display: "grid", gap: 8 }}>
-                    {gFiles.map((f) => (
-                      <div
-                        key={f.id}
-                        style={{
-                          display: "flex",
-                          gap: 10,
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          border: "1px solid #d8e0ef",
-                          borderRadius: 12,
-                          padding: "10px 12px",
-                          background: "#fff",
-                        }}
-                      >
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {f.filename}
-                          </div>
-                          <div style={{ color: "#666", fontSize: 12 }}>
-                            {f.size ? `${Math.round(f.size / 1024)} KB` : "—"} · {fmtDateTime(f.created_at)}
-                          </div>
-                        </div>
-
-                        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                          <button style={styles.btn} onClick={() => onDownload(f.path)}>
-                            Download
-                          </button>
-                          {isAdmin ? (
-                            <button style={styles.btnDanger} onClick={() => deleteFile(f)}>
-                              Löschen
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-
-        {guides.length === 0 ? <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div> : null}
-      </div>
-    </div>
-  );
-}
-
-
-/* ---------------- Areas (Bereiche) ---------------- */
-function AreasPanel({ isAdmin }) {
-  const [areas, setAreas] = useState([]);
-  const [name, setName] = useState("");
-  const [color, setColor] = useState("#0b6b2a");
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
-  async function load() {
-    setErr(null);
-    setLoading(true);
-    const list = await loadAreas();
-    setAreas(list);
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function createArea() {
-    if (!isAdmin) return;
-    const n = name.trim();
-    if (!n) return;
-    setErr(null);
-
-    const { error } = await supabase.from("areas").insert({ name: n, color: (color || null) });
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setName("");
-    setColor("#0b6b2a");
-    load();
-  }
-
-  async function updateArea(id, patch) {
-    if (!isAdmin) return;
-    setErr(null);
-    const { error } = await supabase.from("areas").update(patch).eq("id", id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
-  }
-
-  return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Bereiche</div>
-        <button style={styles.btn} onClick={load} disabled={loading}>
-          {loading ? "Lade…" : "Neu laden"}
-        </button>
-      </div>
-
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
-      {isAdmin ? (
-        <div style={{ ...styles.card, marginBottom: 14 }}>
-          <div style={styles.h4}>Neuen Bereich anlegen</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 220px auto", gap: 10, alignItems: "center" }}>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Name (z.B. LVP, PPK, Containerdienst)"
-              style={styles.input}
-            />
-            <input type="color" value={color} onChange={(e) => setColor(e.target.value)} style={styles.input} />
-            <button style={styles.btnPrimary} onClick={createArea}>
-              Anlegen
-            </button>
-          </div>
-          <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
-            Hinweis: Aufgaben-Bereich ist frei eintippbar. Wenn der Text genau zu einem Bereich passt, wird automatisch die Farbe gezogen.
-          </div>
-        </div>
-      ) : (
-        <div style={{ marginBottom: 12, color: "#666", fontSize: 13 }}>
-          Du kannst bei Aufgaben den Bereich frei eintippen. Bereiche/Farben pflegt nur die Administration.
-        </div>
-      )}
-
-      <div style={{ overflowX: "auto" }}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Name</th>
-              <th style={styles.th}>Farbe</th>
-            </tr>
-          </thead>
-          <tbody>
+          <select
+            value={form.area_id}
+            onChange={(e) => setForm((f) => ({ ...f, area_id: e.target.value }))}
+            style={styles.input}
+            disabled={!canWrite || saving}
+            title="Optional: Bereich zuordnen (für Filter in Aufgaben/Unteraufgaben)"
+          >
+            <option value="">– Bereich (optional) –</option>
             {areas.map((a) => (
-              <tr key={a.id}>
-                <td style={styles.td}>
-                  {isAdmin ? (
-                    <input value={a.name || ""} onChange={(e) => updateArea(a.id, { name: e.target.value })} style={styles.input} />
-                  ) : (
-                    a.name
-                  )}
-                </td>
-                <td style={styles.td}>
-                  {isAdmin ? (
-                    <input type="color" value={a.color || "#0b6b2a"} onChange={(e) => updateArea(a.id, { color: e.target.value })} style={styles.input} />
-                  ) : (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ width: 14, height: 14, borderRadius: 999, background: a.color || "#d8e0ef", border: "1px solid #d8e0ef" }} />
-                      {a.color || "–"}
-                    </span>
-                  )}
-                </td>
-              </tr>
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
             ))}
-            {areas.length === 0 ? (
-              <tr>
-                <td style={styles.td} colSpan={2}>
-                  Keine Bereiche vorhanden.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- Calendar ---------------- */
-function CalendarPanel() {
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [tasks, setTasks] = useState([]);
-  const [areas, setAreas] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
-  useEffect(() => {
-    loadAreas().then(setAreas).catch(() => setAreas([]));
-  }, []);
-
-  const areaById = useMemo(() => {
-    const m = new Map();
-    for (const a of areas) m.set(a.id, a);
-    return m;
-  }, [areas]);
-
-  async function load() {
-    setErr(null);
-    setLoading(true);
-
-    const from = startOfDayISO(date);
-    const to = endOfDayISO(date);
-
-    const { data, error } = await supabase
-      .from("tasks")
-      .select("id, title, area, area_id, due_at, status")
-      .gte("due_at", from)
-      .lte("due_at", to)
-      .order("due_at", { ascending: true });
-
-    if (error) {
-      setErr(error.message);
-      setLoading(false);
-      return;
-    }
-
-    setTasks(data || []);
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    load();
-  }, [date]);
-
-  return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Kalender</div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={styles.input} />
-          <button style={styles.btn} onClick={load} disabled={loading}>
-            {loading ? "Lade…" : "Neu laden"}
-          </button>
+          </select>
         </div>
-      </div>
 
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+        <textarea
+          value={form.description}
+          onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+          placeholder="Kurzbeschreibung (optional)"
+          rows={2}
+          style={{ ...styles.textarea, marginTop: 10 }}
+          disabled={!canWrite || saving}
+        />
 
-      <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-        {tasks.map((t) => {
-          const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
-          return (
-            <div key={t.id} style={styles.card}>
-              <div style={styles.h4}>{t.title}</div>
-              <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {areaName} · Status: {t.status ?? "todo"}
-              </div>
-            </div>
-          );
-        })}
-        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Aufgaben für {fmtDate(date)}.</div> : null}
-      </div>
-    </div>
-  );
-}
+        <textarea
+          value={form.content}
+          onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))}
+          placeholder="Inhalt / Schritte (optional)"
+          rows={5}
+          style={{ ...styles.textarea, marginTop: 10 }}
+          disabled={!canWrite || saving}
+        />
 
-/* ---------------- Main Component ---------------- */
-export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState("board");
-  const [auth, setAuth] = useState({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
-  const [authLoading, setAuthLoading] = useState(true);
-  const [authError, setAuthError] = useState(null);
-
-  async function refreshAuth() {
-    setAuthLoading(true);
-    setAuthError(null);
-
-    try {
-      const ctx = await loadMyAuthContext();
-      setAuth(ctx);
-    } catch (e) {
-      console.error("Auth init failed:", e);
-      setAuth({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
-      setAuthError(e?.message || String(e));
-    } finally {
-      setAuthLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    refreshAuth();
-
-    const { data: sub } = supabase.auth.onAuthStateChange(() => {
-      refreshAuth();
-    });
-
-    return () => {
-      sub?.subscription?.unsubscribe?.();
-    };
-  }, []);
-
-  async function signOut() {
-    await supabase.auth.signOut();
-  }
-
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    return (
-      <div style={styles.page}>
-        <div style={styles.panel}>
-          <div style={styles.h3}>Konfiguration fehlt</div>
-          <div>Bitte setze NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY.</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (authLoading) {
-    return (
-      <div style={styles.page}>
-        <div style={styles.panel}>Lade…</div>
-      </div>
-    );
-  }
-
-  if (auth.inactive) {
-    return (
-      <div style={styles.page}>
-        <div style={styles.panel}>
-          <div style={styles.h3}>Zugang deaktiviert</div>
-          <div>Dein Zugang ist aktuell deaktiviert. Bitte melde dich bei der Administration.</div>
-          <div style={{ marginTop: 12 }}>
-            <button style={styles.btn} onClick={signOut}>
-              Abmelden
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
+          <input
+            type="file"
+            onChange={(e) => setForm((f) => ({ ...f, file: e.target.files?.[0] || null }))}
+            style={{ ...styles.input, padding: 8, minWidth: 260 }}
+            disabled={!canWrite || saving}
+          />
+          <div style={{ marginLeft: "auto" }}>
+            <button style={styles.btnPrimary} onClick={createGuide} disabled={!canWrite || saving}>
+              {saving ? "Speichere…" : "Anlegen"}
             </button>
           </div>
         </div>
-      </div>
-    );
-  }
 
-  if (!auth.user) {
-    return (
-      <div style={styles.page}>
-        <div style={styles.panel}>
-          <div style={styles.h3}>Bitte anmelden</div>
-          <div style={{ color: "#666" }}>Du bist nicht eingeloggt. Öffne deine Login-Seite oder nutze dein bestehendes Auth-Flow.</div>
-          {authError ? <div style={styles.error}>Fehler: {authError}</div> : null}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={styles.page}>
-      <div style={styles.topbar}>
-        <div style={styles.brand}>Armaturenbrett</div>
-
-        <div style={styles.tabs}>
-          <TabBtn active={activeTab === "board"} onClick={() => setActiveTab("board")}>
-            Planke
-          </TabBtn>
-          <TabBtn active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>
-            Kalender
-          </TabBtn>
-
-          <TabBtn active={activeTab === "areas"} onClick={() => setActiveTab("areas")}>
-            Bereiche
-          </TabBtn>
-
-          {auth.isAdmin ? (
-            <TabBtn active={activeTab === "users"} onClick={() => setActiveTab("users")}>
-              Nutzer
-            </TabBtn>
-          ) : null}
-
-          <button style={styles.btn} onClick={refreshAuth}>
-            Neu laden
-          </button>
-        </div>
-
-        <div style={styles.right}>
-          <div style={{ color: "#555", fontSize: 14 }}>{auth.profile?.email || auth.user.email}</div>
-          <button style={styles.btn} onClick={signOut}>
-            Abmelden
-          </button>
+        <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
+          Hinweis: Datei-Upload ist für alle Nutzer erlaubt. Löschen ist nur für Admins.
         </div>
       </div>
 
-      {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
+      <div style={{ display: "grid", gap: 10 }}>
+        {guides.map((g) => (
+          <div key={g.id} style={styles.card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={styles.h4}>{g.title}</div>
+              <span style={styles.pill} title="Zuordnung">
+                {g.area_id ? areaNameById(g.area_id) : "Global"}
+              </span>
 
-      {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "calendar" ? <CalendarPanel /> : null}
-      {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
+              <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                {g.file_path ? (
+                  <button style={styles.btn} onClick={() => openGuideFile(g)}>
+                    Datei öffnen
+                  </button>
+                ) : null}
 
-      <div style={{ height: 24 }} />
+                {isAdmin ? (
+                  <button style={styles.btn} onClick={() => deleteGuide(g)} disabled={saving}>
+                    Löschen
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
+              Erstellt: {fmtDateTime(g.created_at)}
+              {g.file_name ? ` · Datei: ${g.file_name}` : ""}
+            </div>
+
+            {g.description ? (
+              <div style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{g.description}</div>
+            ) : null}
+
+            {g.content ? (
+              <div style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{g.content}</div>
+            ) : null}
+          </div>
+        ))}
+
+        {guides.length === 0 ? (
+          <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div>
+        ) : null}
+      </div>
     </div>
   );
 }
+
 
 function TabBtn({ active, onClick, children }) {
   return (
@@ -2214,16 +1874,7 @@ const styles = {
     cursor: "pointer",
     fontWeight: 800,
   },
-  btnDanger: {
-    padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid #ffd2d2",
-    background: "#fff3f3",
-    color: "#a40000",
-    cursor: "pointer",
-    fontWeight: 800,
-  },
-    btnSmall: {
+  btnSmall: {
     padding: "8px 10px",
     borderRadius: 12,
     border: "1px solid #d8e0ef",
@@ -2321,8 +1972,3 @@ const styles = {
     verticalAlign: "top",
   },
 };
-
-// Disable static prerender/export for this page (Supabase auth needs browser context)
-export async function getServerSideProps() {
-  return { props: {} };
-}
