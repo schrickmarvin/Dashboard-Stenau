@@ -1,4 +1,4 @@
-diff --git a/pages/dashboard.js b/pages/dashboard.js
+ --git a/pages/dashboard.js b/pages/dashboard.js
 index 332006d7c6e258dce6b1f18c374f560d3fa9a96f..a4cc6aa9db810ae43a823c72e6306556aab4cbe4 100644
 --- a/pages/dashboard.js
 +++ b/pages/dashboard.js
