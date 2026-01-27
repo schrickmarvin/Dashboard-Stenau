@@ -756,7 +756,7 @@ function TasksBoard({ isAdmin }) {
             ) : null}
           </div>
         </div>
-      ) : null}
+      )}
 
     </div>
   );
@@ -1480,7 +1480,7 @@ function GuidesPanel({ isAdmin }) {
   }, []);
 
   async function createGuide() {
-    if (!isAdmin) return;
+    // Jeder angemeldete Nutzer darf Anleitungen anlegen
     if (!title.trim()) return;
     setErr(null);
 
@@ -1509,7 +1509,7 @@ function GuidesPanel({ isAdmin }) {
 
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-      {isAdmin ? (
+      {(
         <div style={{ ...styles.card, marginBottom: 14 }}>
           <div style={styles.h4}>Neue Anleitung</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
@@ -1528,7 +1528,7 @@ function GuidesPanel({ isAdmin }) {
             </div>
           </div>
         </div>
-      ) : null}
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
         {guides.map((g) => (
