@@ -4,6 +4,8 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+const BUILD_TAG = "GUIDES_TAB_2026-01-27_1";
+
 
 /* ---------------- Supabase ---------------- */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
