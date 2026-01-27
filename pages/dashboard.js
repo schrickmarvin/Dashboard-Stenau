@@ -926,7 +926,13 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
+const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "", {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+});
 
 /* ---------------- Helpers ---------------- */
 function fmtDateTime(value) {
@@ -971,11 +977,27 @@ function safeLower(v) {
 
 /* ---------------- Auth context ---------------- */
 async function loadMyAuthContext() {
-  const { data, error } = await supabase.auth.getUser();
-  if (error) throw error;
+  // Robust: treat missing session as "not logged in" (no hard error box)
+  const { data: sData, error: sErr } = await supabase.auth.getSession();
+  if (sErr) throw sErr;
 
-  const user = data?.user || null;
-  if (!user) return { user: null, profile: null, role: null, isAdmin: false };
+  const session = sData?.session || null;
+  if (!session) return { user: null, profile: null, role: null, isAdmin: false, inactive: false };
+
+  const { data: uData, error: uErr } = await supabase.auth.getUser();
+  // In some cases supabase-js returns "Auth session missing!" although session exists (race). Retry once via getSession.
+  if (uErr) {
+    const msg = String(uErr?.message || "");
+    if (msg.toLowerCase().includes("auth session missing")) {
+      const { data: s2 } = await supabase.auth.getSession();
+      if (!s2?.session) return { user: null, profile: null, role: null, isAdmin: false, inactive: false };
+    } else {
+      throw uErr;
+    }
+  }
+
+  const user = uData?.user || null;
+  if (!user) return { user: null, profile: null, role: null, isAdmin: false, inactive: false };
 
   const { data: profile, error: pErr } = await supabase
     .from("profiles")
@@ -1838,16 +1860,10 @@ export default function Dashboard() {
           </TabBtn>
           <TabBtn active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>
             Kalender
-          </TabBtn>
-
+          \1
           <TabBtn active={activeTab === "guides"} onClick={() => setActiveTab("guides")}>
             Anleitungen
           </TabBtn>
-
-          <TabBtn active={activeTab === "areas"} onClick={() => setActiveTab("areas")}>
-            Bereiche
-          </TabBtn>
-
           {auth.isAdmin ? (
             <TabBtn active={activeTab === "users"} onClick={() => setActiveTab("users")}>
               Nutzer
@@ -2088,7 +2104,7 @@ const styles = {
   },
   subRow: {
     display: "grid",
-    gridTemplateColumns: "24px 1fr 1fr 78px 56px 44px",
+    gridTemplateColumns: "24px 1fr 1fr 60px 44px",
     gap: 10,
     alignItems: "center",
   },
@@ -2135,3 +2151,9 @@ const styles = {
     verticalAlign: "top",
   },
 };
+
+
+// Disable static prerender/export for this page (Supabase auth needs browser context)
+export async function getServerSideProps() {
+  return { props: {} };
+}
