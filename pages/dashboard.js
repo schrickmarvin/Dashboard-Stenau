@@ -1220,6 +1220,7 @@ function UsersAdminPanel({ isAdmin }) {
 
       setNewUser({ email: "", password: "", name: "", roleId: "", areaIds: [] });
       await load();
+      setPendingFiles((prev) => ({ ...prev, [guideId]: [] }));
     } catch (error) {
       setErr(error?.message || String(error));
     } finally {
@@ -1461,6 +1462,7 @@ function GuidesPanel({ isAdmin }) {
 
   const [uploadingGuideId, setUploadingGuideId] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState({}); // guideId -> File[]
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
@@ -1543,8 +1545,8 @@ function GuidesPanel({ isAdmin }) {
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   }
 
-  async function uploadFiles(guideId, fileList) {
-    const arr = Array.from(fileList || []);
+  async function uploadFiles(guideId, fileListOrArray) {
+    const arr = Array.isArray(fileListOrArray) ? fileListOrArray : Array.from(fileListOrArray || []);
     if (!guideId || arr.length === 0) return;
 
     setErr(null);
@@ -1655,25 +1657,42 @@ function GuidesPanel({ isAdmin }) {
 
                 <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
                   <label style={styles.fileBtn}>
-                    Dateien hochladen
+                    Dateien auswählen
                     <input
                       type="file"
                       multiple
                       onChange={(e) => {
-                        const fl = e.target.files;
+                        const picked = Array.from(e.target.files || []);
+                        setPendingFiles((prev) => ({ ...prev, [g.id]: picked }));
+                        // allow picking same file again later
                         e.target.value = "";
-                        uploadFiles(g.id, fl);
                       }}
                       disabled={uploading}
                       style={{ display: "none" }}
                     />
                   </label>
 
-                  {uploading && uploadingGuideId === g.id ? (
-                    <span style={{ color: "#666", fontSize: 13 }}>Upload läuft…</span>
+                  <button
+                    type="button"
+                    style={styles.btn}
+                    onClick={() => uploadFiles(g.id, pendingFiles[g.id] || [])}
+                    disabled={uploading || (pendingFiles[g.id] || []).length === 0}
+                    title="Startet den Upload der ausgewählten Dateien"
+                  >
+                    Upload starten
+                  </button>
+
+                  {(pendingFiles[g.id] || []).length > 0 ? (
+                    <span style={{ color: "#666", fontSize: 13 }}>
+                      Ausgewählt: {(pendingFiles[g.id] || []).map((f) => f.name).join(", ")}
+                    </span>
                   ) : (
                     <span style={{ color: "#666", fontSize: 13 }}>Mehrere Dateien möglich</span>
                   )}
+
+                  {uploading && uploadingGuideId === g.id ? (
+                    <span style={{ color: "#666", fontSize: 13 }}>Upload läuft…</span>
+                  ) : null}
                 </div>
 
                 {gFiles.length === 0 ? (
