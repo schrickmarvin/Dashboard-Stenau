@@ -2416,23 +2416,7 @@ export default function Dashboard() {
       : {}),
   };
 
-  const primary = userSettings?.primary_color || "#0b6b2a";
-  const pageBg = userSettings?.background_color || "#f3f6fb";
-  const bgImg = (userSettings?.background_image_url || "").trim();
-  const pageStyle = {
-    ...styles.page,
-    "--primary": primary,
-    "--page-bg": pageBg,
-    ...(bgImg
-      ? {
-          backgroundImage: `url(${bgImg})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          backgroundAttachment: "fixed",
-        }
-      : null),
-  };
-
+  
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return (
       <div style={pageStyle}>
@@ -2565,7 +2549,7 @@ function TabBtn({ active, onClick, children }) {
       onClick={onClick}
       style={{
         ...styles.tab,
-        ...(active ? styles.tabActive : null),
+        ...(active ? styles.tabActive : {}),
       }}
     >
       {children}
