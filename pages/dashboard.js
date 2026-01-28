@@ -12,6 +12,7 @@ function TasksBoard({ isAdmin }) {
   const [guides, setGuides] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [series, setSeries] = useState([]);
+  const [members, setMembers] = useState([]);
 
   const [form, setForm] = useState({
     title: "",
@@ -19,6 +20,7 @@ function TasksBoard({ isAdmin }) {
     due_at: "",
     status: "todo",
     guideIds: [],
+    assignee_id: "",
   });
   const [subDrafts, setSubDrafts] = useState({});
   const [guideModal, setGuideModal] = useState({ open: false, loading: false, guide: null, error: null });
@@ -84,7 +86,7 @@ function TasksBoard({ isAdmin }) {
     // Tasks: use area_id, due_at, status, title
     const { data: tData, error: tErr } = await supabase
       .from("tasks")
-      .select("id, title, area, area_id, due_at, status, created_at, is_series, series_parent_id, subtasks ( id, title, is_done, color, created_at, guide_id, guides ( id, title ) )")
+      .select("id, title, area, area_id, due_at, status, assignee_id, created_at, is_series, series_parent_id, assignee:profiles!tasks_assignee_id_fkey ( id, name, email ), subtasks ( id, title, is_done, color, created_at, guide_id, guides ( id, title ) )")
       .order("created_at", { ascending: false });
 
     if (tErr) {
@@ -93,13 +95,18 @@ function TasksBoard({ isAdmin }) {
       return;
     }
 
-    const [areasList, guidesRes] = await Promise.all([
+    const [areasList, guidesRes, membersRes] = await Promise.all([
       loadAreas(),
       supabase.from("guides").select("id, title").order("title", { ascending: true }),
+      supabase.from("profiles").select("id, name, email, is_active").order("name", { ascending: true }),
     ]);
 
     if (guidesRes.error) {
       console.warn("guides load failed:", guidesRes.error.message);
+    }
+
+    if (membersRes?.error) {
+      console.warn("members load failed:", membersRes.error.message);
     }
 
     const areaByIdTmp = new Map((areasList || []).map((a) => [a.id, a]));
@@ -117,6 +124,7 @@ function TasksBoard({ isAdmin }) {
     setTasks(decoratedTasks.filter((t) => !t.is_series));
     setAreas(areasList || []);
     setGuides(guidesRes.data || []);
+    setMembers((membersRes?.data || []).filter((m) => m.is_active !== false));
     setLoading(false);
   }
 
@@ -211,6 +219,7 @@ function TasksBoard({ isAdmin }) {
       due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
       area_id: matched ? matched.id : null,
       area: areaText || null,
+      assignee_id: form.assignee_id || null,
     };
 
     const { data: inserted, error: insErr } = await supabase.from("tasks").insert(payload).select("id").single();
@@ -229,7 +238,7 @@ function TasksBoard({ isAdmin }) {
       if (linkErr) console.warn("task_guides insert failed:", linkErr.message);
     }
 
-    setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [] });
+    setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [], assignee_id: "" });
     loadAll();
   }
 
@@ -289,6 +298,19 @@ function TasksBoard({ isAdmin }) {
     setTasks((prev) =>
       prev.map((t) => ({ ...t, subtasks: (t.subtasks || []).filter((s) => s.id !== subId) }))
     );
+  }
+
+
+  async function setTaskAssignee(taskId, assigneeId) {
+    if (!taskId) return;
+    setErr(null);
+    const { error } = await supabase.from("tasks").update({ assignee_id: assigneeId || null }).eq("id", taskId);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    const assigneeObj = (members || []).find((m) => m.id === assigneeId) || null;
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, assignee_id: assigneeId || null, assignee: assigneeObj ? { id: assigneeObj.id, name: assigneeObj.name, email: assigneeObj.email } : null } : t)));
   }
 
   async function toggleStatus(task) {
@@ -556,6 +578,21 @@ function TasksBoard({ isAdmin }) {
             ))}
           </select>
 
+
+          <select
+            value={form.assignee_id}
+            onChange={(e) => setForm((f) => ({ ...f, assignee_id: e.target.value }))}
+            style={styles.input}
+            title="Zuständig"
+          >
+            <option value="">– Zuständig –</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {(m.name || m.email || m.id)}
+              </option>
+            ))}
+          </select>
+
           <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
             <button style={styles.btnPrimary} onClick={createTask}>
               Anlegen
@@ -567,8 +604,8 @@ function TasksBoard({ isAdmin }) {
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} />
-        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} />
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} />
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
@@ -762,7 +799,7 @@ function TasksBoard({ isAdmin }) {
   );
 }
 
-function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite, getSubDraft, setSubDraft, onSubAdd, onSubUpdate, onSubDelete, onGuideOpen }) {
+function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite, getSubDraft, setSubDraft, onSubAdd, onSubUpdate, onSubDelete, onGuideOpen, members, onAssigneeChange }) {
   return (
     <div style={styles.col}>
       <div style={styles.colHeader}>
@@ -781,13 +818,28 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
                 <span title={t.area || t.area_label || ""} style={{...styles.areaDot, background: t.area_color}} />
               ) : null}
                 <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
+
+                <select
+                  value={t.assignee_id || ""}
+                  onChange={(e) => onAssigneeChange(t.id, e.target.value || null)}
+                  style={{ ...styles.input, minWidth: 180 }}
+                  title="Zuständig"
+                >
+                  <option value="">– Zuständig –</option>
+                  {(members || []).map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {(m.name || m.email || m.id)}
+                    </option>
+                  ))}
+                </select>
+
                 <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
                   Status
                 </button>
               </div>
 
               <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                Bereich: {areaName} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
+                Bereich: {areaName} · Zuständig: {t.assignee?.name || t.assignee?.email || "–"} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
               </div>
 
               <div style={{ marginTop: 10 }}>
@@ -1890,7 +1942,7 @@ function CalendarPanel() {
 
     const { data, error } = await supabase
       .from("tasks")
-      .select("id, title, area, area_id, due_at, status")
+      .select("id, title, area, area_id, due_at, status, assignee:profiles!tasks_assignee_id_fkey ( id, name, email )")
       .gte("due_at", from)
       .lte("due_at", to)
       .order("due_at", { ascending: true });
@@ -1930,7 +1982,7 @@ function CalendarPanel() {
             <div key={t.id} style={styles.card}>
               <div style={styles.h4}>{t.title}</div>
               <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {areaName} · Status: {t.status ?? "todo"}
+                {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {areaName} · Zuständig: {t.assignee?.name || t.assignee?.email || "–"} · Status: {t.status ?? "todo"}
               </div>
             </div>
           );
@@ -2297,7 +2349,7 @@ const styles = {
   },
   taskFormGrid: {
     display: "grid",
-    gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr auto",
+    gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr 1fr auto",
     gap: 10,
     alignItems: "start",
   },
