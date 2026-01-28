@@ -1085,6 +1085,41 @@ async function loadAreas() {
   }));
 }
 
+
+/* ---------------- User Settings ---------------- */
+async function loadUserSettings(profileId) {
+  if (!profileId) return null;
+  const { data, error } = await supabase
+    .from("user_settings")
+    .select("profile_id, primary_color, background_color, background_image_url, notifications_enabled, updated_at")
+    .eq("profile_id", profileId)
+    .maybeSingle();
+
+  if (error) {
+    // Table might not exist yet – keep app usable
+    console.warn("user_settings load failed:", error.message);
+    return null;
+  }
+  return data || null;
+}
+
+async function upsertUserSettings(profileId, patch) {
+  if (!profileId) throw new Error("profileId fehlt");
+  const payload = {
+    profile_id: profileId,
+    primary_color: patch.primary_color ?? null,
+    background_color: patch.background_color ?? null,
+    background_image_url: patch.background_image_url ?? null,
+    notifications_enabled: typeof patch.notifications_enabled === "boolean" ? patch.notifications_enabled : null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase.from("user_settings").upsert(payload, { onConflict: "profile_id" });
+  if (error) throw error;
+  return true;
+}
+
+
 /* ---------------- Admin: Users Panel ---------------- */
 function UsersAdminPanel({ isAdmin }) {
   const [users, setUsers] = useState([]);
@@ -2204,12 +2239,125 @@ function KanboardPanel() {
   );
 }
 
+
+/* ---------------- User Settings Panel ---------------- */
+function UserSettingsPanel({ profileId, settings, onChange }) {
+  const [draft, setDraft] = useState(() => ({
+    primary_color: settings?.primary_color || "#0b6b2a",
+    background_color: settings?.background_color || "#f3f6fb",
+    background_image_url: settings?.background_image_url || "",
+    notifications_enabled: settings?.notifications_enabled !== false,
+  }));
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+  const [info, setInfo] = useState(null);
+
+  useEffect(() => {
+    setDraft({
+      primary_color: settings?.primary_color || "#0b6b2a",
+      background_color: settings?.background_color || "#f3f6fb",
+      background_image_url: settings?.background_image_url || "",
+      notifications_enabled: settings?.notifications_enabled !== false,
+    });
+  }, [settings?.primary_color, settings?.background_color, settings?.background_image_url, settings?.notifications_enabled]);
+
+  async function save() {
+    setErr(null);
+    setInfo(null);
+    setSaving(true);
+    try {
+      await upsertUserSettings(profileId, draft);
+      setInfo("Gespeichert.");
+      onChange?.(draft);
+    } catch (e) {
+      setErr(e?.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Einstellungen</div>
+        <button style={styles.btn} onClick={save} disabled={saving}>
+          {saving ? "Speichere…" : "Speichern"}
+        </button>
+      </div>
+
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+      {info ? <div style={{ ...styles.card, borderColor: "#d8e0ef", background: "#f7f9ff" }}>{info}</div> : null}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 10 }}>
+        <div style={styles.card}>
+          <div style={styles.h4}>Farben</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10, alignItems: "center" }}>
+            <div style={{ color: "#666", fontSize: 13 }}>Primärfarbe (Buttons / aktiver Tab)</div>
+            <input
+              type="color"
+              value={draft.primary_color || "#0b6b2a"}
+              onChange={(e) => setDraft((d) => ({ ...d, primary_color: e.target.value }))}
+              style={styles.colorInput}
+            />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10, alignItems: "center", marginTop: 10 }}>
+            <div style={{ color: "#666", fontSize: 13 }}>Hintergrundfarbe</div>
+            <input
+              type="color"
+              value={draft.background_color || "#f3f6fb"}
+              onChange={(e) => setDraft((d) => ({ ...d, background_color: e.target.value }))}
+              style={styles.colorInput}
+            />
+          </div>
+
+          <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
+            Tipp: Wir machen die finalen Styles (Layouts, Abstände, optische Feinheiten) sauber ganz zum Schluss.
+          </div>
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.h4}>Hintergrundbild (optional)</div>
+          <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
+            Wenn gesetzt, überschreibt das Bild die Hintergrundfarbe. (z.B. URL zu einem internen Bild oder CDN)
+          </div>
+          <input
+            value={draft.background_image_url}
+            onChange={(e) => setDraft((d) => ({ ...d, background_image_url: e.target.value }))}
+            placeholder="https://…"
+            style={{ ...styles.input, width: "100%" }}
+          />
+          <div style={{ marginTop: 12 }}>
+            <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={!!draft.notifications_enabled}
+                onChange={(e) => setDraft((d) => ({ ...d, notifications_enabled: e.target.checked }))}
+              />
+              <span>Benachrichtigungen aktiv</span>
+            </label>
+          </div>
+
+          <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
+            Hinweis: Die Benachrichtigung ist vorbereitet (Einstellung + Speicherung). Die echte Notification-Logik (E-Mail/Push) bauen wir als eigenes Paket.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 /* ---------------- Main Component ---------------- */
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("board");
   const [auth, setAuth] = useState({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
+
+  const [userSettings, setUserSettings] = useState(null);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+
 
   async function refreshAuth() {
     setAuthLoading(true);
@@ -2218,6 +2366,14 @@ export default function Dashboard() {
     try {
       const ctx = await loadMyAuthContext();
       setAuth(ctx);
+      if (ctx?.profile?.id) {
+        setSettingsLoading(true);
+        const s = await loadUserSettings(ctx.profile.id);
+        setUserSettings(s);
+        setSettingsLoading(false);
+      } else {
+        setUserSettings(null);
+      }
     } catch (e) {
       console.error("Auth init failed:", e);
       setAuth({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
@@ -2243,9 +2399,43 @@ export default function Dashboard() {
     await supabase.auth.signOut();
   }
 
+  const primary = userSettings?.primary_color || "#0b6b2a";
+  const pageBg = userSettings?.background_color || "#f3f6fb";
+  const bgImg = (userSettings?.background_image_url || "").trim();
+  const pageStyle = {
+    ...styles.page,
+    "--primary": primary,
+    "--page-bg": pageBg,
+    ...(bgImg
+      ? {
+          backgroundImage: `url(${bgImg})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundAttachment: "fixed",
+        }
+      : {}),
+  };
+
+  const primary = userSettings?.primary_color || "#0b6b2a";
+  const pageBg = userSettings?.background_color || "#f3f6fb";
+  const bgImg = (userSettings?.background_image_url || "").trim();
+  const pageStyle = {
+    ...styles.page,
+    "--primary": primary,
+    "--page-bg": pageBg,
+    ...(bgImg
+      ? {
+          backgroundImage: `url(${bgImg})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundAttachment: "fixed",
+        }
+      : null),
+  };
+
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return (
-      <div style={styles.page}>
+      <div style={pageStyle}>
         <div style={styles.panel}>
           <div style={styles.h3}>Konfiguration fehlt</div>
           <div>Bitte setze NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY.</div>
@@ -2256,7 +2446,7 @@ export default function Dashboard() {
 
   if (authLoading) {
     return (
-      <div style={styles.page}>
+      <div style={pageStyle}>
         <div style={styles.panel}>Lade…</div>
       </div>
     );
@@ -2264,7 +2454,7 @@ export default function Dashboard() {
 
   if (auth.inactive) {
     return (
-      <div style={styles.page}>
+      <div style={pageStyle}>
         <div style={styles.panel}>
           <div style={styles.h3}>Zugang deaktiviert</div>
           <div>Dein Zugang ist aktuell deaktiviert. Bitte melde dich bei der Administration.</div>
@@ -2280,7 +2470,7 @@ export default function Dashboard() {
 
   if (!auth.user) {
     return (
-      <div style={styles.page}>
+      <div style={pageStyle}>
         <div style={styles.panel}>
           <div style={styles.h3}>Bitte anmelden</div>
           <div style={{ color: "#666" }}>
@@ -2306,7 +2496,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div style={styles.page}>
+    <div style={pageStyle}>
       <div style={styles.topbar}>
         <div style={styles.brand}>Armaturenbrett</div>
 
@@ -2327,6 +2517,10 @@ export default function Dashboard() {
 
           <TabBtn active={activeTab === "areas"} onClick={() => setActiveTab("areas")}>
             Bereiche
+          </TabBtn>
+
+          <TabBtn active={activeTab === "settings"} onClick={() => setActiveTab("settings")}>
+            Einstellungen
           </TabBtn>
 
           {auth.isAdmin ? (
@@ -2355,6 +2549,9 @@ export default function Dashboard() {
       {activeTab === "calendar" ? <CalendarPanel /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "settings" ? (
+        <UserSettingsPanel profileId={auth.profile?.id} settings={userSettings} onChange={(s) => setUserSettings((prev) => ({ ...(prev || {}), ...(s || {}) }))} />
+      ) : null}
       {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
       <div style={{ height: 24 }} />
@@ -2380,7 +2577,7 @@ function TabBtn({ active, onClick, children }) {
 const styles = {
   page: {
     minHeight: "100vh",
-    background: "#f3f6fb",
+    background: "var(--page-bg, #f3f6fb)",
     padding: 18,
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
   },
@@ -2411,8 +2608,8 @@ const styles = {
     fontWeight: 600,
   },
   tabActive: {
-    background: "#0b6b2a",
-    borderColor: "#0b6b2a",
+    background: "var(--primary, #0b6b2a)",
+    borderColor: "var(--primary, #0b6b2a)",
     color: "#fff",
   },
   right: {
@@ -2513,8 +2710,8 @@ const styles = {
   btnPrimary: {
     padding: "10px 14px",
     borderRadius: 12,
-    border: "1px solid #0b6b2a",
-    background: "#0b6b2a",
+    border: "1px solid var(--primary, #0b6b2a)",
+    background: "var(--primary, #0b6b2a)",
     color: "#fff",
     cursor: "pointer",
     fontWeight: 800,
@@ -2584,8 +2781,8 @@ const styles = {
   btnSmallPrimary: {
     padding: "8px 12px",
     borderRadius: 12,
-    border: "1px solid #0b6b2a",
-    background: "#0b6b2a",
+    border: "1px solid var(--primary, #0b6b2a)",
+    background: "var(--primary, #0b6b2a)",
     color: "#fff",
     cursor: "pointer",
     fontWeight: 900,
