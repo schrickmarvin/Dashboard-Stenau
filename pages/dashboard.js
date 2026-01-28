@@ -756,7 +756,7 @@ function TasksBoard({ isAdmin }) {
             ) : null}
           </div>
         </div>
-      )}
+      ) : null}
 
     </div>
   );
