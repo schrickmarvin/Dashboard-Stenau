@@ -1993,6 +1993,217 @@ function CalendarPanel() {
   );
 }
 
+/* ---------------- Kanboard (Wer macht was) ---------------- */
+function KanboardPanel() {
+  const [tasks, setTasks] = useState([]);
+  const [profiles, setProfiles] = useState([]);
+  const [areas, setAreas] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [onlyOpen, setOnlyOpen] = useState(true);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    loadAreas().then(setAreas).catch(() => setAreas([]));
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const areaById = useMemo(() => {
+    const m = new Map();
+    for (const a of areas) m.set(a.id, a);
+    return m;
+  }, [areas]);
+
+  async function load() {
+    setErr(null);
+    setLoading(true);
+
+    // profiles
+    const pRes = await supabase
+      .from("profiles")
+      .select("id, email, name, is_active")
+      .order("name", { ascending: true });
+
+    if (pRes.error) {
+      setErr(pRes.error.message);
+      setLoading(false);
+      return;
+    }
+
+    const pList = (pRes.data || []).filter((p) => p.is_active !== false);
+    setProfiles(pList);
+
+    // tasks (no join to avoid relationship issues)
+    const tRes = await supabase
+      .from("tasks")
+      .select("id, title, status, due_at, area, area_id, assignee_id, created_at, is_series")
+      .order("created_at", { ascending: false });
+
+    if (tRes.error) {
+      setErr(tRes.error.message);
+      setLoading(false);
+      return;
+    }
+
+    const list = (tRes.data || []).filter((t) => !t.is_series);
+    setTasks(list);
+    setLoading(false);
+  }
+
+  const profileById = useMemo(() => {
+    const m = new Map();
+    for (const p of profiles) m.set(p.id, p);
+    return m;
+  }, [profiles]);
+
+  const grouped = useMemo(() => {
+    const needle = safeLower(search);
+    const by = new Map(); // assigneeKey -> { assignee, todo:[], done:[] }
+
+    const getBucket = (key) => {
+      if (!by.has(key)) by.set(key, { key, todo: [], done: [] });
+      return by.get(key);
+    };
+
+    for (const t of tasks) {
+      if (onlyOpen && (t.status ?? "todo") === "done") continue;
+
+      if (needle) {
+        const hay = safeLower(`${t.title ?? ""} ${t.area ?? ""}`);
+        if (!hay.includes(needle)) continue;
+      }
+
+      const key = t.assignee_id || "__unassigned__";
+      const bucket = getBucket(key);
+      if ((t.status ?? "todo") === "done") bucket.done.push(t);
+      else bucket.todo.push(t);
+    }
+
+    // order columns: profiles in list order, then unassigned at end if present
+    const out = [];
+    for (const p of profiles) {
+      const b = by.get(p.id);
+      if (b) out.push({ ...b, assignee: p });
+      else out.push({ key: p.id, todo: [], done: [], assignee: p });
+    }
+    if (by.has("__unassigned__")) out.push({ ...by.get("__unassigned__"), assignee: null });
+
+    return out;
+  }, [tasks, profiles, onlyOpen, search]);
+
+  async function quickToggle(task) {
+    const next = (task.status ?? "todo") === "done" ? "todo" : "done";
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
+  }
+
+  async function quickAssign(task, assigneeId) {
+    const { error } = await supabase
+      .from("tasks")
+      .update({ assignee_id: assigneeId || null })
+      .eq("id", task.id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, assignee_id: assigneeId || null } : t)));
+  }
+
+  function renderTaskCard(t) {
+    const areaObj = t.area_id ? areaById.get(t.area_id) : null;
+    const areaLabel = areaObj?.name || t.area || "–";
+    const areaColor = areaObj?.color || null;
+
+    return (
+      <div key={t.id} style={{ ...styles.card, padding: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ fontWeight: 800 }}>{t.title}</div>
+          {areaColor ? <span title={areaLabel} style={{ ...styles.areaDot, background: areaColor }} /> : null}
+          <span style={{ ...styles.pill, marginLeft: "auto" }}>{t.status === "done" ? "done" : "todo"}</span>
+        </div>
+        <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
+          Bereich: {areaLabel} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <button style={styles.btnSmall} onClick={() => quickToggle(t)}>
+            Status
+          </button>
+          <select
+            value={t.assignee_id || ""}
+            onChange={(e) => quickAssign(t, e.target.value || null)}
+            style={{ ...styles.input, padding: "8px 10px", minWidth: 180 }}
+            title="Zuweisen"
+          >
+            <option value="">– nicht zugewiesen –</option>
+            {profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name || p.email}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Kanboard – Wer macht was</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Suche…" style={styles.input} />
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#555" }}>
+            <input type="checkbox" checked={onlyOpen} onChange={(e) => setOnlyOpen(e.target.checked)} />
+            nur offene
+          </label>
+          <button style={styles.btn} onClick={load} disabled={loading}>
+            {loading ? "Lade…" : "Neu laden"}
+          </button>
+        </div>
+      </div>
+
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, marginTop: 12 }}>
+        {grouped.map((col) => {
+          const title = col.assignee ? (col.assignee.name || col.assignee.email) : "Nicht zugewiesen";
+          const total = (col.todo?.length || 0) + (col.done?.length || 0);
+          return (
+            <div key={col.key} style={{ ...styles.card, background: "transparent", boxShadow: "none" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <div style={styles.h4}>{title}</div>
+                <div style={styles.badge}>{total}</div>
+              </div>
+
+              {col.todo?.length ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {col.todo.map(renderTaskCard)}
+                </div>
+              ) : (
+                <div style={{ color: "#666", fontSize: 13 }}>Keine offenen Aufgaben.</div>
+              )}
+
+              {!onlyOpen && col.done?.length ? (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ color: "#666", fontSize: 13, marginBottom: 6 }}>Erledigt</div>
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {col.done.map(renderTaskCard)}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Main Component ---------------- */
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("board");
@@ -2103,6 +2314,9 @@ export default function Dashboard() {
           <TabBtn active={activeTab === "board"} onClick={() => setActiveTab("board")}>
             Planke
           </TabBtn>
+<TabBtn active={activeTab === "kanboard"} onClick={() => setActiveTab("kanboard")}>
+  Kanboard
+</TabBtn>
           <TabBtn active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>
             Kalender
           </TabBtn>
@@ -2137,6 +2351,7 @@ export default function Dashboard() {
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
+{activeTab === "kanboard" ? <KanboardPanel /> : null}
       {activeTab === "calendar" ? <CalendarPanel /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
