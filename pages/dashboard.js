@@ -1087,12 +1087,12 @@ async function loadAreas() {
 
 
 /* ---------------- User Settings ---------------- */
-async function loadUserSettings(profileId) {
-  if (!profileId) return null;
+async function loadUserSettings(userId) {
+  if (!userId) return null;
   const { data, error } = await supabase
     .from("user_settings")
     .select("profile_id, primary_color, background_color, background_image_url, notifications_enabled, updated_at")
-    .eq("profile_id", profileId)
+    .eq("user_id", userId)
     .maybeSingle();
 
   if (error) {
@@ -1103,10 +1103,10 @@ async function loadUserSettings(profileId) {
   return data || null;
 }
 
-async function upsertUserSettings(profileId, patch) {
-  if (!profileId) throw new Error("profileId fehlt");
+async function upsertUserSettings(userId,  patch) {
+  if (!userId) throw new Error("userId fehlt");
   const payload = {
-    profile_id: profileId,
+    user_id: userId,
     primary_color: patch.primary_color ?? null,
     background_color: patch.background_color ?? null,
     background_image_url: patch.background_image_url ?? null,
@@ -1114,7 +1114,7 @@ async function upsertUserSettings(profileId, patch) {
     updated_at: new Date().toISOString(),
   };
 
-  const { error } = await supabase.from("user_settings").upsert(payload, { onConflict: "profile_id" });
+  const { error } = await supabase.from("user_settings").upsert(payload, { onConflict: "user_id" });
   if (error) throw error;
   return true;
 }
@@ -1231,7 +1231,7 @@ function UsersAdminPanel({ isAdmin }) {
     }
 
     if (areaIds.length > 0) {
-      const rows = areaIds.map((areaId) => ({ profile_id: id, area_id: areaId }));
+      const rows = areaIds.map((areaId) => ({ user_id: id, area_id: areaId }));
       const { error: insErr } = await supabase.from("profile_areas").insert(rows);
       if (insErr) {
         setErr(insErr.message);
@@ -2241,7 +2241,7 @@ function KanboardPanel() {
 
 
 /* ---------------- User Settings Panel ---------------- */
-function UserSettingsPanel({ profileId, settings, onChange }) {
+function UserSettingsPanel({ userId, settings, onChange }) {
   const [draft, setDraft] = useState(() => ({
     primary_color: settings?.primary_color || "#0b6b2a",
     background_color: settings?.background_color || "#f3f6fb",
@@ -2266,7 +2266,7 @@ function UserSettingsPanel({ profileId, settings, onChange }) {
     setInfo(null);
     setSaving(true);
     try {
-      await upsertUserSettings(profileId, draft);
+      await upsertUserSettings(userId, draft);
       setInfo("Gespeichert.");
       onChange?.(draft);
     } catch (e) {
@@ -2534,7 +2534,7 @@ export default function Dashboard() {
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "settings" ? (
-        <UserSettingsPanel profileId={auth.profile?.id} settings={userSettings} onChange={(s) => setUserSettings((prev) => ({ ...(prev || {}), ...(s || {}) }))} />
+        <UserSettingsPanel userId={auth.profile?.id} settings={userSettings} onChange={(s) => setUserSettings((prev) => ({ ...(prev || {}), ...(s || {}) }))} />
       ) : null}
       {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
