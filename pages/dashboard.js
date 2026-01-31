@@ -85,9 +85,12 @@ function TasksBoard({ isAdmin }) {
 
     // Tasks: use area_id, due_at, status, title
     const { data: tData, error: tErr } = await supabase
-      .from("tasks")
-      .select("id, title, area, area_id, due_at, status, assignee_id, created_at, is_series, series_parent_id, assignee:profiles!tasks_assignee_id_fkey ( id, name, email ), subtasks ( id, title, is_done, color, created_at, guide_id, guides ( id, title ) )")
-      .order("created_at", { ascending: false });
+  .from('profile_areas')
+  .insert({
+    profile_id: profileId,
+    area_id: areaId
+  });
+
 
     if (tErr) {
       setErr(tErr.message);
