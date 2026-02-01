@@ -1233,7 +1233,7 @@ function UsersAdminPanel({ isAdmin }) {
     }
 
     if (areaIds.length > 0) {
-      const rows = areaIds.map((areaId) => ({ user_id: id, profile_id: id, area_id: areaId }));
+      const rows = areaIds.map((areaId) => ({ profile_id: id, area_id: areaId }));
       const { error: insErr } = await supabase.from("profile_areas").insert(rows);
       if (insErr) {
         setErr(insErr.message);
