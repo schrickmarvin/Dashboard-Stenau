@@ -85,12 +85,9 @@ function TasksBoard({ isAdmin }) {
 
     // Tasks: use area_id, due_at, status, title
     const { data: tData, error: tErr } = await supabase
-  .from('profile_areas')
-  .insert({
-    profile_id: profileId,
-    area_id: areaId
-  });
-
+      .from("tasks")
+      .select("id, title, area, area_id, due_at, status, assignee_id, created_at, is_series, series_parent_id, assignee:profiles!tasks_assignee_id_fkey ( id, name, email ), subtasks ( id, title, is_done, color, created_at, guide_id, guides ( id, title ) )")
+      .order("created_at", { ascending: false });
 
     if (tErr) {
       setErr(tErr.message);
@@ -1094,7 +1091,7 @@ async function loadUserSettings(userId) {
   if (!userId) return null;
   const { data, error } = await supabase
     .from("user_settings")
-    .select("profile_id, primary_color, background_color, background_image_url, notifications_enabled, updated_at")
+    .select("user_id, primary_color, background_color, background_image_url, notifications_enabled, updated_at")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -1177,7 +1174,7 @@ function UsersAdminPanel({ isAdmin }) {
 
     const { data: areaLinks, error: linkErr } = await supabase
       .from("profile_areas")
-      .select("profile_id, area_id");
+      .select("user_id, profile_id, area_id");
 
     if (linkErr) {
       setLoading(false);
@@ -1186,8 +1183,10 @@ function UsersAdminPanel({ isAdmin }) {
     }
 
     const areasByProfile = (areaLinks || []).reduce((acc, link) => {
-      if (!acc[link.profile_id]) acc[link.profile_id] = [];
-      acc[link.profile_id].push({ area_id: link.area_id });
+      const pid = link.profile_id || link.user_id;
+      if (!pid) return acc;
+      if (!acc[pid]) acc[pid] = [];
+      acc[pid].push({ area_id: link.area_id });
       return acc;
     }, {});
 
@@ -1227,14 +1226,14 @@ function UsersAdminPanel({ isAdmin }) {
 
   async function updateUserAreas(id, areaIds) {
     setErr(null);
-    const { error: delErr } = await supabase.from("profile_areas").delete().eq("profile_id", id);
+    const { error: delErr } = await supabase.from("profile_areas").delete().or(`profile_id.eq.${id},user_id.eq.${id}`);
     if (delErr) {
       setErr(delErr.message);
       return;
     }
 
     if (areaIds.length > 0) {
-      const rows = areaIds.map((areaId) => ({ profile_id: id, area_id: areaId }));
+      const rows = areaIds.map((areaId) => ({ user_id: id, profile_id: id, area_id: areaId }));
       const { error: insErr } = await supabase.from("profile_areas").insert(rows);
       if (insErr) {
         setErr(insErr.message);
