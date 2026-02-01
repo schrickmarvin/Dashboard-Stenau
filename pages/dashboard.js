@@ -1174,7 +1174,7 @@ function UsersAdminPanel({ isAdmin }) {
 
     const { data: areaLinks, error: linkErr } = await supabase
       .from("profile_areas")
-      .select("user_id, profile_id, area_id");
+      .select("profile_id, area_id");
 
     if (linkErr) {
       setLoading(false);
@@ -1183,7 +1183,7 @@ function UsersAdminPanel({ isAdmin }) {
     }
 
     const areasByProfile = (areaLinks || []).reduce((acc, link) => {
-      const pid = link.profile_id || link.user_id;
+      const pid = link.profile_id;
       if (!pid) return acc;
       if (!acc[pid]) acc[pid] = [];
       acc[pid].push({ area_id: link.area_id });
@@ -1226,7 +1226,7 @@ function UsersAdminPanel({ isAdmin }) {
 
   async function updateUserAreas(id, areaIds) {
     setErr(null);
-    const { error: delErr } = await supabase.from("profile_areas").delete().or(`profile_id.eq.${id},user_id.eq.${id}`);
+    const { error: delErr } = await supabase.from("profile_areas").delete().eq("profile_id", id);
     if (delErr) {
       setErr(delErr.message);
       return;
