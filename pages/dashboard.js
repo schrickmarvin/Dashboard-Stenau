@@ -94,33 +94,19 @@ async function loadMyAuthContext() {
 async function loadAreas() {
   const { data, error } = await supabase
     .from("areas")
-    .select("id, key, name")
+    .select("id, name, color")
     .order("name", { ascending: true });
 
   if (error) {
-    // If table doesn't exist or RLS blocks, fallback to static
     console.warn("areas load failed:", error.message);
-    return [
-      { id: "__A__", key: "A", name: "Bereich A" },
-      { id: "__B__", key: "B", name: "Bereich B" },
-    ];
+    return [];
   }
 
-  const list = (data || []).map((a) => ({
+  return (data || []).map((a) => ({
     id: a.id,
-    key: a.key || a.name,
-    name: a.name || a.key,
+    name: a.name,
+    color: a.color || null,
   }));
-
-  // Ensure A/B exist for your workflow
-  const hasA = list.some((x) => safeLower(x.key) === "a" || safeLower(x.name) === "bereich a");
-  const hasB = list.some((x) => safeLower(x.key) === "b" || safeLower(x.name) === "bereich b");
-
-  const extras = [];
-  if (!hasA) extras.push({ id: "__A__", key: "A", name: "Bereich A" });
-  if (!hasB) extras.push({ id: "__B__", key: "B", name: "Bereich B" });
-
-  return [...extras, ...list];
 }
 
 /* ---------------- Admin: Users Panel ---------------- */
@@ -358,6 +344,133 @@ function GuidesPanel({ isAdmin }) {
   );
 }
 
+/* ---------------- Areas (Bereiche) ---------------- */
+function AreasPanel({ isAdmin }) {
+  const [areas, setAreas] = useState([]);
+  const [name, setName] = useState("");
+  const [color, setColor] = useState("#0b6b2a");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  async function load() {
+    setErr(null);
+    setLoading(true);
+    const list = await loadAreas();
+    setAreas(list);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function createArea() {
+    if (!isAdmin) return;
+    const n = name.trim();
+    if (!n) return;
+    setErr(null);
+
+    const { error } = await supabase.from("areas").insert({ name: n, color: (color || null) });
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setName("");
+    setColor("#0b6b2a");
+    load();
+  }
+
+  async function updateArea(id, patch) {
+    if (!isAdmin) return;
+    setErr(null);
+    const { error } = await supabase.from("areas").update(patch).eq("id", id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+  }
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Bereiche</div>
+        <button style={styles.btn} onClick={load} disabled={loading}>
+          {loading ? "Lade…" : "Neu laden"}
+        </button>
+      </div>
+
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+
+      {isAdmin ? (
+        <div style={{ ...styles.card, marginBottom: 14 }}>
+          <div style={styles.h4}>Neuen Bereich anlegen</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 220px auto", gap: 10, alignItems: "center" }}>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Name (z.B. LVP, PPK, Containerdienst)"
+              style={styles.input}
+            />
+            <input type="color" value={color} onChange={(e) => setColor(e.target.value)} style={styles.input} />
+            <button style={styles.btnPrimary} onClick={createArea}>
+              Anlegen
+            </button>
+          </div>
+          <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
+            Hinweis: Aufgaben-Bereich ist frei eintippbar. Wenn der Text genau zu einem Bereich passt, wird automatisch die Farbe gezogen.
+          </div>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 12, color: "#666", fontSize: 13 }}>
+          Du kannst bei Aufgaben den Bereich frei eintippen. Bereiche/Farben pflegt nur die Administration.
+        </div>
+      )}
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Name</th>
+              <th style={styles.th}>Farbe</th>
+            </tr>
+          </thead>
+          <tbody>
+            {areas.map((a) => (
+              <tr key={a.id}>
+                <td style={styles.td}>
+                  {isAdmin ? (
+                    <input value={a.name || ""} onChange={(e) => updateArea(a.id, { name: e.target.value })} style={styles.input} />
+                  ) : (
+                    a.name
+                  )}
+                </td>
+                <td style={styles.td}>
+                  {isAdmin ? (
+                    <input type="color" value={a.color || "#0b6b2a"} onChange={(e) => updateArea(a.id, { color: e.target.value })} style={styles.input} />
+                  ) : (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ width: 14, height: 14, borderRadius: 999, background: a.color || "#d8e0ef", border: "1px solid #d8e0ef" }} />
+                      {a.color || "–"}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {areas.length === 0 ? (
+              <tr>
+                <td style={styles.td} colSpan={2}>
+                  Keine Bereiche vorhanden.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Tasks Board (Planke) ---------------- */
 function TasksBoard({ isAdmin }) {
   const [areas, setAreas] = useState([]);
@@ -366,7 +479,7 @@ function TasksBoard({ isAdmin }) {
 
   const [form, setForm] = useState({
     title: "",
-    area_id: "",
+    area: "",
     due_at: "",
     status: "todo",
     guideIds: [],
@@ -382,7 +495,7 @@ function TasksBoard({ isAdmin }) {
     // Tasks: use area_id, due_at, status, title
     const { data: tData, error: tErr } = await supabase
       .from("tasks")
-      .select("id, title, area_id, due_at, status, created_at")
+      .select("id, title, area, area_id, due_at, status, created_at")
       .order("created_at", { ascending: false });
 
     if (tErr) {
@@ -400,7 +513,19 @@ function TasksBoard({ isAdmin }) {
       console.warn("guides load failed:", guidesRes.error.message);
     }
 
-    setTasks(tData || []);
+    const areaByIdTmp = new Map((areasList || []).map((a) => [a.id, a]));
+    const areaByNameTmp = new Map((areasList || []).map((a) => [String(a.name || "").toLowerCase(), a]));
+
+    const decoratedTasks = (tData || []).map((t) => {
+      const areaObj = t.area_id
+        ? areaByIdTmp.get(t.area_id)
+        : (t.area ? areaByNameTmp.get(String(t.area).toLowerCase()) : null);
+      const areaLabel = areaObj?.name || t.area || "";
+      const areaColor = areaObj?.color || null;
+      return { ...t, area_label: areaLabel, area_color: areaColor };
+    });
+
+    setTasks(decoratedTasks);
     setAreas(areasList || []);
     setGuides(guidesRes.data || []);
     setLoading(false);
@@ -434,15 +559,17 @@ function TasksBoard({ isAdmin }) {
   async function createTask() {
     if (!form.title.trim()) return;
     setErr(null);
+    const areaText = (form.area || "").trim();
+    const matched = areaText
+      ? (areas || []).find((a) => String(a.name || "").toLowerCase() === areaText.toLowerCase())
+      : null;
 
     const payload = {
       title: form.title.trim(),
       status: form.status || "todo",
       due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
-      // area_id must be uuid or null
-      area_id: form.area_id && !form.area_id.startsWith("__") ? form.area_id : null,
-      // Optional: also store text area if you keep that column (safe try)
-      area: form.area_id && form.area_id.startsWith("__") ? (form.area_id === "__A__" ? "Bereich A" : "Bereich B") : null,
+      area_id: matched ? matched.id : null,
+      area: areaText || null,
     };
 
     const { data: inserted, error: insErr } = await supabase.from("tasks").insert(payload).select("id").single();
@@ -461,7 +588,7 @@ function TasksBoard({ isAdmin }) {
       if (linkErr) console.warn("task_guides insert failed:", linkErr.message);
     }
 
-    setForm({ title: "", area_id: "", due_at: "", status: "todo", guideIds: [] });
+    setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [] });
     loadAll();
   }
 
@@ -490,18 +617,18 @@ function TasksBoard({ isAdmin }) {
             style={styles.input}
           />
 
-          <select
-            value={form.area_id}
-            onChange={(e) => setForm((f) => ({ ...f, area_id: e.target.value }))}
+          <input
+            value={form.area}
+            onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))}
+            placeholder="Bereich"
+            list="areas-list"
             style={styles.input}
-          >
-            <option value="">Bereich</option>
+          />
+          <datalist id="areas-list">
             {areas.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
+              <option key={a.id} value={a.name} />
             ))}
-          </select>
+          </datalist>
 
           <input
             type="datetime-local"
@@ -573,11 +700,14 @@ function TaskColumn({ title, count, tasks, onToggle, areaById }) {
 
       <div style={{ display: "grid", gap: 12 }}>
         {tasks.map((t) => {
-          const areaName = t.area_id ? areaById.get(t.area_id)?.name : t.area || "–";
+          const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
           return (
             <div key={t.id} style={styles.card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <div style={styles.h4}>{t.title}</div>
+              {t.area_color ? (
+                <span title={t.area || t.area_label || ""} style={{...styles.areaDot, background: t.area_color}} />
+              ) : null}
                 <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
                 <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
                   Status
@@ -601,253 +731,339 @@ function TaskColumn({ title, count, tasks, onToggle, areaById }) {
 
 /* ---------------- Calendar ---------------- */
 function CalendarPanel() {
-  const [viewMonth, setViewMonth] = useState(() => {
-    // YYYY-MM
+  const [month, setMonth] = useState(() => {
     const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    return `${y}-${m}`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
-  const [selectedDate, setSelectedDate] = useState(() => {
-    const d = new Date();
-    return d.toISOString().slice(0, 10); // YYYY-MM-DD
-  });
-
-  const [monthTasks, setMonthTasks] = useState([]);
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10)); // YYYY-MM-DD
+  const [tasksByDay, setTasksByDay] = useState({}); // YYYY-MM-DD -> tasks[]
+  const [dayTasks, setDayTasks] = useState([]);
+  const [areas, setAreas] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
+  const [dayLoading, setDayLoading] = useState(false);
+  const [err, setErr] = useState(null);
 
-  function monthStartISO(yyyyMm) {
-    const [y, m] = yyyyMm.split("-").map((x) => parseInt(x, 10));
-    const d = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
-    return d.toISOString();
+  useEffect(() => {
+    loadAreas().then(setAreas).catch(() => setAreas([]));
+  }, []);
+
+  const areaById = useMemo(() => {
+    const m = new Map();
+    for (const a of areas) m.set(a.id, a);
+    return m;
+  }, [areas]);
+
+  function toISODate(d) {
+    const yy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yy}-${mm}-${dd}`;
   }
-  function monthEndISO(yyyyMm) {
-    const [y, m] = yyyyMm.split("-").map((x) => parseInt(x, 10));
-    // last day of month 23:59:59.999
-    const d = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
-    return d.toISOString();
+
+  function monthRange(ym) {
+    const [yStr, mStr] = String(ym || "").split("-");
+    const y = Number(yStr);
+    const m = Number(mStr) - 1;
+    const first = new Date(y, m, 1);
+    const last = new Date(y, m + 1, 0);
+    return { first, last };
   }
-  function daysInMonth(yyyyMm) {
-    const [y, m] = yyyyMm.split("-").map((x) => parseInt(x, 10));
-    return new Date(y, m, 0).getDate();
+
+  function startOfMonthGrid(firstOfMonth) {
+    // Monday as first column (de-DE): 0=Sun..6=Sat; we want Monday=0..Sunday=6
+    const d = new Date(firstOfMonth);
+    const dow = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - dow);
+    d.setHours(0, 0, 0, 0);
+    return d;
   }
-  function firstWeekdayOffsetMonFirst(yyyyMm) {
-    // returns 0..6 where 0 = Monday
-    const [y, m] = yyyyMm.split("-").map((x) => parseInt(x, 10));
-    const d = new Date(y, m - 1, 1);
-    const js = d.getDay(); // 0 Sun .. 6 Sat
-    return (js + 6) % 7; // shift so Monday=0
-  }
-  function yyyymmFromDate(yyyyMmDd) {
-    return yyyyMmDd.slice(0, 7);
+
+  function endOfMonthGrid(lastOfMonth) {
+    const d = new Date(lastOfMonth);
+    const dow = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() + (6 - dow));
+    d.setHours(23, 59, 59, 999);
+    return d;
   }
 
   async function loadMonth() {
+    setErr(null);
     setLoading(true);
-    setErr("");
-    try {
-      const from = monthStartISO(viewMonth);
-      const to = monthEndISO(viewMonth);
 
-      // hole alle Tasks im Monat (due_at innerhalb Monat)
-      const { data, error } = await supabase
-        .from("tasks")
-        .select("id,title,status,area_id,due_at,created_by")
-        .gte("due_at", from)
-        .lte("due_at", to)
-        .order("due_at", { ascending: true });
+    const { first, last } = monthRange(month);
+    const from = startOfMonthGrid(first).toISOString();
+    const to = endOfMonthGrid(last).toISOString();
 
-      if (error) throw error;
-      setMonthTasks(data || []);
-    } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("id, title, area, area_id, due_at, status")
+      .gte("due_at", from)
+      .lte("due_at", to)
+      .order("due_at", { ascending: true });
+
+    if (error) {
+      setErr(error.message);
+      setTasksByDay({});
       setLoading(false);
+      return;
     }
+
+    const map = {};
+    for (const t of data || []) {
+      if (!t.due_at) continue;
+      const key = toISODate(new Date(t.due_at));
+      if (!map[key]) map[key] = [];
+      map[key].push(t);
+    }
+
+    setTasksByDay(map);
+    setLoading(false);
+
+    // refresh right side day list for current selection
+    await loadDay(selectedDate, map);
+  }
+
+  async function loadDay(dateISO, mapOverride) {
+    const d = dateISO || selectedDate;
+    if (!d) return;
+
+    setSelectedDate(d);
+    setErr(null);
+    setDayLoading(true);
+
+    const localMap = mapOverride || tasksByDay;
+    const day = (localMap && localMap[d]) ? localMap[d] : [];
+
+    // If day is empty, still fetch (in case month map isn't ready yet)
+    if ((localMap && Object.keys(localMap).length > 0)) {
+      setDayTasks(day);
+      setDayLoading(false);
+      return;
+    }
+
+    const from = startOfDayISO(d);
+    const to = endOfDayISO(d);
+
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("id, title, area, area_id, due_at, status")
+      .gte("due_at", from)
+      .lte("due_at", to)
+      .order("due_at", { ascending: true });
+
+    if (error) {
+      setErr(error.message);
+      setDayTasks([]);
+      setDayLoading(false);
+      return;
+    }
+
+    setDayTasks(data || []);
+    setDayLoading(false);
   }
 
   useEffect(() => {
     loadMonth();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMonth]);
+  }, [month]);
 
-  // Gruppieren nach Datum (YYYY-MM-DD)
-  const tasksByDay = useMemo(() => {
-    const map = {};
-    for (const t of monthTasks) {
-      const day = (t?.due_at || "").slice(0, 10);
-      if (!day) continue;
-      if (!map[day]) map[day] = [];
-      map[day].push(t);
+  // ensure selected date is within current visible month range
+  useEffect(() => {
+    const { first, last } = monthRange(month);
+    const sel = new Date(selectedDate);
+    if (sel < new Date(first.getFullYear(), first.getMonth(), 1) || sel > new Date(last.getFullYear(), last.getMonth() + 1, 0)) {
+      setSelectedDate(toISODate(first));
     }
-    return map;
-  }, [monthTasks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [month]);
 
-  const monthDays = useMemo(() => {
-    const offset = firstWeekdayOffsetMonFirst(viewMonth);
-    const dim = daysInMonth(viewMonth);
-    const cells = [];
-    for (let i = 0; i < offset; i++) cells.push(null);
-    for (let day = 1; day <= dim; day++) cells.push(day);
-    // grid: fill to full weeks (optional)
-    while (cells.length % 7 !== 0) cells.push(null);
-    return cells;
-  }, [viewMonth]);
+  function buildGridDays() {
+    const { first, last } = monthRange(month);
+    const start = startOfMonthGrid(first);
+    const end = endOfMonthGrid(last);
 
-  function goMonth(delta) {
-    const [y, m] = viewMonth.split("-").map((x) => parseInt(x, 10));
-    const d = new Date(y, m - 1 + delta, 1);
-    const ny = d.getFullYear();
-    const nm = String(d.getMonth() + 1).padStart(2, "0");
-    const next = `${ny}-${nm}`;
-    setViewMonth(next);
-
-    // wenn selectedDate nicht im neuen Monat liegt -> auf 1. setzen
-    if (yyyymmFromDate(selectedDate) !== next) {
-      setSelectedDate(`${next}-01`);
+    const days = [];
+    const cur = new Date(start);
+    while (cur <= end) {
+      days.push(new Date(cur));
+      cur.setDate(cur.getDate() + 1);
     }
+    return days;
   }
 
-  function pickDay(dayNum) {
-    if (!dayNum) return;
-    const day = String(dayNum).padStart(2, "0");
-    setSelectedDate(`${viewMonth}-${day}`);
+  async function toggleTaskStatus(task) {
+    const next = (task.status ?? "todo") === "done" ? "todo" : "done";
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+
+    // update both maps
+    const key = task.due_at ? toISODate(new Date(task.due_at)) : selectedDate;
+    setTasksByDay((prev) => {
+      const nextMap = { ...(prev || {}) };
+      nextMap[key] = (nextMap[key] || []).map((t) => (t.id === task.id ? { ...t, status: next } : t));
+      return nextMap;
+    });
+    setDayTasks((prev) => (prev || []).map((t) => (t.id === task.id ? { ...t, status: next } : t)));
   }
 
-  const selectedTasks = tasksByDay[selectedDate] || [];
+  const gridDays = useMemo(() => buildGridDays(), [month, tasksByDay]);
+  const monthLabel = useMemo(() => {
+    const [yStr, mStr] = String(month || "").split("-");
+    const d = new Date(Number(yStr), Number(mStr) - 1, 1);
+    return d.toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+  }, [month]);
+
+  function shiftMonth(delta) {
+    const [yStr, mStr] = String(month || "").split("-");
+    const d = new Date(Number(yStr), Number(mStr) - 1, 1);
+    d.setMonth(d.getMonth() + delta);
+    setMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+
+  function isSameMonth(d) {
+    const [yStr, mStr] = String(month || "").split("-");
+    const y = Number(yStr);
+    const m = Number(mStr) - 1;
+    return d.getFullYear() === y && d.getMonth() === m;
+  }
+
+  const weekdayLabels = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 
   return (
-    <div className="card">
-      <div className="row" style={{ justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div className="row" style={{ gap: 8, alignItems: "center" }}>
-          <button className="btn" type="button" onClick={() => goMonth(-1)}>
-            ◀
-          </button>
-          <input
-            className="input"
-            type="month"
-            value={viewMonth}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (!v) return;
-              setViewMonth(v);
-              if (yyyymmFromDate(selectedDate) !== v) setSelectedDate(`${v}-01`);
-            }}
-            style={{ width: 170 }}
-          />
-          <button className="btn" type="button" onClick={() => goMonth(1)}>
-            ▶
-          </button>
-        </div>
+    <div style={styles.panel}>
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Kalender</div>
 
-        <div className="row" style={{ gap: 8, alignItems: "center" }}>
-          <label className="muted">Tag</label>
-          <input
-            className="input"
-            type="date"
-            value={selectedDate}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (!v) return;
-              setSelectedDate(v);
-              const m = yyyymmFromDate(v);
-              if (m !== viewMonth) setViewMonth(m);
-            }}
-            style={{ width: 170 }}
-          />
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button style={styles.btn} onClick={() => shiftMonth(-1)}>&lt;</button>
+          <div style={{ fontWeight: 800 }}>{monthLabel}</div>
+          <button style={styles.btn} onClick={() => shiftMonth(1)}>&gt;</button>
+
+          <button style={styles.btn} onClick={() => {
+            const d = new Date();
+            setMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+            loadMonth();
+          }}>
+            Heute
+          </button>
+
+          <button style={styles.btn} onClick={loadMonth} disabled={loading}>
+            {loading ? "Lade…" : "Neu laden"}
+          </button>
         </div>
       </div>
 
-      {err ? <div className="error" style={{ marginTop: 10 }}>{err}</div> : null}
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-      <div style={{ marginTop: 12 }}>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(7, 1fr)",
-            gap: 8,
-            alignItems: "stretch",
-          }}
-        >
-          {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((w) => (
-            <div key={w} className="muted" style={{ fontSize: 12, paddingLeft: 6 }}>
-              {w}
-            </div>
-          ))}
+      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 14, marginTop: 12 }}>
+        {/* Month grid */}
+        <div style={{ background: "#fff", border: "1px solid #d8e0ef", borderRadius: 18, padding: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 8 }}>
+            {weekdayLabels.map((w) => (
+              <div key={w} style={{ fontSize: 12, color: "#666", fontWeight: 800, padding: "2px 6px" }}>
+                {w}
+              </div>
+            ))}
+          </div>
 
-          {monthDays.map((dayNum, idx) => {
-            const dayStr = dayNum ? `${viewMonth}-${String(dayNum).padStart(2, "0")}` : "";
-            const count = dayStr && tasksByDay[dayStr] ? tasksByDay[dayStr].length : 0;
-            const isSelected = dayStr && dayStr === selectedDate;
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
+            {gridDays.map((d) => {
+              const key = toISODate(d);
+              const list = tasksByDay[key] || [];
+              const inMonth = isSameMonth(d);
+              const isSel = key === selectedDate;
 
-            return (
-              <button
-                key={`${idx}-${dayNum ?? "x"}`}
-                type="button"
-                className="btn"
-                onClick={() => pickDay(dayNum)}
-                disabled={!dayNum}
-                style={{
-                  height: 64,
-                  textAlign: "left",
-                  padding: "10px 10px",
-                  opacity: dayNum ? 1 : 0.35,
-                  border: isSelected ? "2px solid var(--brand)" : undefined,
-                  background: isSelected ? "rgba(16, 185, 129, 0.08)" : undefined,
-                }}
-              >
-                <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ fontWeight: 600 }}>{dayNum ?? ""}</div>
-                  {count ? (
-                    <span
-                      className="badge"
-                      title={`${count} Aufgabe(n)`}
-                      style={{ minWidth: 28, justifyContent: "center" }}
-                    >
-                      {count}
-                    </span>
-                  ) : null}
-                </div>
-                <div className="muted" style={{ fontSize: 12, marginTop: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {dayStr && tasksByDay[dayStr]?.[0]?.title ? tasksByDay[dayStr][0].title : "\u00A0"}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+              const preview = list.slice(0, 3);
+              const rest = Math.max(0, list.length - preview.length);
 
-      <div style={{ marginTop: 16 }}>
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0 }}>Aufgaben am {selectedDate}</h3>
-          {loading ? <span className="muted">lädt…</span> : null}
-        </div>
-
-        <div style={{ marginTop: 10 }}>
-          {selectedTasks.length === 0 ? (
-            <div className="muted">Keine Aufgaben an diesem Tag.</div>
-          ) : (
-            <div style={{ display: "grid", gap: 8 }}>
-              {selectedTasks.map((t) => (
-                <div key={t.id} className="card" style={{ padding: 12 }}>
-                  <div className="row" style={{ justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 600 }}>{t.title}</div>
-                    <div className="muted">{t.status || "-"}</div>
+              return (
+                <button
+                  key={key}
+                  onClick={() => loadDay(key)}
+                  style={{
+                    textAlign: "left",
+                    border: isSel ? "2px solid var(--primary, #0b6b2a)" : "1px solid #d8e0ef",
+                    background: inMonth ? "#fff" : "#f7f9ff",
+                    borderRadius: 14,
+                    padding: 10,
+                    cursor: "pointer",
+                    minHeight: 96,
+                    opacity: inMonth ? 1 : 0.75,
+                  }}
+                  title={key}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontWeight: 900 }}>{d.getDate()}</div>
+                    {list.length > 0 ? <div style={styles.badge}>{list.length}</div> : <span style={{ width: 28 }} />}
                   </div>
-                  <div className="muted" style={{ marginTop: 6 }}>
-                    Fällig: {t.due_at ? fmtDateTime(t.due_at) : "-"}
+
+                  {preview.length > 0 ? (
+                    <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
+                      {preview.map((t) => {
+                        const a = t.area_id ? areaById.get(t.area_id) : null;
+                        const dot = a?.color || null;
+                        return (
+                          <div key={t.id} style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+                            {dot ? <span style={{ ...styles.areaDot, background: dot }} /> : <span style={{ width: 14 }} />}
+                            <span style={{ fontSize: 12, color: "#333", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {t.status === "done" ? "✓ " : ""}{t.title}
+                            </span>
+                          </div>
+                        );
+                      })}
+                      {rest > 0 ? <div style={{ fontSize: 12, color: "#666" }}>+{rest} weitere</div> : null}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 10, fontSize: 12, color: "#888" }}>—</div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Day details */}
+        <div style={{ ...styles.card, borderRadius: 18 }}>
+          <div style={styles.h4}>Tag: {fmtDate(selectedDate)}</div>
+          <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
+            {dayLoading ? "Lade…" : `${dayTasks.length} Aufgabe(n)`}
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {dayTasks.map((t) => {
+              const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
+              const a = t.area_id ? areaById.get(t.area_id) : null;
+              const dot = a?.color || null;
+              return (
+                <div key={t.id} style={{ border: "1px solid #d8e0ef", borderRadius: 14, padding: 10, background: "#fff" }}>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    {dot ? <span style={{ ...styles.areaDot, background: dot }} /> : null}
+                    <div style={{ fontWeight: 900, flex: 1 }}>
+                      {t.title}
+                    </div>
+                    <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
+                    <button style={styles.btnSmall} onClick={() => toggleTaskStatus(t)}>
+                      Status
+                    </button>
+                  </div>
+                  <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
+                    {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {areaName}
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
+              );
+            })}
+            {dayTasks.length === 0 && !dayLoading ? (
+              <div style={{ color: "#666" }}>Keine Aufgaben für {fmtDate(selectedDate)}.</div>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>
   );
 }
-
 
 /* ---------------- Main Component ---------------- */
 export default function Dashboard() {
@@ -947,8 +1163,10 @@ export default function Dashboard() {
           <TabBtn active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>
             Kalender
           </TabBtn>
-          <TabBtn active={activeTab === "guides"} onClick={() => setActiveTab("guides")}>
-            Anleitungen
+          
+
+          <TabBtn active={activeTab === "areas"} onClick={() => setActiveTab("areas")}>
+            Bereiche
           </TabBtn>
 
           {auth.isAdmin ? (
@@ -975,6 +1193,7 @@ export default function Dashboard() {
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
       {activeTab === "calendar" ? <CalendarPanel /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
       <div style={{ height: 24 }} />
