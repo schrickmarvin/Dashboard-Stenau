@@ -1970,343 +1970,405 @@ function AreasPanel({ isAdmin }) {
 
 /* ---------------- Calendar ---------------- */
 function CalendarPanel() {
-  const [view, setView] = useState('month'); // 'month' | 'week'
-  const [anchorDate, setAnchorDate] = useState(() => new Date()); // used for month/week anchor
-  const [selectedDay, setSelectedDay] = useState(() => new Date()); // day details
-  const [rows, setRows] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
+  const [view, setView] = useState("month"); // "month" | "week"
+  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7)); // YYYY-MM
+  const [selectedDay, setSelectedDay] = useState(() => new Date().toISOString().slice(0, 10)); // YYYY-MM-DD
 
   const [areas, setAreas] = useState([]);
   const [users, setUsers] = useState([]);
-  const [areaFilter, setAreaFilter] = useState(''); // area_id
-  const [userFilter, setUserFilter] = useState(''); // profile_id
-  const [meId, setMeId] = useState(null);
 
-  const [monthCounts, setMonthCounts] = useState({}); // { 'YYYY-MM-DD': number }
+  const [areaFilter, setAreaFilter] = useState(""); // area_id
+  const [userFilter, setUserFilter] = useState(""); // profile id (assignee_id)
 
-  const isoDate = (d) => {
-    const dd = new Date(d);
-    dd.setHours(0, 0, 0, 0);
-    return dd.toISOString().slice(0, 10);
-  };
+  const [tasksByDay, setTasksByDay] = useState({});
+  const [dayTasks, setDayTasks] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [dayLoading, setDayLoading] = useState(false);
+  const [err, setErr] = useState(null);
 
-  const startOfWeek = (d) => {
-    const dd = new Date(d);
-    const day = dd.getDay(); // 0..6 (Sun..Sat)
-    const diff = (day === 0 ? -6 : 1 - day); // Monday start
-    dd.setDate(dd.getDate() + diff);
-    dd.setHours(0, 0, 0, 0);
-    return dd;
-  };
-
-  const endOfWeek = (d) => {
-    const s = startOfWeek(d);
-    const e = new Date(s);
-    e.setDate(e.getDate() + 7);
-    e.setMilliseconds(e.getMilliseconds() - 1);
-    return e;
-  };
-
-  const startOfMonth = (d) => {
-    const dd = new Date(d);
-    dd.setDate(1);
-    dd.setHours(0, 0, 0, 0);
-    return dd;
-  };
-
-  const endOfMonth = (d) => {
-    const s = startOfMonth(d);
-    const e = new Date(s);
-    e.setMonth(e.getMonth() + 1);
-    e.setMilliseconds(e.getMilliseconds() - 1);
-    return e;
-  };
-
-  const sameDay = (a, b) => isoDate(a) === isoDate(b);
-
-  async function loadMeta() {
-    setErr('');
-    try {
-      const { data: meData, error: meErr } = await supabase.auth.getUser();
-      if (!meErr) setMeId(meData?.user?.id ?? null);
-
-      const { data: aData, error: aErr } = await supabase
-        .from('areas')
-        .select('id,name')
-        .order('name', { ascending: true });
-      if (aErr) throw aErr;
-      setAreas(aData ?? []);
-
-      // users list (best effort; RLS may restrict for non-admins)
-      const { data: uData, error: uErr } = await supabase
-        .from('profiles')
-        .select('id,name,email,role,is_active')
-        .order('name', { ascending: true });
-      if (!uErr) setUsers(uData ?? []);
-    } catch (e) {
-      setErr(e?.message || String(e));
-    }
-  }
-
-  async function loadRange(rangeStartISO, rangeEndISO, forCounts) {
-    setErr('');
-    setBusy(true);
-    try {
-      let q = supabase
-        .from('tasks')
-        .select('id,title,area_id,assignee_id,due_at,created_at')
-        .gte('due_at', rangeStartISO)
-        .lte('due_at', rangeEndISO)
-        .order('due_at', { ascending: true });
-
-      if (areaFilter) q = q.eq('area_id', areaFilter);
-      if (userFilter) q = q.eq('assignee_id', userFilter);
-
-      const { data, error } = await q;
-      if (error) throw error;
-
-      const list = (data ?? []).filter((t) => !!t.due_at);
-
-      if (forCounts) {
-        const counts = {};
-        for (const t of list) {
-          const k = String(t.due_at).slice(0, 10);
-          counts[k] = (counts[k] || 0) + 1;
-        }
-        setMonthCounts(counts);
-      } else {
-        setRows(list);
-      }
-    } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // initial
   useEffect(() => {
-    loadMeta();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    loadAreas().then(setAreas).catch(() => setAreas([]));
+    supabase
+      .from("profiles")
+      .select("id, name, email")
+      .order("name", { ascending: true })
+      .then(({ data, error }) => {
+        if (error) {
+          console.warn("profiles load failed:", error.message);
+          setUsers([]);
+        } else {
+          setUsers(data || []);
+        }
+      });
   }, []);
 
-  // reload on filters / view change / anchor change
-  useEffect(() => {
-    const run = async () => {
-      if (view === 'month') {
-        const s = startOfMonth(anchorDate);
-        const e = endOfMonth(anchorDate);
-        await loadRange(s.toISOString(), e.toISOString(), true);
-        // also load selected day list inside month
-        await loadRange(startOfDayISO(selectedDay), endOfDayISO(selectedDay), false);
-      } else {
-        const s = startOfWeek(anchorDate);
-        const e = endOfWeek(anchorDate);
-        await loadRange(s.toISOString(), e.toISOString(), false);
-      }
-    };
-    run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, anchorDate, areaFilter, userFilter]);
+  const userById = useMemo(() => {
+    const m = new Map();
+    for (const u of users) m.set(u.id, u);
+    return m;
+  }, [users]);
 
-  // when selected day changes in month view, reload day list
+  function startOfWeek(dateStr) {
+    // Monday as start of week (de-DE)
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) return new Date();
+    const day = d.getDay(); // 0 Sun ... 6 Sat
+    const diff = (day === 0 ? -6 : 1) - day; // move to Monday
+    d.setDate(d.getDate() + diff);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  function addDays(d, n) {
+    const x = new Date(d);
+    x.setDate(x.getDate() + n);
+    return x;
+  }
+
+  function dayKey(d) {
+    return new Date(d).toISOString().slice(0, 10);
+  }
+
+  async function loadMonth() {
+    setErr(null);
+    setLoading(true);
+
+    const [y, m] = month.split("-").map((x) => Number(x));
+    const from = new Date(y, (m || 1) - 1, 1, 0, 0, 0, 0).toISOString();
+    const to = new Date(y, (m || 1), 0, 23, 59, 59, 999).toISOString();
+
+    let q = supabase
+      .from("tasks")
+      .select("id, title, area, area_id, due_at, status, assignee_id")
+      .gte("due_at", from)
+      .lte("due_at", to);
+
+    // Filter: Bereich
+    if (areaFilter) {
+      const a = (areas || []).find((x) => x.id === areaFilter);
+      if (a?.name) q = q.or(`area_id.eq.${areaFilter},area.ilike.${a.name}`);
+      else q = q.eq("area_id", areaFilter);
+    }
+
+    // Filter: Nutzer (Assignee)
+    if (userFilter) {
+      q = q.eq("assignee_id", userFilter);
+    }
+
+    const { data, error } = await q.order("due_at", { ascending: true });
+
+    if (error) {
+      setErr(error.message);
+      setTasksByDay({});
+      setLoading(false);
+      return;
+    }
+
+    const map = {};
+    for (const t of data || []) {
+      if (!t.due_at) continue;
+      const k = new Date(t.due_at).toISOString().slice(0, 10);
+      if (!map[k]) map[k] = [];
+      map[k].push(t);
+    }
+
+    setTasksByDay(map);
+    setLoading(false);
+  }
+
+  async function loadDay(dayStr) {
+    setErr(null);
+    setDayLoading(true);
+
+    const from = startOfDayISO(dayStr);
+    const to = endOfDayISO(dayStr);
+
+    let q = supabase
+      .from("tasks")
+      .select("id, title, area, area_id, due_at, status, assignee_id")
+      .gte("due_at", from)
+      .lte("due_at", to);
+
+    if (areaFilter) {
+      const a = (areas || []).find((x) => x.id === areaFilter);
+      if (a?.name) q = q.or(`area_id.eq.${areaFilter},area.ilike.${a.name}`);
+      else q = q.eq("area_id", areaFilter);
+    }
+    if (userFilter) {
+      q = q.eq("assignee_id", userFilter);
+    }
+
+    const { data, error } = await q.order("due_at", { ascending: true });
+
+    if (error) {
+      setErr(error.message);
+      setDayTasks([]);
+      setDayLoading(false);
+      return;
+    }
+
+    setDayTasks(data || []);
+    setDayLoading(false);
+  }
+
+  // Reload data when month/week or filters change
   useEffect(() => {
-    if (view !== 'month') return;
-    loadRange(startOfDayISO(selectedDay), endOfDayISO(selectedDay), false);
+    loadMonth();
+    // keep right panel in sync
+    loadDay(selectedDay);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [month, areaFilter, userFilter, areas.length]);
+
+  useEffect(() => {
+    loadDay(selectedDay);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDay]);
 
-  const weekDays = (() => {
-    const s = startOfWeek(anchorDate);
-    return Array.from({ length: 7 }).map((_, i) => {
-      const d = new Date(s);
-      d.setDate(d.getDate() + i);
-      return d;
-    });
-  })();
+  // Month grid
+  const monthGrid = useMemo(() => {
+    const [y, m] = month.split("-").map((x) => Number(x));
+    const first = new Date(y, (m || 1) - 1, 1);
+    const last = new Date(y, (m || 1), 0);
 
-  const monthGrid = (() => {
-    const first = startOfMonth(anchorDate);
-    const start = startOfWeek(first);
-    const last = endOfMonth(anchorDate);
-    const end = endOfWeek(last);
+    // Start from Monday
+    const start = startOfWeek(first.toISOString());
+    // End on Sunday
+    const end = addDays(startOfWeek(addDays(last, 1).toISOString()), 7 - 1);
+
     const days = [];
-    let cur = new Date(start);
-    while (cur <= end) {
-      days.push(new Date(cur));
-      cur.setDate(cur.getDate() + 1);
+    for (let d = new Date(start); d <= end; d = addDays(d, 1)) {
+      days.push(new Date(d));
     }
-    // chunks of 7
-    const weeks = [];
-    for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
-    return weeks;
-  })();
+    return days;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [month]);
 
-  const fmtMonth = (d) =>
-    new Date(d).toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+  // Week grid
+  const weekStart = useMemo(() => startOfWeek(selectedDay), [selectedDay]);
+  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
 
-  const moveAnchor = (delta) => {
-    const d = new Date(anchorDate);
-    if (view === 'month') d.setMonth(d.getMonth() + delta);
-    else d.setDate(d.getDate() + delta * 7);
-    setAnchorDate(d);
-  };
+  function goPrev() {
+    if (view === "week") {
+      setSelectedDay(dayKey(addDays(weekStart, -7)));
+      return;
+    }
+    const d = new Date(`${month}-01T00:00:00`);
+    d.setMonth(d.getMonth() - 1);
+    setMonth(d.toISOString().slice(0, 7));
+  }
+
+  function goNext() {
+    if (view === "week") {
+      setSelectedDay(dayKey(addDays(weekStart, 7)));
+      return;
+    }
+    const d = new Date(`${month}-01T00:00:00`);
+    d.setMonth(d.getMonth() + 1);
+    setMonth(d.toISOString().slice(0, 7));
+  }
+
+  function onPickDay(d) {
+    const k = dayKey(d);
+    setSelectedDay(k);
+    setMonth(k.slice(0, 7));
+  }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <button className="btn" onClick={() => setView('month')}>Monat</button>
-          <button className="btn" onClick={() => setView('week')}>Woche</button>
-          <div className="ml-2 flex items-center gap-2">
-            <button className="btn" onClick={() => moveAnchor(-1)}>◀</button>
-            <div className="text-sm text-slate-600">
-              {view === 'month'
-                ? fmtMonth(anchorDate)
-                : `${weekDays[0].toLocaleDateString('de-DE')} – ${weekDays[6].toLocaleDateString('de-DE')}`}
-            </div>
-            <button className="btn" onClick={() => moveAnchor(1)}>▶</button>
-          </div>
-        </div>
+    <div style={styles.panel}>
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Kalender</div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <select className="input" value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button style={styles.btn} onClick={() => setView("month")} disabled={view === "month"}>
+              Monat
+            </button>
+            <button style={styles.btn} onClick={() => setView("week")} disabled={view === "week"}>
+              Woche
+            </button>
+          </div>
+
+          <button style={styles.btn} onClick={goPrev}>◀</button>
+
+          {view === "month" ? (
+            <input
+              type="month"
+              value={month}
+              onChange={(e) => setMonth(e.target.value)}
+              style={styles.input}
+              title="Monat wählen"
+            />
+          ) : (
+            <input
+              type="date"
+              value={selectedDay}
+              onChange={(e) => setSelectedDay(e.target.value)}
+              style={styles.input}
+              title="Woche (Datum) wählen"
+            />
+          )}
+
+          <button style={styles.btn} onClick={goNext}>▶</button>
+
+          <select value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} style={styles.input} title="Bereich filtern">
             <option value="">Alle Bereiche</option>
             {areas.map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
             ))}
           </select>
 
-          <select
-            className="input"
-            value={userFilter}
-            onChange={(e) => setUserFilter(e.target.value)}
-            title={users.length ? '' : 'Benutzerliste ggf. durch RLS eingeschränkt'}
-          >
+          <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={styles.input} title="Nutzer filtern">
             <option value="">Alle Nutzer</option>
-            {users
-              .filter((u) => (u?.is_active ?? true))
-              .map((u) => (
-                <option key={u.id} value={u.id}>{u.name || u.email || u.id}</option>
-              ))}
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email}
+              </option>
+            ))}
           </select>
 
-          <button className="btn" onClick={() => { loadMeta(); }}>
-            Meta neu laden
+          <button style={styles.btn} onClick={() => { loadMonth(); loadDay(selectedDay); }} disabled={loading || dayLoading}>
+            {loading || dayLoading ? "Lade…" : "Neu laden"}
           </button>
         </div>
       </div>
 
-      {err ? (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {err}
-        </div>
-      ) : null}
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-      {view === 'month' ? (
-        <div className="grid gap-4">
-          <div className="overflow-hidden rounded-2xl border bg-white">
-            <div className="grid grid-cols-7 border-b bg-slate-50 text-xs text-slate-600">
-              {['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].map((d) => (
-                <div key={d} className="px-2 py-2">{d}</div>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-7">
-              {monthGrid.flat().map((d) => {
-                const inMonth = d.getMonth() === new Date(anchorDate).getMonth();
-                const key = isoDate(d);
-                const count = monthCounts[key] || 0;
-                const isSel = sameDay(d, selectedDay);
-                return (
-                  <button
-                    key={key}
-                    onClick={() => setSelectedDay(d)}
-                    className={[
-                      'h-20 border-t border-r px-2 py-2 text-left text-sm hover:bg-slate-50',
-                      !inMonth ? 'text-slate-300' : 'text-slate-800',
-                      isSel ? 'bg-emerald-50' : '',
-                    ].join(' ')}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs">{d.getDate()}</span>
-                      {count ? (
-                        <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] text-white">
-                          {count}
-                        </span>
-                      ) : null}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border bg-white p-4">
-            <div className="mb-2 text-sm text-slate-600">
-              Aufgaben am {new Date(selectedDay).toLocaleDateString('de-DE')}
-            </div>
-            {busy ? (
-              <div className="text-sm text-slate-500">Lade…</div>
-            ) : rows.length ? (
-              <div className="space-y-2">
-                {rows.map((t) => (
-                  <div key={t.id} className="rounded-xl border p-3">
-                    <div className="text-sm">{t.title || '(ohne Titel)'}</div>
-                    <div className="mt-1 text-xs text-slate-500">
-                      {t.due_at ? new Date(t.due_at).toLocaleString('de-DE') : ''}
-                    </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.65fr 1fr", gap: 14, marginTop: 12 }}>
+        <div style={{ ...styles.card, padding: 12 }}>
+          {view === "month" ? (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 8 }}>
+                {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((w) => (
+                  <div key={w} style={{ fontWeight: 800, color: "#555", fontSize: 13, padding: "0 4px" }}>
+                    {w}
                   </div>
                 ))}
               </div>
-            ) : (
-              <div className="text-sm text-slate-500">Keine Einträge.</div>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="grid gap-3">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-7">
-            {weekDays.map((d) => {
-              const dayKey = isoDate(d);
-              const dayRows = rows.filter((t) => String(t.due_at).slice(0, 10) === dayKey);
-              return (
-                <div key={dayKey} className="rounded-2xl border bg-white p-3">
-                  <div className="mb-2 text-xs text-slate-600">
-                    {d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' })}
-                  </div>
-                  {busy ? (
-                    <div className="text-xs text-slate-500">…</div>
-                  ) : dayRows.length ? (
-                    <div className="space-y-2">
-                      {dayRows.map((t) => (
-                        <div key={t.id} className="rounded-xl border p-2">
-                          <div className="text-xs">{t.title || '(ohne Titel)'}</div>
-                          <div className="mt-1 text-[11px] text-slate-500">
-                            {t.due_at ? new Date(t.due_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : ''}
-                          </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
+                {monthGrid.map((d) => {
+                  const k = dayKey(d);
+                  const inMonth = k.startsWith(month);
+                  const items = tasksByDay[k] || [];
+                  const isSel = k === selectedDay;
+
+                  return (
+                    <div
+                      key={k}
+                      onClick={() => onPickDay(d)}
+                      style={{
+                        border: "1px solid #d8e0ef",
+                        borderRadius: 12,
+                        padding: 10,
+                        minHeight: 84,
+                        background: isSel ? "#eef9f0" : inMonth ? "#fff" : "#f7f9ff",
+                        cursor: "pointer",
+                      }}
+                      title={k}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div style={{ fontWeight: 800 }}>{d.getDate()}</div>
+                        {items.length ? <div style={styles.badge}>{items.length}</div> : null}
+                      </div>
+
+                      {items.slice(0, 2).map((t) => (
+                        <div key={t.id} style={{ marginTop: 6, fontSize: 12, color: "#333", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          • {t.title}
                         </div>
                       ))}
+                      {items.length > 2 ? (
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>+ {items.length - 2} mehr</div>
+                      ) : null}
                     </div>
-                  ) : (
-                    <div className="text-xs text-slate-500">—</div>
-                  )}
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 8 }}>
+                {weekDays.map((d) => {
+                  const k = dayKey(d);
+                  const items = tasksByDay[k] || [];
+                  const isSel = k === selectedDay;
+                  return (
+                    <div
+                      key={k}
+                      onClick={() => onPickDay(d)}
+                      style={{
+                        border: "1px solid #d8e0ef",
+                        borderRadius: 12,
+                        padding: 10,
+                        minHeight: 110,
+                        background: isSel ? "#eef9f0" : "#fff",
+                        cursor: "pointer",
+                      }}
+                      title={k}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div style={{ fontWeight: 800, fontSize: 13 }}>
+                          {["So","Mo","Di","Mi","Do","Fr","Sa"][d.getDay()]} {d.getDate().toString().padStart(2, "0")}.{(d.getMonth()+1).toString().padStart(2, "0")}
+                        </div>
+                        {items.length ? <div style={styles.badge}>{items.length}</div> : null}
+                      </div>
+
+                      {items.slice(0, 3).map((t) => (
+                        <div key={t.id} style={{ marginTop: 6, fontSize: 12, color: "#333", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          • {t.title}
+                        </div>
+                      ))}
+                      {items.length > 3 ? (
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>+ {items.length - 3} mehr</div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{ color: "#666", fontSize: 13 }}>
+                Woche: {fmtDate(dayKey(weekStart))} – {fmtDate(dayKey(addDays(weekStart, 6)))}
+              </div>
+            </>
+          )}
+
+          {loading ? <div style={{ marginTop: 10, color: "#666" }}>Lade…</div> : null}
+        </div>
+
+        <div style={{ ...styles.card, padding: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div style={styles.h4}>Tag: {fmtDate(selectedDay)}</div>
+            <button style={styles.btn} onClick={() => loadDay(selectedDay)} disabled={dayLoading}>
+              {dayLoading ? "Lade…" : "Aktualisieren"}
+            </button>
+          </div>
+
+          <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+            {dayTasks.map((t) => {
+              const a = t.area_id ? (areas || []).find((x) => x.id === t.area_id) : null;
+              const areaName = a?.name || t.area || "–";
+              const u = t.assignee_id ? userById.get(t.assignee_id) : null;
+              const userName = u ? (u.name || u.email) : "–";
+              return (
+                <div key={t.id} style={{ border: "1px solid #d8e0ef", borderRadius: 12, padding: 10, background: "#fff" }}>
+                  <div style={{ fontWeight: 800 }}>{t.title}</div>
+                  <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
+                    {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {areaName} · Nutzer: {userName} · Status: {t.status ?? "todo"}
+                  </div>
                 </div>
               );
             })}
+            {dayTasks.length === 0 && !dayLoading ? <div style={{ color: "#666" }}>Keine Aufgaben für diesen Tag.</div> : null}
           </div>
         </div>
-      )}
-
-      <div className="text-xs text-slate-400">
-        Hinweis: Nutzerliste kann je nach RLS eingeschränkt sein. Wenn du als Admin alle sehen willst, muss deine Admin-Erkennung (profiles.role = 'admin') stimmen.
       </div>
     </div>
   );
 }
 
-
+/* ---------------- Kanboard (Wer macht was) ---------------- */
 function KanboardPanel() {
   const [tasks, setTasks] = useState([]);
   const [profiles, setProfiles] = useState([]);
