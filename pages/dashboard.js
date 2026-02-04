@@ -1023,20 +1023,14 @@ function safeLower(v) {
 
 /* ---------------- Auth context ---------------- */
 async function loadMyAuthContext() {
-  const { data, error } = await supabase.auth.getUser();
-
-  // Wenn keine Session vorhanden ist, sind wir einfach "nicht eingeloggt".
-  // (Supabase wirft hier oft: "Auth session missing!")
-  if (error) {
-    const msg = String(error.message || error);
-    if (msg.toLowerCase().includes("auth session missing")) {
-      return { user: null, profile: null, role: null, isAdmin: false, inactive: false };
-    }
-    throw error;
+  // Robust: Nur getSession() verwenden (enthält bereits den User).
+  // getUser() wirft in Supabase v2 in manchen Fällen "Auth session missing!".
+  const { data: sData, error: sErr } = await supabase.auth.getSession();
+  if (sErr) {
+    return { user: null, profile: null, role: null, isAdmin: false, inactive: false };
   }
-
-  const user = data?.user || null;
-  if (!user) return { user: null, profile: null, role: null, isAdmin: false };
+  const user = sData?.session?.user || null;
+  if (!user) return { user: null, profile: null, role: null, isAdmin: false, inactive: false };
 
   const { data: profile, error: pErr } = await supabase
     .from("profiles")
