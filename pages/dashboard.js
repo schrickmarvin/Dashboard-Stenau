@@ -1965,614 +1965,678 @@ function AreasPanel({ isAdmin }) {
 /* ---------------- Calendar ---------------- */
 function CalendarPanel() {
   const [view, setView] = useState("month"); // "month" | "week"
-  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7)); // YYYY-MM
-  const [selectedDay, setSelectedDay] = useState(() => new Date().toISOString().slice(0, 10)); // YYYY-MM-DD
-
-  const [areas, setAreas] = useState([]);
-  const [users, setUsers] = useState([]);
-
-  const [areaFilter, setAreaFilter] = useState(""); // area_id
-  const [userFilter, setUserFilter] = useState(""); // profile id (assignee_id)
-
-  const [tasksByDay, setTasksByDay] = useState({});
-  const [dayTasks, setDayTasks] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [dayLoading, setDayLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
-  useEffect(() => {
-    loadAreas().then(setAreas).catch(() => setAreas([]));
-    supabase
-      .from("profiles")
-      .select("id, name, email")
-      .order("name", { ascending: true })
-      .then(({ data, error }) => {
-        if (error) {
-          console.warn("profiles load failed:", error.message);
-          setUsers([]);
-        } else {
-          setUsers(data || []);
-        }
-      });
-  }, []);
-
-  const userById = useMemo(() => {
-    const m = new Map();
-    for (const u of users) m.set(u.id, u);
-    return m;
-  }, [users]);
-
-  function startOfWeek(dateStr) {
-    // Monday as start of week (de-DE)
-    const d = new Date(dateStr);
-    if (Number.isNaN(d.getTime())) return new Date();
-    const day = d.getDay(); // 0 Sun ... 6 Sat
-    const diff = (day === 0 ? -6 : 1) - day; // move to Monday
-    d.setDate(d.getDate() + diff);
+  const [monthCursor, setMonthCursor] = useState(() => {
+    const d = new Date();
+    d.setDate(1);
     d.setHours(0, 0, 0, 0);
     return d;
-  }
+  });
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  });
 
-  function addDays(d, n) {
-    const x = new Date(d);
-    x.setDate(x.getDate() + n);
-    return x;
-  }
+  // filters
+  const [filterAreaId, setFilterAreaId] = useState("all");
+  const [filterUserId, setFilterUserId] = useState("all");
 
-  function dayKey(d) {
-    return new Date(d).toISOString().slice(0, 10);
-  }
-
-  async function loadMonth() {
-    setErr(null);
-    setLoading(true);
-
-    const [y, m] = month.split("-").map((x) => Number(x));
-    const from = new Date(y, (m || 1) - 1, 1, 0, 0, 0, 0).toISOString();
-    const to = new Date(y, (m || 1), 0, 23, 59, 59, 999).toISOString();
-
-    let q = supabase
-      .from("tasks")
-      .select("id, title, area, area_id, due_at, status, assignee_id")
-      .gte("due_at", from)
-      .lte("due_at", to);
-
-    // Filter: Bereich
-    if (areaFilter) {
-      const a = (areas || []).find((x) => x.id === areaFilter);
-      if (a?.name) q = q.or(`area_id.eq.${areaFilter},area.ilike.${a.name}`);
-      else q = q.eq("area_id", areaFilter);
-    }
-
-    // Filter: Nutzer (Assignee)
-    if (userFilter) {
-      q = q.eq("assignee_id", userFilter);
-    }
-
-    const { data, error } = await q.order("due_at", { ascending: true });
-
-    if (error) {
-      setErr(error.message);
-      setTasksByDay({});
-      setLoading(false);
-      return;
-    }
-
-    const map = {};
-    for (const t of data || []) {
-      if (!t.due_at) continue;
-      const k = new Date(t.due_at).toISOString().slice(0, 10);
-      if (!map[k]) map[k] = [];
-      map[k].push(t);
-    }
-
-    setTasksByDay(map);
-    setLoading(false);
-  }
-
-  async function loadDay(dayStr) {
-    setErr(null);
-    setDayLoading(true);
-
-    const from = startOfDayISO(dayStr);
-    const to = endOfDayISO(dayStr);
-
-    let q = supabase
-      .from("tasks")
-      .select("id, title, area, area_id, due_at, status, assignee_id")
-      .gte("due_at", from)
-      .lte("due_at", to);
-
-    if (areaFilter) {
-      const a = (areas || []).find((x) => x.id === areaFilter);
-      if (a?.name) q = q.or(`area_id.eq.${areaFilter},area.ilike.${a.name}`);
-      else q = q.eq("area_id", areaFilter);
-    }
-    if (userFilter) {
-      q = q.eq("assignee_id", userFilter);
-    }
-
-    const { data, error } = await q.order("due_at", { ascending: true });
-
-    if (error) {
-      setErr(error.message);
-      setDayTasks([]);
-      setDayLoading(false);
-      return;
-    }
-
-    setDayTasks(data || []);
-    setDayLoading(false);
-  }
-
-  // Reload data when month/week or filters change
-  useEffect(() => {
-    loadMonth();
-    // keep right panel in sync
-    loadDay(selectedDay);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month, areaFilter, userFilter, areas.length]);
-
-  useEffect(() => {
-    loadDay(selectedDay);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDay]);
-
-  // Month grid
-  const monthGrid = useMemo(() => {
-    const [y, m] = month.split("-").map((x) => Number(x));
-    const first = new Date(y, (m || 1) - 1, 1);
-    const last = new Date(y, (m || 1), 0);
-
-    // Start from Monday
-    const start = startOfWeek(first.toISOString());
-    // End on Sunday
-    const end = addDays(startOfWeek(addDays(last, 1).toISOString()), 7 - 1);
-
-    const days = [];
-    for (let d = new Date(start); d <= end; d = addDays(d, 1)) {
-      days.push(new Date(d));
-    }
-    return days;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month]);
-
-  // Week grid
-  const weekStart = useMemo(() => startOfWeek(selectedDay), [selectedDay]);
-  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
-
-  function goPrev() {
-    if (view === "week") {
-      setSelectedDay(dayKey(addDays(weekStart, -7)));
-      return;
-    }
-    const d = new Date(`${month}-01T00:00:00`);
-    d.setMonth(d.getMonth() - 1);
-    setMonth(d.toISOString().slice(0, 7));
-  }
-
-  function goNext() {
-    if (view === "week") {
-      setSelectedDay(dayKey(addDays(weekStart, 7)));
-      return;
-    }
-    const d = new Date(`${month}-01T00:00:00`);
-    d.setMonth(d.getMonth() + 1);
-    setMonth(d.toISOString().slice(0, 7));
-  }
-
-  function onPickDay(d) {
-    const k = dayKey(d);
-    setSelectedDay(k);
-    setMonth(k.slice(0, 7));
-  }
-
-  return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Kalender</div>
-
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button style={styles.btn} onClick={() => setView("month")} disabled={view === "month"}>
-              Monat
-            </button>
-            <button style={styles.btn} onClick={() => setView("week")} disabled={view === "week"}>
-              Woche
-            </button>
-          </div>
-
-          <button style={styles.btn} onClick={goPrev}>◀</button>
-
-          {view === "month" ? (
-            <input
-              type="month"
-              value={month}
-              onChange={(e) => setMonth(e.target.value)}
-              style={styles.input}
-              title="Monat wählen"
-            />
-          ) : (
-            <input
-              type="date"
-              value={selectedDay}
-              onChange={(e) => setSelectedDay(e.target.value)}
-              style={styles.input}
-              title="Woche (Datum) wählen"
-            />
-          )}
-
-          <button style={styles.btn} onClick={goNext}>▶</button>
-
-          <select value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} style={styles.input} title="Bereich filtern">
-            <option value="">Alle Bereiche</option>
-            {areas.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-
-          <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={styles.input} title="Nutzer filtern">
-            <option value="">Alle Nutzer</option>
-            {users.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name || u.email}
-              </option>
-            ))}
-          </select>
-
-          <button style={styles.btn} onClick={() => { loadMonth(); loadDay(selectedDay); }} disabled={loading || dayLoading}>
-            {loading || dayLoading ? "Lade…" : "Neu laden"}
-          </button>
-        </div>
-      </div>
-
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1.65fr 1fr", gap: 14, marginTop: 12 }}>
-        <div style={{ ...styles.card, padding: 12 }}>
-          {view === "month" ? (
-            <>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 8 }}>
-                {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((w) => (
-                  <div key={w} style={{ fontWeight: 800, color: "#555", fontSize: 13, padding: "0 4px" }}>
-                    {w}
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
-                {monthGrid.map((d) => {
-                  const k = dayKey(d);
-                  const inMonth = k.startsWith(month);
-                  const items = tasksByDay[k] || [];
-                  const isSel = k === selectedDay;
-
-                  return (
-                    <div
-                      key={k}
-                      onClick={() => onPickDay(d)}
-                      style={{
-                        border: "1px solid #d8e0ef",
-                        borderRadius: 12,
-                        padding: 10,
-                        minHeight: 84,
-                        background: isSel ? "#eef9f0" : inMonth ? "#fff" : "#f7f9ff",
-                        cursor: "pointer",
-                      }}
-                      title={k}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <div style={{ fontWeight: 800 }}>{d.getDate()}</div>
-                        {items.length ? <div style={styles.badge}>{items.length}</div> : null}
-                      </div>
-
-                      {items.slice(0, 2).map((t) => (
-                        <div key={t.id} style={{ marginTop: 6, fontSize: 12, color: "#333", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          • {t.title}
-                        </div>
-                      ))}
-                      {items.length > 2 ? (
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>+ {items.length - 2} mehr</div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          ) : (
-            <>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 8 }}>
-                {weekDays.map((d) => {
-                  const k = dayKey(d);
-                  const items = tasksByDay[k] || [];
-                  const isSel = k === selectedDay;
-                  return (
-                    <div
-                      key={k}
-                      onClick={() => onPickDay(d)}
-                      style={{
-                        border: "1px solid #d8e0ef",
-                        borderRadius: 12,
-                        padding: 10,
-                        minHeight: 110,
-                        background: isSel ? "#eef9f0" : "#fff",
-                        cursor: "pointer",
-                      }}
-                      title={k}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <div style={{ fontWeight: 800, fontSize: 13 }}>
-                          {["So","Mo","Di","Mi","Do","Fr","Sa"][d.getDay()]} {d.getDate().toString().padStart(2, "0")}.{(d.getMonth()+1).toString().padStart(2, "0")}
-                        </div>
-                        {items.length ? <div style={styles.badge}>{items.length}</div> : null}
-                      </div>
-
-                      {items.slice(0, 3).map((t) => (
-                        <div key={t.id} style={{ marginTop: 6, fontSize: 12, color: "#333", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          • {t.title}
-                        </div>
-                      ))}
-                      {items.length > 3 ? (
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>+ {items.length - 3} mehr</div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div style={{ color: "#666", fontSize: 13 }}>
-                Woche: {fmtDate(dayKey(weekStart))} – {fmtDate(dayKey(addDays(weekStart, 6)))}
-              </div>
-            </>
-          )}
-
-          {loading ? <div style={{ marginTop: 10, color: "#666" }}>Lade…</div> : null}
-        </div>
-
-        <div style={{ ...styles.card, padding: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <div style={styles.h4}>Tag: {fmtDate(selectedDay)}</div>
-            <button style={styles.btn} onClick={() => loadDay(selectedDay)} disabled={dayLoading}>
-              {dayLoading ? "Lade…" : "Aktualisieren"}
-            </button>
-          </div>
-
-          <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-            {dayTasks.map((t) => {
-              const a = t.area_id ? (areas || []).find((x) => x.id === t.area_id) : null;
-              const areaName = a?.name || t.area || "–";
-              const u = t.assignee_id ? userById.get(t.assignee_id) : null;
-              const userName = u ? (u.name || u.email) : "–";
-              return (
-                <div key={t.id} style={{ border: "1px solid #d8e0ef", borderRadius: 12, padding: 10, background: "#fff" }}>
-                  <div style={{ fontWeight: 800 }}>{t.title}</div>
-                  <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                    {t.due_at ? fmtDateTime(t.due_at) : "–"} · Bereich: {areaName} · Nutzer: {userName} · Status: {t.status ?? "todo"}
-                  </div>
-                </div>
-              );
-            })}
-            {dayTasks.length === 0 && !dayLoading ? <div style={{ color: "#666" }}>Keine Aufgaben für diesen Tag.</div> : null}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- Kanboard (Wer macht was) ---------------- */
-function KanboardPanel() {
+  // tasks data
   const [tasks, setTasks] = useState([]);
-  const [profiles, setProfiles] = useState([]);
-  const [areas, setAreas] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-  const [onlyOpen, setOnlyOpen] = useState(true);
-  const [search, setSearch] = useState("");
+  const [quickTitle, setQuickTitle] = useState("");
+  const [savingId, setSavingId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+
+  const isoDateKey = (d) => {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    return x.toISOString().slice(0, 10);
+  };
+
+  const formatDayLabel = (d) =>
+    new Date(d).toLocaleDateString("de-DE", {
+      weekday: "short",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+
+  const toLocalInputValue = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const mergeDateKeepTime = (iso, targetDate) => {
+    // keep time from iso, change date to targetDate
+    const t = iso ? new Date(iso) : new Date();
+    const nd = new Date(targetDate);
+    nd.setHours(t.getHours(), t.getMinutes(), 0, 0);
+    return nd.toISOString();
+  };
+
+  const canSeeUser = (u) => {
+    if (!u) return false;
+    if (isAdmin) return true;
+    return u.id === currentUser?.id;
+  };
+
+  async function loadTasks(rangeStart, rangeEnd) {
+    setLoading(true);
+    try {
+      let q = supabase
+        .from("tasks")
+        .select(
+          "id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at"
+        )
+        .gte("due_at", rangeStart.toISOString())
+        .lte("due_at", rangeEnd.toISOString())
+        .order("due_at", { ascending: true });
+
+      // RLS already limits. Extra filters below are client side.
+      const { data, error } = await q;
+      if (error) throw error;
+      setTasks(Array.isArray(data) ? data : []);
+    } catch (e) {
+      showError(e?.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // month range: from first visible cell to last visible cell
+  const getMonthGridRange = () => {
+    const first = new Date(monthCursor);
+    first.setDate(1);
+    const start = new Date(first);
+    const day = (start.getDay() + 6) % 7; // monday=0
+    start.setDate(start.getDate() - day);
+    start.setHours(0, 0, 0, 0);
+
+    const last = new Date(first);
+    last.setMonth(last.getMonth() + 1);
+    last.setDate(0);
+    last.setHours(23, 59, 59, 999);
+
+    const end = new Date(last);
+    const lastDay = (end.getDay() + 6) % 7;
+    end.setDate(end.getDate() + (6 - lastDay));
+    end.setHours(23, 59, 59, 999);
+
+    return { start, end };
+  };
+
+  const getWeekRange = () => {
+    const d = new Date(selectedDate);
+    d.setHours(0, 0, 0, 0);
+    const day = (d.getDay() + 6) % 7;
+    const start = new Date(d);
+    start.setDate(start.getDate() - day);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 6);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  };
 
   useEffect(() => {
-    loadAreas().then(setAreas).catch(() => setAreas([]));
-    load();
+    const { start, end } = view === "month" ? getMonthGridRange() : getWeekRange();
+    loadTasks(start, end);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [view, monthCursor, selectedDate]);
 
-  const areaById = useMemo(() => {
-    const m = new Map();
-    for (const a of areas) m.set(a.id, a);
-    return m;
-  }, [areas]);
+  const filteredTasks = useMemo(() => {
+    return tasks.filter((t) => {
+      if (!t?.due_at) return false;
+      if (filterAreaId !== "all" && t.area_id !== filterAreaId) return false;
+      if (filterUserId !== "all" && t.assigned_to !== filterUserId) return false;
+      return true;
+    });
+  }, [tasks, filterAreaId, filterUserId]);
 
-  async function load() {
-    setErr(null);
-    setLoading(true);
-
-    // profiles
-    const pRes = await supabase
-      .from("profiles")
-      .select("id, email, name, is_active")
-      .order("name", { ascending: true });
-
-    if (pRes.error) {
-      setErr(pRes.error.message);
-      setLoading(false);
-      return;
+  const tasksByDay = useMemo(() => {
+    const map = new Map();
+    for (const t of filteredTasks) {
+      const k = isoDateKey(t.due_at);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(t);
     }
+    return map;
+  }, [filteredTasks]);
 
-    const pList = (pRes.data || []).filter((p) => p.is_active !== false);
-    setProfiles(pList);
+  const selectedKey = isoDateKey(selectedDate);
+  const selectedTasks = tasksByDay.get(selectedKey) || [];
 
-    // tasks (no join to avoid relationship issues)
-    const tRes = await supabase
-      .from("tasks")
-      .select("id, title, status, due_at, area, area_id, assignee_id, created_at, is_series")
-      .order("created_at", { ascending: false });
-
-    if (tRes.error) {
-      setErr(tRes.error.message);
-      setLoading(false);
-      return;
+  async function updateTask(taskId, patch) {
+    setSavingId(taskId);
+    try {
+      const { error } = await supabase.from("tasks").update(patch).eq("id", taskId);
+      if (error) throw error;
+      // refresh local state
+      setTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t))
+      );
+    } catch (e) {
+      showError(e?.message || String(e));
+    } finally {
+      setSavingId(null);
     }
-
-    const list = (tRes.data || []).filter((t) => !t.is_series);
-    setTasks(list);
-    setLoading(false);
   }
 
-  const profileById = useMemo(() => {
-    const m = new Map();
-    for (const p of profiles) m.set(p.id, p);
-    return m;
-  }, [profiles]);
-
-  const grouped = useMemo(() => {
-    const needle = safeLower(search);
-    const by = new Map(); // assigneeKey -> { assignee, todo:[], done:[] }
-
-    const getBucket = (key) => {
-      if (!by.has(key)) by.set(key, { key, todo: [], done: [] });
-      return by.get(key);
-    };
-
-    for (const t of tasks) {
-      if (onlyOpen && (t.status ?? "todo") === "done") continue;
-
-      if (needle) {
-        const hay = safeLower(`${t.title ?? ""} ${t.area ?? ""}`);
-        if (!hay.includes(needle)) continue;
-      }
-
-      const key = t.assignee_id || "__unassigned__";
-      const bucket = getBucket(key);
-      if ((t.status ?? "todo") === "done") bucket.done.push(t);
-      else bucket.todo.push(t);
+  async function deleteTask(taskId) {
+    if (!confirm("Aufgabe wirklich löschen?")) return;
+    setSavingId(taskId);
+    try {
+      const { error } = await supabase.from("tasks").delete().eq("id", taskId);
+      if (error) throw error;
+      setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    } catch (e) {
+      showError(e?.message || String(e));
+    } finally {
+      setSavingId(null);
     }
-
-    // order columns: profiles in list order, then unassigned at end if present
-    const out = [];
-    for (const p of profiles) {
-      const b = by.get(p.id);
-      if (b) out.push({ ...b, assignee: p });
-      else out.push({ key: p.id, todo: [], done: [], assignee: p });
-    }
-    if (by.has("__unassigned__")) out.push({ ...by.get("__unassigned__"), assignee: null });
-
-    return out;
-  }, [tasks, profiles, onlyOpen, search]);
-
-  async function quickToggle(task) {
-    const next = (task.status ?? "todo") === "done" ? "todo" : "done";
-    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
   }
 
-  async function quickAssign(task, assigneeId) {
-    const { error } = await supabase
-      .from("tasks")
-      .update({ assignee_id: assigneeId || null })
-      .eq("id", task.id);
-    if (error) {
-      setErr(error.message);
-      return;
+  async function createTask() {
+    const title = quickTitle.trim();
+    if (!title) return;
+    setSavingId("new");
+    try {
+      const dueIso = mergeDateKeepTime(null, selectedDate);
+      const insert = {
+        title,
+        description: "",
+        status: "open",
+        area_id: filterAreaId !== "all" ? filterAreaId : null,
+        assigned_to:
+          filterUserId !== "all" ? filterUserId : currentUser?.id || null,
+        due_at: dueIso,
+      };
+      const { data, error } = await supabase
+        .from("tasks")
+        .insert(insert)
+        .select("id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at")
+        .single();
+      if (error) throw error;
+      setTasks((prev) => [...prev, data].sort((a, b) => new Date(a.due_at) - new Date(b.due_at)));
+      setQuickTitle("");
+      setEditingId(data.id);
+    } catch (e) {
+      showError(e?.message || String(e));
+    } finally {
+      setSavingId(null);
     }
-    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, assignee_id: assigneeId || null } : t)));
   }
 
-  function renderTaskCard(t) {
-    const areaObj = t.area_id ? areaById.get(t.area_id) : null;
-    const areaLabel = areaObj?.name || t.area || "–";
-    const areaColor = areaObj?.color || null;
+  // Drag & Drop
+  const onDragStartTask = (ev, task) => {
+    ev.dataTransfer.setData("text/task_id", task.id);
+    ev.dataTransfer.setData("text/task_due", task.due_at || "");
+    ev.dataTransfer.effectAllowed = "move";
+  };
+
+  const onDropDay = async (ev, dayDate) => {
+    ev.preventDefault();
+    const taskId = ev.dataTransfer.getData("text/task_id");
+    const due = ev.dataTransfer.getData("text/task_due");
+    if (!taskId) return;
+    const nextDue = mergeDateKeepTime(due, dayDate);
+    await updateTask(taskId, { due_at: nextDue });
+  };
+
+  const renderTaskPill = (t) => {
+    const area = areas?.find((a) => a.id === t.area_id);
+    const assignee = users?.find((u) => u.id === t.assigned_to);
+    const label = `${t.title}${assignee ? ` · ${assignee.name}` : ""}`;
+    return (
+      <div
+        key={t.id}
+        draggable
+        onDragStart={(e) => onDragStartTask(e, t)}
+        title={label}
+        style={{
+          fontSize: 11,
+          padding: "2px 6px",
+          borderRadius: 999,
+          background: area?.color || "rgba(0,0,0,0.06)",
+          color: "#111",
+          cursor: "grab",
+          overflow: "hidden",
+          whiteSpace: "nowrap",
+          textOverflow: "ellipsis",
+          border: "1px solid rgba(0,0,0,0.10)",
+        }}
+        onClick={() => {
+          setSelectedDate(new Date(t.due_at));
+          setEditingId(t.id);
+        }}
+      >
+        {t.title}
+      </div>
+    );
+  };
+
+  const renderMonthGrid = () => {
+    const { start, end } = getMonthGridRange();
+    const days = [];
+    const d = new Date(start);
+    while (d <= end) {
+      days.push(new Date(d));
+      d.setDate(d.getDate() + 1);
+    }
+
+    const weekDays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+    const isSameMonth = (x) => x.getMonth() === monthCursor.getMonth();
+    const isToday = (x) => isoDateKey(x) === isoDateKey(new Date());
+    const isSelected = (x) => isoDateKey(x) === selectedKey;
 
     return (
-      <div key={t.id} style={{ ...styles.card, padding: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ fontWeight: 800 }}>{t.title}</div>
-          {areaColor ? <span title={areaLabel} style={{ ...styles.areaDot, background: areaColor }} /> : null}
-          <span style={{ ...styles.pill, marginLeft: "auto" }}>{t.status === "done" ? "done" : "todo"}</span>
+      <div style={{ display: "grid", gap: 6 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+          {weekDays.map((w) => (
+            <div key={w} style={{ fontWeight: 700, fontSize: 12, opacity: 0.8 }}>
+              {w}
+            </div>
+          ))}
         </div>
-        <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
-          Bereich: {areaLabel} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
-        </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          <button style={styles.btnSmall} onClick={() => quickToggle(t)}>
-            Status
-          </button>
-          <select
-            value={t.assignee_id || ""}
-            onChange={(e) => quickAssign(t, e.target.value || null)}
-            style={{ ...styles.input, padding: "8px 10px", minWidth: 180 }}
-            title="Zuweisen"
-          >
-            <option value="">– nicht zugewiesen –</option>
-            {profiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name || p.email}
-              </option>
-            ))}
-          </select>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+          {days.map((day) => {
+            const k = isoDateKey(day);
+            const items = tasksByDay.get(k) || [];
+            return (
+              <div
+                key={k}
+                onClick={() => setSelectedDate(day)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => onDropDay(e, day)}
+                style={{
+                  minHeight: 92,
+                  background: isSelected(day)
+                    ? "rgba(34,197,94,0.12)"
+                    : "rgba(255,255,255,0.92)",
+                  border: isToday(day)
+                    ? "2px solid rgba(34,197,94,0.8)"
+                    : "1px solid rgba(0,0,0,0.08)",
+                  borderRadius: 12,
+                  padding: 8,
+                  cursor: "pointer",
+                  opacity: isSameMonth(day) ? 1 : 0.55,
+                  boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
+                  overflow: "hidden",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 12 }}>{day.getDate()}</div>
+                  {items.length > 0 ? (
+                    <div style={{ fontSize: 11, opacity: 0.7 }}>{items.length}</div>
+                  ) : null}
+                </div>
+
+                <div style={{ display: "grid", gap: 4, marginTop: 6 }}>
+                  {items.slice(0, 4).map(renderTaskPill)}
+                  {items.length > 4 ? (
+                    <div style={{ fontSize: 11, opacity: 0.7 }}>+{items.length - 4} mehr</div>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     );
-  }
+  };
 
-  return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Kanboard – Wer macht was</div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Suche…" style={styles.input} />
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#555" }}>
-            <input type="checkbox" checked={onlyOpen} onChange={(e) => setOnlyOpen(e.target.checked)} />
-            nur offene
-          </label>
-          <button style={styles.btn} onClick={load} disabled={loading}>
-            {loading ? "Lade…" : "Neu laden"}
-          </button>
-        </div>
-      </div>
+  const renderWeekGrid = () => {
+    const { start, end } = getWeekRange();
+    const days = [];
+    const d = new Date(start);
+    while (d <= end) {
+      days.push(new Date(d));
+      d.setDate(d.getDate() + 1);
+    }
 
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, marginTop: 12 }}>
-        {grouped.map((col) => {
-          const title = col.assignee ? (col.assignee.name || col.assignee.email) : "Nicht zugewiesen";
-          const total = (col.todo?.length || 0) + (col.done?.length || 0);
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+        {days.map((day) => {
+          const k = isoDateKey(day);
+          const items = tasksByDay.get(k) || [];
+          const selected = isoDateKey(day) === selectedKey;
           return (
-            <div key={col.key} style={{ ...styles.card, background: "transparent", boxShadow: "none" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <div style={styles.h4}>{title}</div>
-                <div style={styles.badge}>{total}</div>
+            <div
+              key={k}
+              onClick={() => setSelectedDate(day)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => onDropDay(e, day)}
+              style={{
+                minHeight: 260,
+                background: selected ? "rgba(34,197,94,0.12)" : "rgba(255,255,255,0.92)",
+                border: "1px solid rgba(0,0,0,0.08)",
+                borderRadius: 12,
+                padding: 10,
+                boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
+                overflow: "hidden",
+                cursor: "pointer",
+              }}
+            >
+              <div style={{ fontWeight: 800, fontSize: 12, marginBottom: 8 }}>
+                {day.toLocaleDateString("de-DE", { weekday: "short" })} {day.getDate()}
               </div>
-
-              {col.todo?.length ? (
-                <div style={{ display: "grid", gap: 10 }}>
-                  {col.todo.map(renderTaskCard)}
-                </div>
-              ) : (
-                <div style={{ color: "#666", fontSize: 13 }}>Keine offenen Aufgaben.</div>
-              )}
-
-              {!onlyOpen && col.done?.length ? (
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ color: "#666", fontSize: 13, marginBottom: 6 }}>Erledigt</div>
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {col.done.map(renderTaskCard)}
-                  </div>
-                </div>
-              ) : null}
+              <div style={{ display: "grid", gap: 6 }}>
+                {items.length === 0 ? (
+                  <div style={{ fontSize: 12, opacity: 0.6 }}>—</div>
+                ) : (
+                  items.map(renderTaskPill)
+                )}
+              </div>
             </div>
           );
         })}
       </div>
+    );
+  };
+
+  const EditRow = ({ task }) => {
+    const isEditing = editingId === task.id;
+    const area = areas?.find((a) => a.id === task.area_id);
+    const assignee = users?.find((u) => u.id === task.assigned_to);
+    const disabled = savingId === task.id;
+
+    return (
+      <div
+        style={{
+          border: "1px solid rgba(0,0,0,0.08)",
+          borderRadius: 12,
+          padding: 10,
+          background: "rgba(255,255,255,0.92)",
+          boxShadow: "0 6px 18px rgba(0,0,0,0.05)",
+          display: "grid",
+          gap: 8,
+        }}
+      >
+        <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <div
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: 999,
+                background: area?.color || "rgba(0,0,0,0.2)",
+              }}
+            />
+            <div style={{ fontWeight: 800, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis" }}>
+              {task.title}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={() => setEditingId(isEditing ? null : task.id)}
+              style={styles.smallBtn}
+              disabled={disabled}
+              title={isEditing ? "Schließen" : "Bearbeiten"}
+            >
+              {isEditing ? "Fertig" : "Bearbeiten"}
+            </button>
+            <button
+              onClick={() => deleteTask(task.id)}
+              style={{ ...styles.smallBtn, borderColor: "rgba(239,68,68,0.35)" }}
+              disabled={disabled}
+              title="Löschen"
+            >
+              Löschen
+            </button>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 12, opacity: 0.75 }}>
+          {assignee ? `Zuständig: ${assignee.name}` : "Zuständig: —"} · Status: {task.status || "—"}
+        </div>
+
+        {isEditing ? (
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={styles.label}>Titel</label>
+              <input
+                style={styles.input}
+                defaultValue={task.title || ""}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if (v && v !== task.title) updateTask(task.id, { title: v });
+                }}
+                disabled={disabled}
+              />
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={styles.label}>Termin</label>
+              <input
+                type="datetime-local"
+                style={styles.input}
+                defaultValue={toLocalInputValue(task.due_at)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (!v) return;
+                  const iso = new Date(v).toISOString();
+                  updateTask(task.id, { due_at: iso });
+                }}
+                disabled={disabled}
+              />
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={styles.label}>Status</label>
+              <select
+                style={styles.select}
+                value={task.status || "open"}
+                onChange={(e) => updateTask(task.id, { status: e.target.value })}
+                disabled={disabled}
+              >
+                <option value="open">offen</option>
+                <option value="in_progress">in Bearbeitung</option>
+                <option value="done">erledigt</option>
+                <option value="blocked">blockiert</option>
+              </select>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div style={{ display: "grid", gap: 6 }}>
+                <label style={styles.label}>Bereich</label>
+                <select
+                  style={styles.select}
+                  value={task.area_id || ""}
+                  onChange={(e) => updateTask(task.id, { area_id: e.target.value || null })}
+                  disabled={disabled}
+                >
+                  <option value="">—</option>
+                  {(areas || []).map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                <label style={styles.label}>Nutzer</label>
+                <select
+                  style={styles.select}
+                  value={task.assigned_to || ""}
+                  onChange={(e) => updateTask(task.id, { assigned_to: e.target.value || null })}
+                  disabled={disabled}
+                >
+                  <option value="">—</option>
+                  {(users || []).filter(canSeeUser).map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={styles.label}>Beschreibung</label>
+              <textarea
+                style={styles.textarea}
+                defaultValue={task.description || ""}
+                rows={3}
+                onBlur={(e) => updateTask(task.id, { description: e.target.value })}
+                disabled={disabled}
+              />
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const monthLabel = monthCursor.toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+
+  const navPrev = () => {
+    if (view === "month") {
+      const d = new Date(monthCursor);
+      d.setMonth(d.getMonth() - 1);
+      setMonthCursor(d);
+    } else {
+      const d = new Date(selectedDate);
+      d.setDate(d.getDate() - 7);
+      setSelectedDate(d);
+    }
+  };
+
+  const navNext = () => {
+    if (view === "month") {
+      const d = new Date(monthCursor);
+      d.setMonth(d.getMonth() + 1);
+      setMonthCursor(d);
+    } else {
+      const d = new Date(selectedDate);
+      d.setDate(d.getDate() + 7);
+      setSelectedDate(d);
+    }
+  };
+
+  const reload = () => {
+    const { start, end } = view === "month" ? getMonthGridRange() : getWeekRange();
+    loadTasks(start, end);
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div style={styles.sectionHeader}>
+        <div>
+          <div style={styles.sectionTitle}>Kalender</div>
+          <div style={styles.sectionSub}>
+            {view === "month" ? `Monatsansicht · ${monthLabel}` : `Wochenansicht · ${formatDayLabel(selectedDate)}`}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <button
+            style={view === "month" ? styles.tabBtnActive : styles.tabBtn}
+            onClick={() => setView("month")}
+          >
+            Monat
+          </button>
+          <button
+            style={view === "week" ? styles.tabBtnActive : styles.tabBtn}
+            onClick={() => setView("week")}
+          >
+            Woche
+          </button>
+          <button style={styles.tabBtn} onClick={navPrev} title="Zurück">
+            ◀
+          </button>
+          <button style={styles.tabBtn} onClick={navNext} title="Weiter">
+            ▶
+          </button>
+          <button style={styles.tabBtn} onClick={reload} disabled={loading}>
+            Neu laden
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, alignItems: "start" }}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <select
+              style={styles.select}
+              value={filterAreaId}
+              onChange={(e) => setFilterAreaId(e.target.value)}
+              title="Bereich-Filter"
+            >
+              <option value="all">Alle Bereiche</option>
+              {(areas || []).map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              style={styles.select}
+              value={filterUserId}
+              onChange={(e) => setFilterUserId(e.target.value)}
+              title="Nutzer-Filter"
+            >
+              <option value="all">Alle Nutzer</option>
+              {(users || []).filter(canSeeUser).map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
+              ))}
+            </select>
+
+            <div style={{ fontSize: 12, opacity: 0.75 }}>
+              Tipp: Aufgaben per Drag & Drop auf ein anderes Datum ziehen.
+            </div>
+          </div>
+
+          {view === "month" ? renderMonthGrid() : renderWeekGrid()}
+        </div>
+
+        <div style={{ ...styles.card, padding: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 900, fontSize: 14 }}>Aufgaben am {formatDayLabel(selectedDate)}</div>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>{selectedTasks.length} Einträge</div>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={styles.label}>Neue Aufgabe</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  style={styles.input}
+                  value={quickTitle}
+                  onChange={(e) => setQuickTitle(e.target.value)}
+                  placeholder="Titel…"
+                />
+                <button style={styles.primaryBtn} onClick={createTask} disabled={savingId === "new"}>
+                  Hinzufügen
+                </button>
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>
+                Die Aufgabe wird direkt mit dem gewählten Datum angelegt. Bereich/Nutzer übernimmt den aktuellen Filter (falls gesetzt).
+              </div>
+            </div>
+
+            {selectedTasks.length === 0 ? (
+              <div style={{ fontSize: 13, opacity: 0.7 }}>Keine Einträge.</div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {selectedTasks.map((t) => (
+                  <EditRow key={t.id} task={t} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
-
 
 /* ---------------- User Settings Panel ---------------- */
 function UserSettingsPanel({ userId, settings, onChange }) {
