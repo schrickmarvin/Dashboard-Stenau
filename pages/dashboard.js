@@ -2523,7 +2523,9 @@ function CalendarPanel() {
   };
 
   return (
-    <div style={{ display: "grid", gap: 14 }}>
+    <div style={styles.calendarOuter}>
+      <div style={styles.calendarPanelCard}>
+        <div style={{ display: "grid", gap: 14 }}>
       <div style={styles.sectionHeader}>
         <div>
           <div style={styles.sectionTitle}>Kalender</div>
@@ -2938,6 +2940,8 @@ export default function Dashboard() {
 
       <div style={{ height: 24 }} />
     </div>
+      </div>
+    </div>
   );
 }
 
@@ -3006,6 +3010,26 @@ const styles = {
     padding: 16,
     boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
     marginBottom: 14,
+  },
+
+  calendarOuter: {
+    maxWidth: 1280,
+    margin: '0 auto',
+  },
+  calendarPanelCard: {
+    background: 'rgba(255,255,255,0.92)',
+    border: '1px solid rgba(216,224,239,0.9)',
+    borderRadius: 18,
+    padding: 16,
+    boxShadow: '0 18px 50px rgba(0,0,0,0.10)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+    marginBottom: 14,
+  },
+  calendarHint: {
+    fontSize: 12,
+    color: '#5b6b86',
+    marginTop: 8,
   },
   h3: {
     fontSize: 18,
