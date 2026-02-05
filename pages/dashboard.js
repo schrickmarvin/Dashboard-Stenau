@@ -1975,6 +1975,9 @@ function KanboardPanel({ currentUser, isAdmin }) {
 
   const [viewTask, setViewTask] = useState(null);
 
+  const [kanView, setKanView] = useState("status"); // "status" | "people"
+  const [showDonePeople, setShowDonePeople] = useState(false);
+
   const norm = (v) => String(v || "").trim().toLowerCase();
 
   async function loadAll() {
@@ -1983,7 +1986,7 @@ function KanboardPanel({ currentUser, isAdmin }) {
     try {
       const [{ data: aData, error: aErr }, { data: uData, error: uErr }, { data: tData, error: tErr }] = await Promise.all([
         supabase.from("areas").select("*").order("name"),
-        supabase.from("users_profile").select("*").order("name"),
+        supabase.from("profiles").select("id, name, email, role, is_active").order("name", { ascending: true }),
         supabase.from("tasks").select("*").order("created_at", { ascending: false }),
       ]);
       if (aErr) throw aErr;
@@ -2012,276 +2015,252 @@ function KanboardPanel({ currentUser, isAdmin }) {
 
   const memberById = useMemo(() => {
     const m = new Map();
-    for (const u of members || []) m.set(u.user_id, u);
+    for (const u of members || []) m.set(u.id, u);
     return m;
   }, [members]);
 
   const decoratedTasks = useMemo(() => {
-    return (tasks || []).map((t) => ({
-      ...t,
-      areaObj: t.area_id ? areaById.get(t.area_id) : null,
-      assigneeObj: t.assignee_id ? memberById.get(t.assignee_id) : null,
-    }));
-  }, [tasks, areaById, memberById]);
-
-  const filteredTasks = useMemo(() => {
-    return decoratedTasks.filter((t) => {
-      if (filterArea !== "all" && t.area_id !== filterArea) return false;
-
-      // Filter by assignee
-      if (filterUser !== "all") {
-        if (filterUser === "unassigned") {
-          if (t.assignee_id) return false;
-        } else {
-          if (t.assignee_id !== filterUser) return false;
-        }
-      }
-
-      return true;
-    });
-  }, [decoratedTasks, filterArea, filterUser]);
-
-  const columns = useMemo(() => {
-    const todo = [];
-    const done = [];
-    for (const t of filteredTasks) {
-      const st = norm(t.status);
-      if (st === "done" || st === "erledigt") done.push(t);
-      else todo.push(t); // includes "in_progress" etc.
-    }
-    return { todo, done };
-  }, [filteredTasks]);
-
-  const fmtShort = (iso) => {
-    if (!iso) return "";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "";
-    return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" });
-  };
-
-  const canUpdateStatus = (t) => {
-    if (isAdmin) return true;
-    // Assignee can update their own tasks
-    return t?.assignee_id && currentUser?.id && t.assignee_id === currentUser.id;
-  };
-
-  async function setStatus(taskId, newStatus) {
-    try {
-      const { error } = await supabase.from("tasks").update({ status: newStatus }).eq("id", taskId);
-      if (error) throw error;
-      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: newStatus } : t)));
-    } catch (e) {
-      setErr(e?.message || String(e));
-    }
-  }
-
-  async function assignTask(taskId, assigneeId) {
-    try {
-      const { error } = await supabase.from("tasks").update({ assignee_id: assigneeId }).eq("id", taskId);
-      if (error) throw error;
-      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, assignee_id: assigneeId } : t)));
-    } catch (e) {
-      setErr(e?.message || String(e));
-    }
-  }
-
-  const StatusSelect = ({ t }) => {
     return (
-      <select
-        style={{ ...styles.select, padding: "8px 10px", minWidth: 150 }}
-        value={norm(t.status) === "done" || norm(t.status) === "erledigt" ? "done" : norm(t.status) === "in_progress" ? "in_progress" : "todo"}
-        onChange={(e) => setStatus(t.id, e.target.value)}
-        onClick={(e) => e.stopPropagation()}
-        disabled={!canUpdateStatus(t)}
-        title={!canUpdateStatus(t) ? "Nur lesend" : "Status ändern"}
-      >
-        <option value="todo">Zu erledigen</option>
-        <option value="in_progress">In Arbeit</option>
-        <option value="done">Erledigt</option>
-      </select>
-    );
-  };
-
-  const AssignControl = ({ t }) => {
-    // Only show controls for unassigned tasks
-    if (t.assignee_id) return null;
-
-    // Non-admins can only assign to themselves (fast workflow)
-    if (!isAdmin) {
-      return (
-        <button
-          style={{ ...styles.smallBtn, borderColor: "var(--primary, #0b6b2a)", color: "var(--primary, #0b6b2a)" }}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!currentUser?.id) return;
-            assignTask(t.id, currentUser.id);
-          }}
-          title="Mir zuweisen"
-        >
-          Mir zuweisen
-        </button>
-      );
-    }
-
-    // Admin can assign to any member
-    return (
-      <select
-        style={{ ...styles.select, padding: "8px 10px", minWidth: 180 }}
-        defaultValue=""
-        onChange={(e) => {
-          const val = e.target.value;
-          if (!val) return;
-          assignTask(t.id, val);
-        }}
-        onClick={(e) => e.stopPropagation()}
-        title="Zuständig zuweisen"
-      >
-        <option value="">Zuständig…</option>
-        {members.map((u) => (
-          <option key={u.user_id} value={u.user_id}>
-            {u.name || u.email || u.user_id}
-          </option>
-        ))}
-      </select>
-    );
-  };
-
-  const TaskCard = ({ t }) => (
-    <div
-      style={{ ...styles.card, cursor: "pointer" }}
-      onClick={() => setViewTask(t)}
-      title="Klicken für Details"
-    >
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <div style={styles.h4}>{t.title || "(ohne Titel)"}</div>
-
-        {t.areaObj?.color ? <span title={t.areaObj?.name || ""} style={{ ...styles.areaDot, background: t.areaObj.color }} /> : null}
-
-        <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
-          <AssignControl t={t} />
-          <StatusSelect t={t} />
-        </div>
-      </div>
-
-      <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-        Bereich: {t.areaObj?.name || t.area || "—"}
-        {t.due_at ? <> • Fällig: {fmtShort(t.due_at)}</> : null}
-        {t.assigneeObj?.name || t.assigneeObj?.email ? (
-          <> • Zuständig: {t.assigneeObj.name || t.assigneeObj.email}</>
-        ) : (
-          <> • Zuständig: —</>
-        )}
-        {norm(t.status) === "in_progress" ? <> • Status: In Arbeit</> : null}
-      </div>
-    </div>
-  );
-
-  const Col = ({ title, count, children }) => (
-    <div style={styles.col}>
-      <div style={styles.colHeader}>
-        <div style={styles.h3}>{title}</div>
-        <div style={styles.badge}>{count}</div>
-      </div>
-      <div style={{ display: "grid", gap: 12 }}>{children}</div>
-    </div>
-  );
-
-  return (
     <div style={styles.panel}>
+      <div style={styles.h3}>Kanboard</div>
+      <div style={{ color: "#666", marginBottom: 8 }}>
+        {kanView === "status"
+          ? "Übersicht nach Status (Zu erledigen / Erledigt). Karten sind klickbar."
+          : "Übersicht nach Personen (wer hat welche offenen Aufgaben). Karten sind klickbar."}
+      </div>
+
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-      <div style={styles.sectionHeader}>
-        <div>
-          <div style={styles.sectionTitle}>Kanboard</div>
-          <div style={styles.sectionSub}>Übersicht nach Status (Zu erledigen / Erledigt). Karten sind klickbar.</div>
-        </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+        <button
+          style={{ ...styles.tabBtn, ...(kanView === "status" ? styles.tabBtnActive : {}) }}
+          onClick={() => setKanView("status")}
+          type="button"
+        >
+          Status
+        </button>
+        <button
+          style={{ ...styles.tabBtn, ...(kanView === "people" ? styles.tabBtnActive : {}) }}
+          onClick={() => setKanView("people")}
+          type="button"
+        >
+          Personen
+        </button>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <select style={styles.select} value={filterArea} onChange={(e) => setFilterArea(e.target.value)}>
-            <option value="all">Alle Bereiche</option>
-            {areas.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
+        <select style={styles.select} value={filterArea} onChange={(e) => setFilterArea(e.target.value)}>
+          <option value="all">Alle Bereiche</option>
+          {(areas || []).map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
 
+        {kanView === "status" ? (
           <select style={styles.select} value={filterUser} onChange={(e) => setFilterUser(e.target.value)}>
             <option value="all">Alle Nutzer</option>
             <option value="unassigned">Nicht zugeordnet</option>
-            {members.map((u) => (
-              <option key={u.user_id} value={u.user_id}>
-                {u.name || u.email}
+            {(members || []).map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email || u.id}
               </option>
             ))}
           </select>
+        ) : (
+          <select style={styles.select} value={filterUser} onChange={(e) => setFilterUser(e.target.value)}>
+            <option value="all">Alle Personen</option>
+            <option value="unassigned">Nicht zugeordnet</option>
+            {(members || []).map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email || u.id}
+              </option>
+            ))}
+          </select>
+        )}
 
-          <button style={styles.smallBtn} onClick={loadAll} disabled={loading}>
-            {loading ? "Lade…" : "Neu laden"}
-          </button>
-        </div>
+        {kanView === "people" ? (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 6 }}>
+            <input type="checkbox" checked={showDonePeople} onChange={(e) => setShowDonePeople(e.target.checked)} />
+            <span style={{ fontSize: 12, opacity: 0.8 }}>Erledigte anzeigen</span>
+          </label>
+        ) : null}
+
+        <button style={styles.smallBtn} onClick={loadAll} type="button">
+          Neu laden
+        </button>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 12 }}>
-        <Col title="Zu erledigen" count={columns.todo.length}>
-          {columns.todo.length === 0 ? <div style={{ fontSize: 13, opacity: 0.7 }}>Keine Einträge.</div> : null}
-          {columns.todo.map((t) => (
-            <TaskCard key={t.id} t={t} />
-          ))}
-        </Col>
+      {loading ? <div>lädt…</div> : null}
 
-        <Col title="Erledigt" count={columns.done.length}>
-          {columns.done.length === 0 ? <div style={{ fontSize: 13, opacity: 0.7 }}>Keine Einträge.</div> : null}
-          {columns.done.map((t) => (
-            <TaskCard key={t.id} t={t} />
-          ))}
-        </Col>
-      </div>
-
-      {viewTask ? (
-        <div style={styles.modalOverlay} onClick={() => setViewTask(null)}>
-          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ fontSize: 18, fontWeight: 900 }}>{viewTask.title || "(ohne Titel)"}</div>
-              {viewTask.areaObj?.color ? (
-                <span style={{ ...styles.areaDot, background: viewTask.areaObj.color }} title={viewTask.areaObj?.name || ""} />
-              ) : null}
-              <div style={{ marginLeft: "auto" }}>
-                <button style={styles.smallBtn} onClick={() => setViewTask(null)}>
-                  Schließen
-                </button>
-              </div>
+      {kanView === "status" ? (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }}>
+          <div style={styles.col}>
+            <div style={styles.colHeader}>
+              <div style={styles.h3}>Zu erledigen</div>
+              <div style={styles.badge}>{columns.todo.length}</div>
             </div>
 
-            <div style={{ marginTop: 10, color: "#555", fontSize: 13 }}>
-              Bereich: {viewTask.areaObj?.name || viewTask.area || "—"}<br />
-              Fällig: {viewTask.due_at ? fmtShort(viewTask.due_at) : "—"}<br />
-              Zuständig: {viewTask.assigneeObj?.name || viewTask.assigneeObj?.email || "—"}<br />
-              Status: {norm(viewTask.status) === "done" || norm(viewTask.status) === "erledigt" ? "Erledigt" : norm(viewTask.status) === "in_progress" ? "In Arbeit" : "Zu erledigen"}
-            </div>
+            <div style={{ display: "grid", gap: 12 }}>
+              {columns.todo.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+              {columns.todo.map((t) => (
+                <div key={t.id} style={{ ...styles.card, cursor: "pointer" }} onClick={() => setViewTask(t)}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div
+                        style={{
+                          width: 12,
+                          height: 12,
+                          borderRadius: 999,
+                          background: t.areaObj?.color || "#9aa6c2",
+                        }}
+                      />
+                      <div style={{ fontWeight: 900, fontSize: 16 }}>{t.title || "(Ohne Titel)"}</div>
+                    </div>
 
-            {viewTask.notes ? (
-              <div style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>Notizen</div>
-                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{viewTask.notes}</div>
-              </div>
-            ) : null}
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <StatusSelect t={t} />
+                    </div>
+                  </div>
 
-            {!viewTask.assignee_id ? (
-              <div style={{ marginTop: 14 }}>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>Zuweisen</div>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <AssignControl t={viewTask} />
+                  <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+                    Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)} · Zuständig:{" "}
+                    {t.assigneeObj?.name || t.assigneeObj?.email || "—"}
+                  </div>
+
+                  {(!t.assignee_id || t.assignee_id === null) ? (
+                    <div style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                      <AssigneeControl t={t} />
+                    </div>
+                  ) : null}
                 </div>
-              </div>
-            ) : null}
+              ))}
+            </div>
+          </div>
+
+          <div style={styles.col}>
+            <div style={styles.colHeader}>
+              <div style={styles.h3}>Erledigt</div>
+              <div style={styles.badge}>{columns.done.length}</div>
+            </div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              {columns.done.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+              {columns.done.map((t) => (
+                <div key={t.id} style={{ ...styles.card, cursor: "pointer" }} onClick={() => setViewTask(t)}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div
+                        style={{
+                          width: 12,
+                          height: 12,
+                          borderRadius: 999,
+                          background: t.areaObj?.color || "#9aa6c2",
+                        }}
+                      />
+                      <div style={{ fontWeight: 900, fontSize: 16 }}>{t.title || "(Ohne Titel)"}</div>
+                    </div>
+
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <StatusSelect t={t} />
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+                    Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)} · Zuständig:{" "}
+                    {t.assigneeObj?.name || t.assigneeObj?.email || "—"}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-      ) : null}
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(260px, 1fr))", gap: 14, alignItems: "start" }}>
+          {peopleColumns.map((c) => (
+            <div key={c.key} style={styles.col}>
+              <div style={styles.colHeader}>
+                <div style={styles.h3}>{c.title}</div>
+                <div style={styles.badge}>{c.open.length}</div>
+              </div>
+
+              <div style={{ display: "grid", gap: 12 }}>
+                {c.open.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+
+                {c.open.map((t) => (
+                  <div key={t.id} style={{ ...styles.card, cursor: "pointer" }} onClick={() => setViewTask(t)}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <div
+                          style={{
+                            width: 12,
+                            height: 12,
+                            borderRadius: 999,
+                            background: t.areaObj?.color || "#9aa6c2",
+                          }}
+                        />
+                        <div style={{ fontWeight: 900, fontSize: 16 }}>{t.title || "(Ohne Titel)"}</div>
+                      </div>
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <StatusSelect t={t} />
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+                      Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)}
+                    </div>
+
+                    {c.isUnassigned ? (
+                      <div style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                        <AssigneeControl t={t} />
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+
+                {showDonePeople ? (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.75, marginBottom: 6 }}>
+                      Erledigt ({c.done.length})
+                    </div>
+                    {c.done.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {c.done.map((t) => (
+                        <div key={t.id} style={{ ...styles.card, cursor: "pointer", opacity: 0.92 }} onClick={() => setViewTask(t)}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                              <div
+                                style={{
+                                  width: 12,
+                                  height: 12,
+                                  borderRadius: 999,
+                                  background: t.areaObj?.color || "#9aa6c2",
+                                }}
+                              />
+                              <div style={{ fontWeight: 900, fontSize: 15 }}>{t.title || "(Ohne Titel)"}</div>
+                            </div>
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <StatusSelect t={t} />
+                            </div>
+                          </div>
+                          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+                            Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {viewTask ? <TaskModal t={viewTask} onClose={() => setViewTask(null)} /> : null}
     </div>
+
   );
 }
-
 /* ---------------- Calendar ---------------- */
 function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = false }) {
   const [view, setView] = useState("month"); // "month" | "week"
