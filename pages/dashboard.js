@@ -2947,7 +2947,7 @@ export default function Dashboard() {
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
-{activeTab === "kanboard" ? <KanboardPanel /> : null}
+      {activeTab === "kanboard" ? <KanboardPanel /> : null}
       {activeTab === "calendar" ? <CalendarPanel areas={[]} users={[]} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
@@ -2957,8 +2957,6 @@ export default function Dashboard() {
       {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
       <div style={{ height: 24 }} />
-    </div>
-      </div>
     </div>
   );
 }
