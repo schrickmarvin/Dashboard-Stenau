@@ -796,8 +796,6 @@ function TasksBoard({ isAdmin }) {
       ) : null}
 
     </div>
-	  </div>
-	</div>
   );
 }
 
@@ -810,181 +808,18 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
       </div>
 
       <div style={{ display: "grid", gap: 12 }}>
-        {tasks.map((t) => {
+{tasks.map((t) => {
           const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
           return (
             <div key={t.id} style={styles.card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <div style={styles.h4}>{t.title}</div>
-              {t.area_color ? (
-                <span title={t.area || t.area_label || ""} style={{...styles.areaDot, background: t.area_color}} />
-              ) : null}
-                <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
-
-                <select
-                  value={t.assignee_id || ""}
-                  onChange={(e) => onAssigneeChange(t.id, e.target.value || null)}
-                  style={{ ...styles.input, minWidth: 180 }}
-                  title="Zuständig"
-                >
-                  <option value="">– Zuständig –</option>
-                  {(members || []).map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {(m.name || m.email || m.id)}
-                    </option>
-                  ))}
-                </select>
-
-                <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
-                  Status
-                </button>
-              </div>
-
-              <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                Bereich: {areaName} · Zuständig: {t.assignee?.name || t.assignee?.email || "–"} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
-              </div>
-
-              <div style={{ marginTop: 10 }}>
-              <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
-                {(() => {
-                  const subs = Array.isArray(t.subtasks) ? t.subtasks : [];
-                  const done = subs.filter((s) => s.is_done).length;
-                  return `Unteraufgaben ${done}/${subs.length}`;
-                })()}
-              </div>
-
-              {Array.isArray(t.subtasks) && t.subtasks.length > 0 ? (
-                <div style={{ display: "grid", gap: 8 }}>
-                  {t.subtasks.map((s) => (
-                    <div key={s.id} style={styles.subRow}>
-                      <input
-                        type="checkbox"
-                        checked={!!s.is_done}
-                        onChange={(e) => onSubUpdate(s.id, { is_done: e.target.checked })}
-                        disabled={!canWrite}
-                      />
-
-                      <input
-                        value={s.title ?? ""}
-                        onChange={(e) => onSubUpdate(s.id, { title: e.target.value })}
-                        style={{ ...styles.input, minWidth: 220 }}
-                        disabled={!canWrite}
-                      />
-
-                      <select
-                        value={s.guide_id ?? ""}
-                        onChange={(e) =>
-                          onSubUpdate(s.id, { guide_id: e.target.value || null })
-                        }
-                        style={{ ...styles.input, minWidth: 220 }}
-                        disabled={!canWrite}
-                        title="Anleitung verknüpfen"
-                      >
-                        <option value="">– Anleitung –</option>
-                        {(guides || []).map((g) => (
-                          <option key={g.id} value={g.id}>
-                            {g.title}
-                          </option>
-                        ))}
-                      </select>
-
-                      {s.guide_id ? (
-                        <button
-                          type="button"
-                          style={styles.btnSmall}
-                          onClick={() => onGuideOpen(s.guide_id)}
-                          title="Anleitung öffnen"
-                        >
-                          Anleitung
-                        </button>
-                      ) : (
-                        <span style={{ width: 78 }} />
-                      )}
-
-                      <input
-                        type="color"
-                        value={s.color || t.area_color || "#6b7280"}
-                        onChange={(e) => onSubUpdate(s.id, { color: e.target.value })}
-                        disabled={!canWrite}
-                        title="Farbe"
-                        style={styles.colorInput}
-                      />
-
-                      <button
-                        style={styles.btnSmall}
-                        onClick={() => onSubDelete(s.id)}
-                        disabled={!canWrite}
-                        title="Löschen"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              {canWrite ? (
-                <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  {(() => {
-                    const d = getSubDraft(t.id, t.area_color || "#6b7280");
-                    return (
-                      <>
-                        <input
-                          value={d.title}
-                          onChange={(e) => setSubDraft(t.id, { title: e.target.value }, t.area_color || "#6b7280")}
-                          placeholder="Neue Unteraufgabe…"
-                          style={{ ...styles.input, minWidth: 260 }}
-                        />
-                        <select
-                          value={d.guide_id || ""}
-                          onChange={(e) => setSubDraft(t.id, { guide_id: e.target.value }, t.area_color || "#6b7280")}
-                          style={{ ...styles.input, minWidth: 220 }}
-                          title="Anleitung verknüpfen"
-                        >
-                          <option value="">– Anleitung –</option>
-                          {(guides || []).map((g) => (
-                            <option key={g.id} value={g.id}>
-                              {g.title}
-                            </option>
-                          ))}
-                        </select>
-                        <input
-                          type="color"
-                          value={d.color || t.area_color || "#6b7280"}
-                          onChange={(e) => setSubDraft(t.id, { color: e.target.value }, t.area_color || "#6b7280")}
-                          title="Farbe"
-                          style={styles.colorInput}
-                        />
-                        <button
-                          style={styles.btnSmallPrimary}
-                          onClick={() => onSubAdd(t, t.area_color || "#6b7280")}
-                          title="Hinzufügen"
-                        >
-                          +
-                        </button>
-                      </>
-                    );
-                  })()}
-                </div>
-              ) : null}
-            </div>
-            </div>
-          );
-        })}
-
+                <div style={styles.h4}>{t.title}
         {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
       </div>
     </div>
-    </div>
-  </div>
-  </div>
-  </div>
-	  </div>
-	</div>
-	</div>
-	</div>
   );
 }
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -1329,7 +1164,6 @@ function UsersAdminPanel({ isAdmin }) {
 
       setNewUser({ email: "", password: "", name: "", roleId: "", areaIds: [] });
       await load();
-      setPendingFiles((prev) => ({ ...prev, [guideId]: [] }));
     } catch (error) {
       setErr(error?.message || String(error));
     } finally {
@@ -1772,7 +1606,6 @@ function GuidesPanel({ isAdmin }) {
                       multiple
                       onChange={(e) => {
                         const picked = Array.from(e.target.files || []);
-                        setPendingFiles((prev) => ({ ...prev, [g.id]: picked }));
                         // allow picking same file again later
                         e.target.value = "";
                       }}
@@ -1972,8 +1805,22 @@ function AreasPanel({ isAdmin }) {
   );
 }
 
+
+/* ---------------- Kanboard (Placeholder) ---------------- */
+function KanboardPanel() {
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h3}>Kanboard</div>
+      <div style={{ color: "#666" }}>
+        Dieser Bereich ist vorbereitet. Wenn du willst, bauen wir hier ein echtes Kanban-Board mit Drag & Drop (ToDo / In Arbeit / Erledigt),
+        Filtern und Bereichsfarben.
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Calendar ---------------- */
-function CalendarPanel() {
+function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = false }) {
   const [view, setView] = useState("month"); // "month" | "week"
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -1994,6 +1841,8 @@ function CalendarPanel() {
   // tasks data
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const showError = (msg) => setErr(String(msg || "Fehler"));
   const [quickTitle, setQuickTitle] = useState("");
   const [savingId, setSavingId] = useState(null);
   const [editingId, setEditingId] = useState(null);
@@ -2536,6 +2385,7 @@ function CalendarPanel() {
     <div style={styles.calendarOuter}>
       <div style={styles.calendarPanelCard}>
         <div style={{ display: "grid", gap: 14 }}>
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
       <div style={styles.sectionHeader}>
         <div>
           <div style={styles.sectionTitle}>Kalender</div>
@@ -2645,8 +2495,6 @@ function CalendarPanel() {
             )}
           </div>
         </div>
-      </div>
-    </div>
   );
 }
 
@@ -2896,7 +2744,7 @@ export default function Dashboard() {
 
         <div style={styles.tabs}>
           <TabBtn active={activeTab === "board"} onClick={() => setActiveTab("board")}>
-            Planke
+            Plan
           </TabBtn>
 <TabBtn active={activeTab === "kanboard"} onClick={() => setActiveTab("kanboard")}>
   Kanboard
@@ -2940,7 +2788,7 @@ export default function Dashboard() {
 
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
 {activeTab === "kanboard" ? <KanboardPanel /> : null}
-      {activeTab === "calendar" ? <CalendarPanel /> : null}
+      {activeTab === "calendar" ? <CalendarPanel areas={[]} users={[]} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "settings" ? (
