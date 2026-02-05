@@ -1973,48 +1973,26 @@ function KanboardPanel({ currentUser, isAdmin }) {
   const [filterArea, setFilterArea] = useState("all");
   const [filterUser, setFilterUser] = useState("all");
 
-  const canWriteTask = (t) => {
-    if (isAdmin) return true;
-    return t?.assignee_id && currentUser?.id && t.assignee_id === currentUser.id;
-  };
+  const [viewTask, setViewTask] = useState(null);
+
+  const norm = (v) => String(v || "").trim().toLowerCase();
 
   async function loadAll() {
     setLoading(true);
     setErr(null);
     try {
-      const [areasRes, membersRes, tasksRes] = await Promise.all([
-        supabase.from("areas").select("*").order("name", { ascending: true }),
-        supabase.from("profiles").select("id, name, email, is_active").order("name", { ascending: true }),
-        supabase.from("tasks").select("*").order("due_at", { ascending: true }),
+      const [{ data: aData, error: aErr }, { data: uData, error: uErr }, { data: tData, error: tErr }] = await Promise.all([
+        supabase.from("areas").select("*").order("name"),
+        supabase.from("users_profile").select("*").order("name"),
+        supabase.from("tasks").select("*").order("created_at", { ascending: false }),
       ]);
+      if (aErr) throw aErr;
+      if (uErr) throw uErr;
+      if (tErr) throw tErr;
 
-      if (areasRes.error) throw areasRes.error;
-      if (membersRes.error) throw membersRes.error;
-      if (tasksRes.error) throw tasksRes.error;
-
-      const areasList = areasRes.data || [];
-      const membersList = membersRes.data || [];
-      const tasksList = tasksRes.data || [];
-
-      const areaById = new Map(areasList.map((a) => [a.id, a]));
-      const areaByName = new Map(areasList.map((a) => [String(a.name || "").toLowerCase(), a]));
-      const memberById = new Map(membersList.map((m) => [m.id, m]));
-
-      const decorated = tasksList.map((t) => {
-        let areaObj = null;
-        if (t.area_id && areaById.has(t.area_id)) areaObj = areaById.get(t.area_id);
-        if (!areaObj && t.area) areaObj = areaByName.get(String(t.area).toLowerCase()) || null;
-
-        return {
-          ...t,
-          areaObj,
-          assigneeObj: t.assignee_id ? memberById.get(t.assignee_id) || null : null,
-        };
-      });
-
-      setAreas(areasList);
-      setMembers(membersList);
-      setTasks(decorated);
+      setAreas(aData || []);
+      setMembers(uData || []);
+      setTasks(tData || []);
     } catch (e) {
       setErr(e?.message || String(e));
     } finally {
@@ -2024,29 +2002,54 @@ function KanboardPanel({ currentUser, isAdmin }) {
 
   useEffect(() => {
     loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const areaById = useMemo(() => {
+    const m = new Map();
+    for (const a of areas || []) m.set(a.id, a);
+    return m;
+  }, [areas]);
+
+  const memberById = useMemo(() => {
+    const m = new Map();
+    for (const u of members || []) m.set(u.user_id, u);
+    return m;
+  }, [members]);
+
+  const decoratedTasks = useMemo(() => {
+    return (tasks || []).map((t) => ({
+      ...t,
+      areaObj: t.area_id ? areaById.get(t.area_id) : null,
+      assigneeObj: t.assignee_id ? memberById.get(t.assignee_id) : null,
+    }));
+  }, [tasks, areaById, memberById]);
+
   const filteredTasks = useMemo(() => {
-    return tasks.filter((t) => {
-      const areaOk = filterArea === "all" ? true : String(t.area_id || "") === String(filterArea);
-      const userOk = filterUser === "all" ? true : String(t.assignee_id || "") === String(filterUser);
-      return areaOk && userOk;
+    return decoratedTasks.filter((t) => {
+      if (filterArea !== "all" && t.area_id !== filterArea) return false;
+
+      // Filter by assignee
+      if (filterUser !== "all") {
+        if (filterUser === "unassigned") {
+          if (t.assignee_id) return false;
+        } else {
+          if (t.assignee_id !== filterUser) return false;
+        }
+      }
+
+      return true;
     });
-  }, [tasks, filterArea, filterUser]);
+  }, [decoratedTasks, filterArea, filterUser]);
 
   const columns = useMemo(() => {
-    const norm = (s) => String(s || "todo").toLowerCase();
     const todo = [];
-    const prog = [];
     const done = [];
     for (const t of filteredTasks) {
       const st = norm(t.status);
       if (st === "done" || st === "erledigt") done.push(t);
-      else if (st === "in_progress" || st === "in-arbeit" || st === "inarbeit") prog.push(t);
-      else todo.push(t);
+      else todo.push(t); // includes "in_progress" etc.
     }
-    return { todo, prog, done };
+    return { todo, done };
   }, [filteredTasks]);
 
   const fmtShort = (iso) => {
@@ -2054,6 +2057,12 @@ function KanboardPanel({ currentUser, isAdmin }) {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "";
     return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" });
+  };
+
+  const canUpdateStatus = (t) => {
+    if (isAdmin) return true;
+    // Assignee can update their own tasks
+    return t?.assignee_id && currentUser?.id && t.assignee_id === currentUser.id;
   };
 
   async function setStatus(taskId, newStatus) {
@@ -2066,40 +2075,26 @@ function KanboardPanel({ currentUser, isAdmin }) {
     }
   }
 
-  const boardGrid = {
-    display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(320px, 1fr))",
-    gap: 14,
-    alignItems: "start",
-  };
-
-  const colShell = {
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid #d8e0ef",
-    borderRadius: 18,
-    padding: 14,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
-    minHeight: 120,
-  };
-
-  const colHead = (label, count, toneBg) => (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ ...styles.pill, background: toneBg }}>{label}</span>
-      </div>
-      <div style={styles.badge}>{count}</div>
-    </div>
-  );
+  async function assignTask(taskId, assigneeId) {
+    try {
+      const { error } = await supabase.from("tasks").update({ assignee_id: assigneeId }).eq("id", taskId);
+      if (error) throw error;
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, assignee_id: assigneeId } : t)));
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  }
 
   const StatusSelect = ({ t }) => {
-    const v =
-      String(t.status || "todo").toLowerCase() === "done"
-        ? "done"
-        : String(t.status || "todo").toLowerCase() === "in_progress"
-          ? "in_progress"
-          : "todo";
     return (
-      <select value={v} onChange={(e) => setStatus(t.id, e.target.value)} style={{ ...styles.input, minWidth: 170 }} disabled={!canWriteTask(t)}>
+      <select
+        style={{ ...styles.select, padding: "8px 10px", minWidth: 150 }}
+        value={norm(t.status) === "done" || norm(t.status) === "erledigt" ? "done" : norm(t.status) === "in_progress" ? "in_progress" : "todo"}
+        onChange={(e) => setStatus(t.id, e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        disabled={!canUpdateStatus(t)}
+        title={!canUpdateStatus(t) ? "Nur lesend" : "Status ändern"}
+      >
         <option value="todo">Zu erledigen</option>
         <option value="in_progress">In Arbeit</option>
         <option value="done">Erledigt</option>
@@ -2107,33 +2102,87 @@ function KanboardPanel({ currentUser, isAdmin }) {
     );
   };
 
+  const AssignControl = ({ t }) => {
+    // Only show controls for unassigned tasks
+    if (t.assignee_id) return null;
+
+    // Non-admins can only assign to themselves (fast workflow)
+    if (!isAdmin) {
+      return (
+        <button
+          style={{ ...styles.smallBtn, borderColor: "var(--primary, #0b6b2a)", color: "var(--primary, #0b6b2a)" }}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!currentUser?.id) return;
+            assignTask(t.id, currentUser.id);
+          }}
+          title="Mir zuweisen"
+        >
+          Mir zuweisen
+        </button>
+      );
+    }
+
+    // Admin can assign to any member
+    return (
+      <select
+        style={{ ...styles.select, padding: "8px 10px", minWidth: 180 }}
+        defaultValue=""
+        onChange={(e) => {
+          const val = e.target.value;
+          if (!val) return;
+          assignTask(t.id, val);
+        }}
+        onClick={(e) => e.stopPropagation()}
+        title="Zuständig zuweisen"
+      >
+        <option value="">Zuständig…</option>
+        {members.map((u) => (
+          <option key={u.user_id} value={u.user_id}>
+            {u.name || u.email || u.user_id}
+          </option>
+        ))}
+      </select>
+    );
+  };
+
   const TaskCard = ({ t }) => (
-    <div style={styles.card}>
+    <div
+      style={{ ...styles.card, cursor: "pointer" }}
+      onClick={() => setViewTask(t)}
+      title="Klicken für Details"
+    >
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
         <div style={styles.h4}>{t.title || "(ohne Titel)"}</div>
 
         {t.areaObj?.color ? <span title={t.areaObj?.name || ""} style={{ ...styles.areaDot, background: t.areaObj.color }} /> : null}
 
         <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+          <AssignControl t={t} />
           <StatusSelect t={t} />
-          {!canWriteTask(t) ? <span style={{ fontSize: 12, opacity: 0.65 }}>nur lesend</span> : null}
         </div>
       </div>
 
       <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-        Bereich: {t.areaObj?.name || t.area || "—"}{" "}
-        {t.due_at ? (
-          <>
-            • Fällig: {fmtShort(t.due_at)}
-          </>
-        ) : null}
+        Bereich: {t.areaObj?.name || t.area || "—"}
+        {t.due_at ? <> • Fällig: {fmtShort(t.due_at)}</> : null}
         {t.assigneeObj?.name || t.assigneeObj?.email ? (
-          <>
-            {" "}
-            • Zuständig: {t.assigneeObj.name || t.assigneeObj.email}
-          </>
-        ) : null}
+          <> • Zuständig: {t.assigneeObj.name || t.assigneeObj.email}</>
+        ) : (
+          <> • Zuständig: —</>
+        )}
+        {norm(t.status) === "in_progress" ? <> • Status: In Arbeit</> : null}
       </div>
+    </div>
+  );
+
+  const Col = ({ title, count, children }) => (
+    <div style={styles.col}>
+      <div style={styles.colHeader}>
+        <div style={styles.h3}>{title}</div>
+        <div style={styles.badge}>{count}</div>
+      </div>
+      <div style={{ display: "grid", gap: 12 }}>{children}</div>
     </div>
   );
 
@@ -2143,12 +2192,12 @@ function KanboardPanel({ currentUser, isAdmin }) {
 
       <div style={styles.sectionHeader}>
         <div>
-          <div style={styles.h3}>Kanboard</div>
-          <div style={styles.sectionSub}>Status-Ansicht (Zu erledigen / In Arbeit / Erledigt).</div>
+          <div style={styles.sectionTitle}>Kanboard</div>
+          <div style={styles.sectionSub}>Übersicht nach Status (Zu erledigen / Erledigt). Karten sind klickbar.</div>
         </div>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={{ ...styles.input, minWidth: 180 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <select style={styles.select} value={filterArea} onChange={(e) => setFilterArea(e.target.value)}>
             <option value="all">Alle Bereiche</option>
             {areas.map((a) => (
               <option key={a.id} value={a.id}>
@@ -2157,54 +2206,78 @@ function KanboardPanel({ currentUser, isAdmin }) {
             ))}
           </select>
 
-          <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} style={{ ...styles.input, minWidth: 180 }}>
+          <select style={styles.select} value={filterUser} onChange={(e) => setFilterUser(e.target.value)}>
             <option value="all">Alle Nutzer</option>
-            {members
-              .filter((m) => m.is_active !== false)
-              .map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name || m.email || m.id}
-                </option>
-              ))}
+            <option value="unassigned">Nicht zugeordnet</option>
+            {members.map((u) => (
+              <option key={u.user_id} value={u.user_id}>
+                {u.name || u.email}
+              </option>
+            ))}
           </select>
 
-          <button style={styles.btn} onClick={loadAll} disabled={loading}>
+          <button style={styles.smallBtn} onClick={loadAll} disabled={loading}>
             {loading ? "Lade…" : "Neu laden"}
           </button>
         </div>
       </div>
 
-      <div style={boardGrid}>
-        <div style={colShell}>
-          {colHead("Zu erledigen", columns.todo.length, "#f7f9ff")}
-          <div style={{ display: "grid", gap: 12 }}>
-            {columns.todo.map((t) => (
-              <TaskCard key={t.id} t={t} />
-            ))}
-            {columns.todo.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
-          </div>
-        </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 12 }}>
+        <Col title="Zu erledigen" count={columns.todo.length}>
+          {columns.todo.length === 0 ? <div style={{ fontSize: 13, opacity: 0.7 }}>Keine Einträge.</div> : null}
+          {columns.todo.map((t) => (
+            <TaskCard key={t.id} t={t} />
+          ))}
+        </Col>
 
-        <div style={colShell}>
-          {colHead("In Arbeit", columns.prog.length, "#fff7ed")}
-          <div style={{ display: "grid", gap: 12 }}>
-            {columns.prog.map((t) => (
-              <TaskCard key={t.id} t={t} />
-            ))}
-            {columns.prog.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
-          </div>
-        </div>
-
-        <div style={colShell}>
-          {colHead("Erledigt", columns.done.length, "#ecfdf3")}
-          <div style={{ display: "grid", gap: 12 }}>
-            {columns.done.map((t) => (
-              <TaskCard key={t.id} t={t} />
-            ))}
-            {columns.done.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
-          </div>
-        </div>
+        <Col title="Erledigt" count={columns.done.length}>
+          {columns.done.length === 0 ? <div style={{ fontSize: 13, opacity: 0.7 }}>Keine Einträge.</div> : null}
+          {columns.done.map((t) => (
+            <TaskCard key={t.id} t={t} />
+          ))}
+        </Col>
       </div>
+
+      {viewTask ? (
+        <div style={styles.modalOverlay} onClick={() => setViewTask(null)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ fontSize: 18, fontWeight: 900 }}>{viewTask.title || "(ohne Titel)"}</div>
+              {viewTask.areaObj?.color ? (
+                <span style={{ ...styles.areaDot, background: viewTask.areaObj.color }} title={viewTask.areaObj?.name || ""} />
+              ) : null}
+              <div style={{ marginLeft: "auto" }}>
+                <button style={styles.smallBtn} onClick={() => setViewTask(null)}>
+                  Schließen
+                </button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 10, color: "#555", fontSize: 13 }}>
+              Bereich: {viewTask.areaObj?.name || viewTask.area || "—"}<br />
+              Fällig: {viewTask.due_at ? fmtShort(viewTask.due_at) : "—"}<br />
+              Zuständig: {viewTask.assigneeObj?.name || viewTask.assigneeObj?.email || "—"}<br />
+              Status: {norm(viewTask.status) === "done" || norm(viewTask.status) === "erledigt" ? "Erledigt" : norm(viewTask.status) === "in_progress" ? "In Arbeit" : "Zu erledigen"}
+            </div>
+
+            {viewTask.notes ? (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>Notizen</div>
+                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{viewTask.notes}</div>
+              </div>
+            ) : null}
+
+            {!viewTask.assignee_id ? (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>Zuweisen</div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <AssignControl t={viewTask} />
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
