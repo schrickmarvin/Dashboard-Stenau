@@ -1962,18 +1962,300 @@ function AreasPanel({ isAdmin }) {
 }
 
 
-/* ---------------- Kanboard (Placeholder) ---------------- */
-function KanboardPanel() {
+/* ---------------- Kanboard ---------------- */
+function KanboardPanel({ currentUser, isAdmin }) {
+  const [tasks, setTasks] = useState([]);
+  const [areas, setAreas] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const [filterArea, setFilterArea] = useState("all");
+  const [filterUser, setFilterUser] = useState("all");
+
+  const canWriteTask = (t) => {
+    if (isAdmin) return true;
+    return t?.assignee_id && currentUser?.id && t.assignee_id === currentUser.id;
+  };
+
+  async function loadAll() {
+    setLoading(true);
+    setErr(null);
+    try {
+      const [areasRes, membersRes, tasksRes] = await Promise.all([
+        supabase.from("areas").select("*").order("name", { ascending: true }),
+        supabase.from("profiles").select("id, name, email, is_active").order("name", { ascending: true }),
+        supabase.from("tasks").select("*").order("due_at", { ascending: true }),
+      ]);
+
+      if (areasRes.error) throw areasRes.error;
+      if (membersRes.error) throw membersRes.error;
+      if (tasksRes.error) throw tasksRes.error;
+
+      const areasList = areasRes.data || [];
+      const membersList = membersRes.data || [];
+      const tasksList = tasksRes.data || [];
+
+      const areaById = new Map(areasList.map((a) => [a.id, a]));
+      const areaByName = new Map(areasList.map((a) => [String(a.name || "").toLowerCase(), a]));
+      const memberById = new Map(membersList.map((m) => [m.id, m]));
+
+      const decorated = tasksList.map((t) => {
+        let areaObj = null;
+        if (t.area_id && areaById.has(t.area_id)) areaObj = areaById.get(t.area_id);
+        if (!areaObj && t.area) areaObj = areaByName.get(String(t.area).toLowerCase()) || null;
+
+        return {
+          ...t,
+          areaObj,
+          assigneeObj: t.assignee_id ? memberById.get(t.assignee_id) || null : null,
+        };
+      });
+
+      setAreas(areasList);
+      setMembers(membersList);
+      setTasks(decorated);
+    } catch (e) {
+      setErr(e?.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const filteredTasks = useMemo(() => {
+    return tasks.filter((t) => {
+      const areaOk = filterArea === "all" ? true : String(t.area_id || "") === String(filterArea);
+      const userOk = filterUser === "all" ? true : String(t.assignee_id || "") === String(filterUser);
+      return areaOk && userOk;
+    });
+  }, [tasks, filterArea, filterUser]);
+
+  const columns = useMemo(() => {
+    const norm = (s) => String(s || "todo").toLowerCase();
+    const todo = [];
+    const prog = [];
+    const done = [];
+    for (const t of filteredTasks) {
+      const st = norm(t.status);
+      if (st === "done" || st === "erledigt") done.push(t);
+      else if (st === "in_progress" || st === "in-arbeit" || st === "inarbeit") prog.push(t);
+      else todo.push(t);
+    }
+    return { todo, prog, done };
+  }, [filteredTasks]);
+
+  const fmtShort = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" });
+  };
+
+  async function setStatus(taskId, newStatus) {
+    try {
+      const { error } = await supabase.from("tasks").update({ status: newStatus }).eq("id", taskId);
+      if (error) throw error;
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: newStatus } : t)));
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  }
+
+  const colStyle = {
+    minWidth: 320,
+    maxWidth: 420,
+    flex: "1 1 0",
+    background: "rgba(255,255,255,0.9)",
+    border: "1px solid #e6ecf7",
+    borderRadius: 18,
+    padding: 14,
+    boxShadow: "0 10px 30px rgba(16,24,40,0.08)",
+    height: "fit-content",
+  };
+
+  const cardStyle = {
+    background: "#fff",
+    border: "1px solid #eef2fb",
+    borderRadius: 16,
+    padding: 12,
+    display: "grid",
+    gap: 8,
+  };
+
+  const pill = (bg) => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "4px 10px",
+    borderRadius: 999,
+    background: bg,
+    fontSize: 12,
+    fontWeight: 800,
+    width: "fit-content",
+  });
+
   return (
     <div style={styles.panel}>
-      <div style={styles.h3}>Kanboard</div>
-      <div style={{ color: "#666" }}>
-        Dieser Bereich ist vorbereitet. Wenn du willst, bauen wir hier ein echtes Kanban-Board mit Drag & Drop (ToDo / In Arbeit / Erledigt),
-        Filtern und Bereichsfarben.
+      <div style={styles.sectionHeader}>
+        <div>
+          <div style={styles.h3}>Kanboard</div>
+          <div style={styles.sectionSub}>Status-Ansicht (Zu erledigen / In Arbeit / Erledigt).</div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={styles.select}>
+            <option value="all">Alle Bereiche</option>
+            {areas.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+
+          <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} style={styles.select}>
+            <option value="all">Alle Nutzer</option>
+            {members
+              .filter((m) => m.is_active !== false)
+              .map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name || m.email || m.id}
+                </option>
+              ))}
+          </select>
+
+          <button onClick={loadAll} style={styles.smallBtn} disabled={loading}>
+            {loading ? "Lade..." : "Neu laden"}
+          </button>
+        </div>
+      </div>
+
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+
+      <div style={{ display: "flex", gap: 14, overflowX: "auto", paddingBottom: 6 }}>
+        <div style={colStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={pill("#eef6ff")}>Zu erledigen</div>
+            <div style={styles.badge}>{columns.todo.length}</div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {columns.todo.map((t) => (
+              <div key={t.id} style={cardStyle}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ fontWeight: 900 }}>{t.title || "(ohne Titel)"}</div>
+                  {t.areaObj?.color ? <div style={{ width: 14, height: 14, borderRadius: 6, background: t.areaObj.color }} /> : null}
+                </div>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, opacity: 0.85 }}>
+                  <span>{t.areaObj?.name || t.area || "—"}</span>
+                  {t.due_at ? <span>• fällig {fmtShort(t.due_at)}</span> : null}
+                  {t.assigneeObj?.name || t.assigneeObj?.email ? <span>• {t.assigneeObj.name || t.assigneeObj.email}</span> : null}
+                </div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+                  <select
+                    value={String(t.status || "todo").toLowerCase() === "done" ? "done" : String(t.status || "todo").toLowerCase() === "in_progress" ? "in_progress" : "todo"}
+                    onChange={(e) => setStatus(t.id, e.target.value)}
+                    style={styles.select}
+                    disabled={!canWriteTask(t)}
+                  >
+                    <option value="todo">Zu erledigen</option>
+                    <option value="in_progress">In Arbeit</option>
+                    <option value="done">Erledigt</option>
+                  </select>
+
+                  {!canWriteTask(t) ? <span style={{ fontSize: 12, opacity: 0.65 }}>nur lesend</span> : null}
+                </div>
+              </div>
+            ))}
+            {columns.todo.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+          </div>
+        </div>
+
+        <div style={colStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={pill("#fff7e6")}>In Arbeit</div>
+            <div style={styles.badge}>{columns.prog.length}</div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {columns.prog.map((t) => (
+              <div key={t.id} style={cardStyle}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ fontWeight: 900 }}>{t.title || "(ohne Titel)"}</div>
+                  {t.areaObj?.color ? <div style={{ width: 14, height: 14, borderRadius: 6, background: t.areaObj.color }} /> : null}
+                </div>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, opacity: 0.85 }}>
+                  <span>{t.areaObj?.name || t.area || "—"}</span>
+                  {t.due_at ? <span>• fällig {fmtShort(t.due_at)}</span> : null}
+                  {t.assigneeObj?.name || t.assigneeObj?.email ? <span>• {t.assigneeObj.name || t.assigneeObj.email}</span> : null}
+                </div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+                  <select
+                    value={"in_progress"}
+                    onChange={(e) => setStatus(t.id, e.target.value)}
+                    style={styles.select}
+                    disabled={!canWriteTask(t)}
+                  >
+                    <option value="todo">Zu erledigen</option>
+                    <option value="in_progress">In Arbeit</option>
+                    <option value="done">Erledigt</option>
+                  </select>
+
+                  {!canWriteTask(t) ? <span style={{ fontSize: 12, opacity: 0.65 }}>nur lesend</span> : null}
+                </div>
+              </div>
+            ))}
+            {columns.prog.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+          </div>
+        </div>
+
+        <div style={colStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={pill("#e7f7ee")}>Erledigt</div>
+            <div style={styles.badge}>{columns.done.length}</div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {columns.done.map((t) => (
+              <div key={t.id} style={cardStyle}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ fontWeight: 900 }}>{t.title || "(ohne Titel)"}</div>
+                  {t.areaObj?.color ? <div style={{ width: 14, height: 14, borderRadius: 6, background: t.areaObj.color }} /> : null}
+                </div>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, opacity: 0.85 }}>
+                  <span>{t.areaObj?.name || t.area || "—"}</span>
+                  {t.due_at ? <span>• fällig {fmtShort(t.due_at)}</span> : null}
+                  {t.assigneeObj?.name || t.assigneeObj?.email ? <span>• {t.assigneeObj.name || t.assigneeObj.email}</span> : null}
+                </div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+                  <select value={"done"} onChange={(e) => setStatus(t.id, e.target.value)} style={styles.select} disabled={!canWriteTask(t)}>
+                    <option value="todo">Zu erledigen</option>
+                    <option value="in_progress">In Arbeit</option>
+                    <option value="done">Erledigt</option>
+                  </select>
+
+                  {!canWriteTask(t) ? <span style={{ fontSize: 12, opacity: 0.65 }}>nur lesend</span> : null}
+                </div>
+              </div>
+            ))}
+            {columns.done.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
+
 
 /* ---------------- Calendar ---------------- */
 function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = false }) {
@@ -2944,7 +3226,7 @@ export default function Dashboard() {
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "kanboard" ? <KanboardPanel /> : null}
+      {activeTab === "kanboard" ? <KanboardPanel currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "calendar" ? <CalendarPanel areas={[]} users={[]} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
