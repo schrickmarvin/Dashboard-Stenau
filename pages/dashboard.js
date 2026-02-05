@@ -2066,41 +2066,81 @@ function KanboardPanel({ currentUser, isAdmin }) {
     }
   }
 
-  const colStyle = {
-    minWidth: 320,
-    maxWidth: 420,
-    flex: "1 1 0",
-    background: "rgba(255,255,255,0.9)",
-    border: "1px solid #e6ecf7",
+  const boardGrid = {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(320px, 1fr))",
+    gap: 14,
+    alignItems: "start",
+  };
+
+  const colShell = {
+    background: "rgba(255,255,255,0.92)",
+    border: "1px solid #d8e0ef",
     borderRadius: 18,
     padding: 14,
-    boxShadow: "0 10px 30px rgba(16,24,40,0.08)",
-    height: "fit-content",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
+    minHeight: 120,
   };
 
-  const cardStyle = {
-    background: "#fff",
-    border: "1px solid #eef2fb",
-    borderRadius: 16,
-    padding: 12,
-    display: "grid",
-    gap: 8,
+  const colHead = (label, count, toneBg) => (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ ...styles.pill, background: toneBg }}>{label}</span>
+      </div>
+      <div style={styles.badge}>{count}</div>
+    </div>
+  );
+
+  const StatusSelect = ({ t }) => {
+    const v =
+      String(t.status || "todo").toLowerCase() === "done"
+        ? "done"
+        : String(t.status || "todo").toLowerCase() === "in_progress"
+          ? "in_progress"
+          : "todo";
+    return (
+      <select value={v} onChange={(e) => setStatus(t.id, e.target.value)} style={{ ...styles.input, minWidth: 170 }} disabled={!canWriteTask(t)}>
+        <option value="todo">Zu erledigen</option>
+        <option value="in_progress">In Arbeit</option>
+        <option value="done">Erledigt</option>
+      </select>
+    );
   };
 
-  const pill = (bg) => ({
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    padding: "4px 10px",
-    borderRadius: 999,
-    background: bg,
-    fontSize: 12,
-    fontWeight: 800,
-    width: "fit-content",
-  });
+  const TaskCard = ({ t }) => (
+    <div style={styles.card}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={styles.h4}>{t.title || "(ohne Titel)"}</div>
+
+        {t.areaObj?.color ? <span title={t.areaObj?.name || ""} style={{ ...styles.areaDot, background: t.areaObj.color }} /> : null}
+
+        <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+          <StatusSelect t={t} />
+          {!canWriteTask(t) ? <span style={{ fontSize: 12, opacity: 0.65 }}>nur lesend</span> : null}
+        </div>
+      </div>
+
+      <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
+        Bereich: {t.areaObj?.name || t.area || "—"}{" "}
+        {t.due_at ? (
+          <>
+            • Fällig: {fmtShort(t.due_at)}
+          </>
+        ) : null}
+        {t.assigneeObj?.name || t.assigneeObj?.email ? (
+          <>
+            {" "}
+            • Zuständig: {t.assigneeObj.name || t.assigneeObj.email}
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
 
   return (
     <div style={styles.panel}>
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+
       <div style={styles.sectionHeader}>
         <div>
           <div style={styles.h3}>Kanboard</div>
@@ -2108,7 +2148,7 @@ function KanboardPanel({ currentUser, isAdmin }) {
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={styles.select}>
+          <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={{ ...styles.input, minWidth: 180 }}>
             <option value="all">Alle Bereiche</option>
             {areas.map((a) => (
               <option key={a.id} value={a.id}>
@@ -2117,7 +2157,7 @@ function KanboardPanel({ currentUser, isAdmin }) {
             ))}
           </select>
 
-          <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} style={styles.select}>
+          <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} style={{ ...styles.input, minWidth: 180 }}>
             <option value="all">Alle Nutzer</option>
             {members
               .filter((m) => m.is_active !== false)
@@ -2128,125 +2168,38 @@ function KanboardPanel({ currentUser, isAdmin }) {
               ))}
           </select>
 
-          <button onClick={loadAll} style={styles.smallBtn} disabled={loading}>
-            {loading ? "Lade..." : "Neu laden"}
+          <button style={styles.btn} onClick={loadAll} disabled={loading}>
+            {loading ? "Lade…" : "Neu laden"}
           </button>
         </div>
       </div>
 
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
-      <div style={{ display: "flex", gap: 14, overflowX: "auto", paddingBottom: 6 }}>
-        <div style={colStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={pill("#eef6ff")}>Zu erledigen</div>
-            <div style={styles.badge}>{columns.todo.length}</div>
-          </div>
-
-          <div style={{ display: "grid", gap: 10 }}>
+      <div style={boardGrid}>
+        <div style={colShell}>
+          {colHead("Zu erledigen", columns.todo.length, "#f7f9ff")}
+          <div style={{ display: "grid", gap: 12 }}>
             {columns.todo.map((t) => (
-              <div key={t.id} style={cardStyle}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                  <div style={{ fontWeight: 900 }}>{t.title || "(ohne Titel)"}</div>
-                  {t.areaObj?.color ? <div style={{ width: 14, height: 14, borderRadius: 6, background: t.areaObj.color }} /> : null}
-                </div>
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, opacity: 0.85 }}>
-                  <span>{t.areaObj?.name || t.area || "—"}</span>
-                  {t.due_at ? <span>• fällig {fmtShort(t.due_at)}</span> : null}
-                  {t.assigneeObj?.name || t.assigneeObj?.email ? <span>• {t.assigneeObj.name || t.assigneeObj.email}</span> : null}
-                </div>
-
-                <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
-                  <select
-                    value={String(t.status || "todo").toLowerCase() === "done" ? "done" : String(t.status || "todo").toLowerCase() === "in_progress" ? "in_progress" : "todo"}
-                    onChange={(e) => setStatus(t.id, e.target.value)}
-                    style={styles.select}
-                    disabled={!canWriteTask(t)}
-                  >
-                    <option value="todo">Zu erledigen</option>
-                    <option value="in_progress">In Arbeit</option>
-                    <option value="done">Erledigt</option>
-                  </select>
-
-                  {!canWriteTask(t) ? <span style={{ fontSize: 12, opacity: 0.65 }}>nur lesend</span> : null}
-                </div>
-              </div>
+              <TaskCard key={t.id} t={t} />
             ))}
             {columns.todo.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
           </div>
         </div>
 
-        <div style={colStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={pill("#fff7e6")}>In Arbeit</div>
-            <div style={styles.badge}>{columns.prog.length}</div>
-          </div>
-
-          <div style={{ display: "grid", gap: 10 }}>
+        <div style={colShell}>
+          {colHead("In Arbeit", columns.prog.length, "#fff7ed")}
+          <div style={{ display: "grid", gap: 12 }}>
             {columns.prog.map((t) => (
-              <div key={t.id} style={cardStyle}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                  <div style={{ fontWeight: 900 }}>{t.title || "(ohne Titel)"}</div>
-                  {t.areaObj?.color ? <div style={{ width: 14, height: 14, borderRadius: 6, background: t.areaObj.color }} /> : null}
-                </div>
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, opacity: 0.85 }}>
-                  <span>{t.areaObj?.name || t.area || "—"}</span>
-                  {t.due_at ? <span>• fällig {fmtShort(t.due_at)}</span> : null}
-                  {t.assigneeObj?.name || t.assigneeObj?.email ? <span>• {t.assigneeObj.name || t.assigneeObj.email}</span> : null}
-                </div>
-
-                <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
-                  <select
-                    value={"in_progress"}
-                    onChange={(e) => setStatus(t.id, e.target.value)}
-                    style={styles.select}
-                    disabled={!canWriteTask(t)}
-                  >
-                    <option value="todo">Zu erledigen</option>
-                    <option value="in_progress">In Arbeit</option>
-                    <option value="done">Erledigt</option>
-                  </select>
-
-                  {!canWriteTask(t) ? <span style={{ fontSize: 12, opacity: 0.65 }}>nur lesend</span> : null}
-                </div>
-              </div>
+              <TaskCard key={t.id} t={t} />
             ))}
             {columns.prog.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
           </div>
         </div>
 
-        <div style={colStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={pill("#e7f7ee")}>Erledigt</div>
-            <div style={styles.badge}>{columns.done.length}</div>
-          </div>
-
-          <div style={{ display: "grid", gap: 10 }}>
+        <div style={colShell}>
+          {colHead("Erledigt", columns.done.length, "#ecfdf3")}
+          <div style={{ display: "grid", gap: 12 }}>
             {columns.done.map((t) => (
-              <div key={t.id} style={cardStyle}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                  <div style={{ fontWeight: 900 }}>{t.title || "(ohne Titel)"}</div>
-                  {t.areaObj?.color ? <div style={{ width: 14, height: 14, borderRadius: 6, background: t.areaObj.color }} /> : null}
-                </div>
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, opacity: 0.85 }}>
-                  <span>{t.areaObj?.name || t.area || "—"}</span>
-                  {t.due_at ? <span>• fällig {fmtShort(t.due_at)}</span> : null}
-                  {t.assigneeObj?.name || t.assigneeObj?.email ? <span>• {t.assigneeObj.name || t.assigneeObj.email}</span> : null}
-                </div>
-
-                <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
-                  <select value={"done"} onChange={(e) => setStatus(t.id, e.target.value)} style={styles.select} disabled={!canWriteTask(t)}>
-                    <option value="todo">Zu erledigen</option>
-                    <option value="in_progress">In Arbeit</option>
-                    <option value="done">Erledigt</option>
-                  </select>
-
-                  {!canWriteTask(t) ? <span style={{ fontSize: 12, opacity: 0.65 }}>nur lesend</span> : null}
-                </div>
-              </div>
+              <TaskCard key={t.id} t={t} />
             ))}
             {columns.done.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
           </div>
@@ -2255,7 +2208,6 @@ function KanboardPanel({ currentUser, isAdmin }) {
     </div>
   );
 }
-
 
 /* ---------------- Calendar ---------------- */
 function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = false }) {
