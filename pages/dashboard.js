@@ -2042,10 +2042,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
     setLoading(true);
     try {
       let q = supabase
-        .from("tasks")
-        .select(
-          "id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at"
-        )
+        .from("tasks").select("*")
         .gte("due_at", rangeStart.toISOString())
         .lte("due_at", rangeEnd.toISOString())
         .order("due_at", { ascending: true });
@@ -2162,7 +2159,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
       const dueIso = mergeDateKeepTime(null, selectedDate);
       const insert = {
         title,
-        description: "",
+        notes: "",
         status: "open",
         area_id: filterAreaId !== "all" ? filterAreaId : null,
         assigned_to:
@@ -2494,9 +2491,9 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
               <label style={styles.label}>Beschreibung</label>
               <textarea
                 style={styles.textarea}
-                defaultValue={task.description || ""}
+                defaultValue={task.notes || ""}
                 rows={3}
-                onBlur={(e) => updateTask(task.id, { description: e.target.value })}
+                onBlur={(e) => updateTask(task.id, { notes: e.target.value })}
                 disabled={disabled}
               />
             </div>
