@@ -796,6 +796,8 @@ function TasksBoard({ isAdmin }) {
       ) : null}
 
     </div>
+	  </div>
+	</div>
   );
 }
 
@@ -973,6 +975,14 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
         {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
       </div>
     </div>
+    </div>
+  </div>
+  </div>
+  </div>
+	  </div>
+	</div>
+	</div>
+	</div>
   );
 }
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
