@@ -1963,68 +1963,264 @@ function AreasPanel({ isAdmin }) {
 
 
 /* ---------------- Kanboard ---------------- */
-function KanboardPanel({ currentUser, isAdmin }) {
-  const [tasks, setTasks] = useState([]);
-  const [areas, setAreas] = useState([]);
-  const [members, setMembers] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
+/* ---------------- Kanboard ---------------- */
+function KanboardPanel({ currentUser, isAdmin, areas = [], members = [] }) {
+  const [mode, setMode] = useState("status"); // "status" | "people"
   const [filterArea, setFilterArea] = useState("all");
   const [filterUser, setFilterUser] = useState("all");
-
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
   const [viewTask, setViewTask] = useState(null);
 
-  const [kanView, setKanView] = useState("status"); // "status" | "people"
-  const [showDonePeople, setShowDonePeople] = useState(false);
-
-  const norm = (v) => String(v || "").trim().toLowerCase();
-
-  async function loadAll() {
-    setLoading(true);
-    setErr(null);
-    try {
-      const [{ data: aData, error: aErr }, { data: uData, error: uErr }, { data: tData, error: tErr }] = await Promise.all([
-        supabase.from("areas").select("*").order("name"),
-        supabase.from("profiles").select("id, name, email, role, is_active").order("name", { ascending: true }),
-        supabase.from("tasks").select("*").order("created_at", { ascending: false }),
-      ]);
-      if (aErr) throw aErr;
-      if (uErr) throw uErr;
-      if (tErr) throw tErr;
-
-      setAreas(aData || []);
-      setMembers(uData || []);
-      setTasks(tData || []);
-    } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    loadAll();
-  }, []);
-
-  const areaById = useMemo(() => {
-    const m = new Map();
-    for (const a of areas || []) m.set(a.id, a);
-    return m;
-  }, [areas]);
+  const showError = (msg) => setErr(String(msg || "Fehler"));
 
   const memberById = useMemo(() => {
     const m = new Map();
-    for (const u of members || []) m.set(u.id, u);
+    (members || []).forEach((u) => m.set(u.id, u));
     return m;
   }, [members]);
 
-  const decoratedTasks = useMemo(() => {
-    return (
+  const areaById = useMemo(() => {
+    const m = new Map();
+    (areas || []).forEach((a) => m.set(a.id, a));
+    return m;
+  }, [areas]);
+
+  const load = async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const { data, error } = await supabase
+        .from("tasks")
+        .select("id,title,area_id,assigned_to,status,due_date,notes,created_at,updated_at")
+        .order("due_date", { ascending: true, nullsFirst: false })
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+
+      const decorated = (data || []).map((t) => {
+        const a = areaById.get(t.area_id) || null;
+        const u = t.assigned_to ? memberById.get(t.assigned_to) : null;
+        return {
+          ...t,
+          areaObj: a,
+          assigneeObj: u,
+        };
+      });
+
+      setTasks(decorated);
+    } catch (e) {
+      showError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [areas.length, members.length]);
+
+  const filtered = useMemo(() => {
+    return (tasks || []).filter((t) => {
+      if (filterArea !== "all" && t.area_id !== filterArea) return false;
+      if (filterUser !== "all" && t.assigned_to !== filterUser) return false;
+      return true;
+    });
+  }, [tasks, filterArea, filterUser]);
+
+  const openTasks = useMemo(() => filtered.filter((t) => t.status !== "done"), [filtered]);
+  const doneTasks = useMemo(() => filtered.filter((t) => t.status === "done"), [filtered]);
+
+  const groupByAssignee = useMemo(() => {
+    const map = new Map();
+    // unassigned bucket
+    map.set("unassigned", []);
+    for (const t of openTasks) {
+      const key = t.assigned_to || "unassigned";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(t);
+    }
+    return map;
+  }, [openTasks]);
+
+  const updateTask = async (taskId, patch) => {
+    try {
+      const { error } = await supabase.from("tasks").update(patch).eq("id", taskId);
+      if (error) throw error;
+      setTasks((prev) =>
+        prev.map((t) => {
+          if (t.id !== taskId) return t;
+          const next = { ...t, ...patch };
+          next.areaObj = areaById.get(next.area_id) || null;
+          next.assigneeObj = next.assigned_to ? memberById.get(next.assigned_to) : null;
+          return next;
+        })
+      );
+    } catch (e) {
+      showError(e.message || String(e));
+    }
+  };
+
+  const StatusSelect = ({ t }) => (
+    <select
+      value={t.status || "todo"}
+      onChange={(e) => updateTask(t.id, { status: e.target.value })}
+      style={styles.input}
+    >
+      <option value="todo">Zu erledigen</option>
+      <option value="done">Erledigt</option>
+    </select>
+  );
+
+  const AssignControl = ({ t }) => {
+    const isUnassigned = !t.assigned_to;
+
+    if (!isUnassigned) {
+      return (
+        <div style={{ fontSize: 12, opacity: 0.85 }}>
+          Zuständig: {t.assigneeObj?.name || t.assigneeObj?.email || "—"}
+        </div>
+      );
+    }
+
+    // Unassigned tasks: allow assignment here (overview + quick assign)
+    if (isAdmin) {
+      return (
+        <select
+          value={t.assigned_to || ""}
+          onChange={(e) => updateTask(t.id, { assigned_to: e.target.value || null })}
+          style={styles.input}
+          title="Zuständig zuweisen"
+        >
+          <option value="">– Zuständig –</option>
+          {(members || [])
+            .filter((u) => u.is_active !== false)
+            .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email), "de"))
+            .map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email}
+              </option>
+            ))}
+        </select>
+      );
+    }
+
+    if (currentUser?.id) {
+      return (
+        <button
+          style={styles.smallBtn}
+          type="button"
+          onClick={() => updateTask(t.id, { assigned_to: currentUser.id })}
+        >
+          Mir zuweisen
+        </button>
+      );
+    }
+
+    return null;
+  };
+
+  const TaskCard = ({ t, right }) => (
+    <div
+      style={{ ...styles.card, cursor: "pointer" }}
+      onClick={() => setViewTask(t)}
+      title="Details öffnen"
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div
+            style={{
+              width: 12,
+              height: 12,
+              borderRadius: 999,
+              background: t.areaObj?.color || "#9aa6c2",
+            }}
+          />
+          <div style={{ fontWeight: 900, fontSize: 15 }}>{t.title || "(Ohne Titel)"}</div>
+        </div>
+        <div onClick={(e) => e.stopPropagation()}>{right}</div>
+      </div>
+
+      <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+        Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)}
+      </div>
+
+      <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
+        <AssignControl t={t} />
+      </div>
+    </div>
+  );
+
+  const Modal = ({ children, onClose }) => (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,.35)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        zIndex: 9999,
+      }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div style={{ width: "min(720px, 96vw)", ...styles.card, padding: 16 }}>{children}</div>
+    </div>
+  );
+
+  const TaskModal = ({ t, onClose }) => (
+    <Modal onClose={onClose}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ fontSize: 18, fontWeight: 900 }}>{t.title || "(Ohne Titel)"}</div>
+        <button style={styles.smallBtn} onClick={onClose} type="button">
+          Schließen
+        </button>
+      </div>
+
+      <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>
+        Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)} · Status:{" "}
+        {t.status === "done" ? "Erledigt" : "Zu erledigen"}
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        <div style={styles.label}>Zuständig</div>
+        <div style={{ marginTop: 6 }}>{t.assigneeObj?.name || t.assigneeObj?.email || "—"}</div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <div style={styles.label}>Notizen</div>
+        <div style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>{t.notes || "—"}</div>
+      </div>
+    </Modal>
+  );
+
+  const Col = ({ title, count, children }) => (
+    <div style={styles.col}>
+      <div style={styles.colHeader}>
+        <div style={styles.h3}>{title}</div>
+        <div style={styles.badge}>{count}</div>
+      </div>
+      <div style={{ display: "grid", gap: 12 }}>
+        {children}
+        {count === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+      </div>
+    </div>
+  );
+
+  const activeMembers = (members || [])
+    .filter((u) => u.is_active !== false)
+    .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email), "de"));
+
+  return (
     <div style={styles.panel}>
       <div style={styles.h3}>Kanboard</div>
       <div style={{ color: "#666", marginBottom: 8 }}>
-        {kanView === "status"
+        {mode === "status"
           ? "Übersicht nach Status (Zu erledigen / Erledigt). Karten sind klickbar."
           : "Übersicht nach Personen (wer hat welche offenen Aufgaben). Karten sind klickbar."}
       </div>
@@ -2033,15 +2229,15 @@ function KanboardPanel({ currentUser, isAdmin }) {
 
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
         <button
-          style={{ ...styles.tabBtn, ...(kanView === "status" ? styles.tabBtnActive : {}) }}
-          onClick={() => setKanView("status")}
+          style={{ ...styles.tabBtn, ...(mode === "status" ? styles.tabBtnActive : {}) }}
+          onClick={() => setMode("status")}
           type="button"
         >
           Status
         </button>
         <button
-          style={{ ...styles.tabBtn, ...(kanView === "people" ? styles.tabBtnActive : {}) }}
-          onClick={() => setKanView("people")}
+          style={{ ...styles.tabBtn, ...(mode === "people" ? styles.tabBtnActive : {}) }}
+          onClick={() => setMode("people")}
           type="button"
         >
           Personen
@@ -2056,211 +2252,72 @@ function KanboardPanel({ currentUser, isAdmin }) {
           ))}
         </select>
 
-        {kanView === "status" ? (
-          <select style={styles.select} value={filterUser} onChange={(e) => setFilterUser(e.target.value)}>
-            <option value="all">Alle Nutzer</option>
-            <option value="unassigned">Nicht zugeordnet</option>
-            {(members || []).map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name || u.email || u.id}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <select style={styles.select} value={filterUser} onChange={(e) => setFilterUser(e.target.value)}>
-            <option value="all">Alle Personen</option>
-            <option value="unassigned">Nicht zugeordnet</option>
-            {(members || []).map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name || u.email || u.id}
-              </option>
-            ))}
-          </select>
-        )}
+        <select style={styles.select} value={filterUser} onChange={(e) => setFilterUser(e.target.value)}>
+          <option value="all">Alle Nutzer</option>
+          {activeMembers.map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.name || u.email}
+            </option>
+          ))}
+        </select>
 
-        {kanView === "people" ? (
-          <label style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 6 }}>
-            <input type="checkbox" checked={showDonePeople} onChange={(e) => setShowDonePeople(e.target.checked)} />
-            <span style={{ fontSize: 12, opacity: 0.8 }}>Erledigte anzeigen</span>
-          </label>
-        ) : null}
-
-        <button style={styles.smallBtn} onClick={loadAll} type="button">
-          Neu laden
+        <button style={styles.smallBtn} onClick={load} type="button">
+          {loading ? "Lade…" : "Neu laden"}
         </button>
       </div>
 
-      {loading ? <div>lädt…</div> : null}
+      {mode === "status" ? (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <Col title="Zu erledigen" count={openTasks.length}>
+            {openTasks.map((t) => (
+              <TaskCard key={t.id} t={t} right={<StatusSelect t={t} />} />
+            ))}
+          </Col>
 
-      {kanView === "status" ? (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }}>
-          <div style={styles.col}>
-            <div style={styles.colHeader}>
-              <div style={styles.h3}>Zu erledigen</div>
-              <div style={styles.badge}>{columns.todo.length}</div>
-            </div>
-
-            <div style={{ display: "grid", gap: 12 }}>
-              {columns.todo.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
-              {columns.todo.map((t) => (
-                <div key={t.id} style={{ ...styles.card, cursor: "pointer" }} onClick={() => setViewTask(t)}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <div
-                        style={{
-                          width: 12,
-                          height: 12,
-                          borderRadius: 999,
-                          background: t.areaObj?.color || "#9aa6c2",
-                        }}
-                      />
-                      <div style={{ fontWeight: 900, fontSize: 16 }}>{t.title || "(Ohne Titel)"}</div>
-                    </div>
-
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <StatusSelect t={t} />
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
-                    Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)} · Zuständig:{" "}
-                    {t.assigneeObj?.name || t.assigneeObj?.email || "—"}
-                  </div>
-
-                  {(!t.assignee_id || t.assignee_id === null) ? (
-                    <div style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
-                      <AssigneeControl t={t} />
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div style={styles.col}>
-            <div style={styles.colHeader}>
-              <div style={styles.h3}>Erledigt</div>
-              <div style={styles.badge}>{columns.done.length}</div>
-            </div>
-
-            <div style={{ display: "grid", gap: 12 }}>
-              {columns.done.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
-              {columns.done.map((t) => (
-                <div key={t.id} style={{ ...styles.card, cursor: "pointer" }} onClick={() => setViewTask(t)}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <div
-                        style={{
-                          width: 12,
-                          height: 12,
-                          borderRadius: 999,
-                          background: t.areaObj?.color || "#9aa6c2",
-                        }}
-                      />
-                      <div style={{ fontWeight: 900, fontSize: 16 }}>{t.title || "(Ohne Titel)"}</div>
-                    </div>
-
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <StatusSelect t={t} />
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
-                    Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)} · Zuständig:{" "}
-                    {t.assigneeObj?.name || t.assigneeObj?.email || "—"}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <Col title="Erledigt" count={doneTasks.length}>
+            {doneTasks.map((t) => (
+              <TaskCard key={t.id} t={t} right={<StatusSelect t={t} />} />
+            ))}
+          </Col>
         </div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(260px, 1fr))", gap: 14, alignItems: "start" }}>
-          {peopleColumns.map((c) => (
-            <div key={c.key} style={styles.col}>
-              <div style={styles.colHeader}>
-                <div style={styles.h3}>{c.title}</div>
-                <div style={styles.badge}>{c.open.length}</div>
-              </div>
+        <div style={{ overflowX: "auto" }}>
+          <div
+            style={{
+              display: "grid",
+              gridAutoFlow: "column",
+              gridAutoColumns: "320px",
+              gap: 16,
+              alignItems: "start",
+              paddingBottom: 6,
+            }}
+          >
+            {/* Unassigned */}
+            <Col title="Nicht zugeordnet" count={(groupByAssignee.get("unassigned") || []).length}>
+              {(groupByAssignee.get("unassigned") || []).map((t) => (
+                <TaskCard key={t.id} t={t} right={<StatusSelect t={t} />} />
+              ))}
+            </Col>
 
-              <div style={{ display: "grid", gap: 12 }}>
-                {c.open.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
-
-                {c.open.map((t) => (
-                  <div key={t.id} style={{ ...styles.card, cursor: "pointer" }} onClick={() => setViewTask(t)}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <div
-                          style={{
-                            width: 12,
-                            height: 12,
-                            borderRadius: 999,
-                            background: t.areaObj?.color || "#9aa6c2",
-                          }}
-                        />
-                        <div style={{ fontWeight: 900, fontSize: 16 }}>{t.title || "(Ohne Titel)"}</div>
-                      </div>
-                      <div onClick={(e) => e.stopPropagation()}>
-                        <StatusSelect t={t} />
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
-                      Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)}
-                    </div>
-
-                    {c.isUnassigned ? (
-                      <div style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
-                        <AssigneeControl t={t} />
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-
-                {showDonePeople ? (
-                  <div style={{ marginTop: 6 }}>
-                    <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.75, marginBottom: 6 }}>
-                      Erledigt ({c.done.length})
-                    </div>
-                    {c.done.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {c.done.map((t) => (
-                        <div key={t.id} style={{ ...styles.card, cursor: "pointer", opacity: 0.92 }} onClick={() => setViewTask(t)}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                              <div
-                                style={{
-                                  width: 12,
-                                  height: 12,
-                                  borderRadius: 999,
-                                  background: t.areaObj?.color || "#9aa6c2",
-                                }}
-                              />
-                              <div style={{ fontWeight: 900, fontSize: 15 }}>{t.title || "(Ohne Titel)"}</div>
-                            </div>
-                            <div onClick={(e) => e.stopPropagation()}>
-                              <StatusSelect t={t} />
-                            </div>
-                          </div>
-                          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
-                            Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ))}
+            {activeMembers.map((u) => {
+              const list = groupByAssignee.get(u.id) || [];
+              return (
+                <Col key={u.id} title={u.name || u.email} count={list.length}>
+                  {list.map((t) => (
+                    <TaskCard key={t.id} t={t} right={<StatusSelect t={t} />} />
+                  ))}
+                </Col>
+              );
+            })}
+          </div>
         </div>
       )}
 
       {viewTask ? <TaskModal t={viewTask} onClose={() => setViewTask(null)} /> : null}
     </div>
-
   );
 }
+
 /* ---------------- Calendar ---------------- */
 function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = false }) {
   const [view, setView] = useState("month"); // "month" | "week"
@@ -3230,7 +3287,7 @@ export default function Dashboard() {
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "kanboard" ? <KanboardPanel currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "kanboard" ? <KanboardPanel currentUser={auth.user} isAdmin={auth.isAdmin} areas={areas} members={members} /> : null}
       {activeTab === "calendar" ? <CalendarPanel areas={[]} users={[]} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
