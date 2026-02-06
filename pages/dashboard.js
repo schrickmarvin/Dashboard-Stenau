@@ -145,6 +145,36 @@ function TasksBoard({ isAdmin }) {
 
     setSeries(seriesData || []);
     setSeriesLoading(false);
+
+  async function refreshMeta() {
+    if (!auth?.user) {
+      setAreas([]);
+      setMembers([]);
+      return;
+    }
+    setMetaLoading(true);
+    try {
+      const [a, uRes] = await Promise.all([
+        loadAreas(),
+        supabase.from("profiles").select("id, name, email, is_active, role, role_id").order("name", { ascending: true }),
+      ]);
+      setAreas(a || []);
+      if (uRes.error) {
+        console.warn("profiles load failed:", uRes.error.message);
+        setMembers([]);
+      } else {
+        const list = (uRes.data || []).filter((p) => p && p.is_active !== false);
+        setMembers(list);
+      }
+    } catch (e) {
+      console.warn("meta load failed:", e?.message || e);
+      setAreas([]);
+      setMembers([]);
+    } finally {
+      setMetaLoading(false);
+    }
+  }
+
   }
 
   useEffect(() => {
@@ -3116,6 +3146,11 @@ export default function Dashboard() {
   const [userSettings, setUserSettings] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
 
+  const [areas, setAreas] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [metaLoading, setMetaLoading] = useState(false);
+
+
 
   async function refreshAuth() {
     setAuthLoading(true);
@@ -3152,6 +3187,10 @@ export default function Dashboard() {
       sub?.subscription?.unsubscribe?.();
     };
   }, []);
+
+  useEffect(() => {
+    refreshMeta();
+  }, [auth?.user?.id]);
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -3288,7 +3327,7 @@ export default function Dashboard() {
 
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
       {activeTab === "kanboard" ? <KanboardPanel currentUser={auth.user} isAdmin={auth.isAdmin} areas={areas} members={members} /> : null}
-      {activeTab === "calendar" ? <CalendarPanel areas={[]} users={[]} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "calendar" ? <CalendarPanel areas={areas} users={members} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "settings" ? (
