@@ -2958,8 +2958,6 @@ export default function Dashboard() {
 
       <div style={{ height: 24 }} />
     </div>
-      </div>
-    </div>
   );
 }
 
