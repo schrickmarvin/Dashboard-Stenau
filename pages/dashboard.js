@@ -127,14 +127,12 @@ function TasksBoard({ isAdmin }) {
     setMembers((membersRes?.data || []).filter((m) => m.is_active !== false));
     setLoading(false);
   }
+
   async function loadSeries() {
     setSeriesLoading(true);
-
     const { data: seriesData, error: seriesErr } = await supabase
       .from("tasks")
-      .select(
-        "id, title, area, area_id, due_at, series_rule, series_interval, series_until, repeat_count, created_at, subtasks ( id, title, guide_id, color )"
-      )
+      .select("id, title, area, area_id, due_at, series_rule, series_interval, series_until, repeat_count, created_at, subtasks ( id, title, guide_id, color )")
       .eq("is_series", true)
       .order("created_at", { ascending: false });
 
@@ -147,37 +145,6 @@ function TasksBoard({ isAdmin }) {
 
     setSeries(seriesData || []);
     setSeriesLoading(false);
-  }
-
-  async function refreshMeta() {
-    if (!auth?.user) {
-      setAreas([]);
-      setMembers([]);
-      return;
-    }
-    setMetaLoading(true);
-    try {
-      const [a, uRes] = await Promise.all([
-        loadAreas(),
-        supabase.from("profiles").select("id, name, email, is_active, role, role_id").order("name", { ascending: true }),
-      ]);
-      setAreas(a || []);
-      if (uRes.error) {
-        console.warn("profiles load failed:", uRes.error.message);
-        setMembers([]);
-      } else {
-        const list = (uRes.data || []).filter((p) => p && p.is_active !== false);
-        setMembers(list);
-      }
-    } catch (e) {
-      console.warn("meta load failed:", e?.message || e);
-      setAreas([]);
-      setMembers([]);
-    } finally {
-      setMetaLoading(false);
-    }
-  }
-
   }
 
   useEffect(() => {
@@ -1996,362 +1963,430 @@ function AreasPanel({ isAdmin }) {
 
 
 /* ---------------- Kanboard ---------------- */
-/* ---------------- Kanboard ---------------- */
-function KanboardPanel({ currentUser, isAdmin, areas = [], members = [] }) {
-  const [mode, setMode] = useState("status"); // "status" | "people"
-  const [filterArea, setFilterArea] = useState("all");
-  const [filterUser, setFilterUser] = useState("all");
+function KanboardPanel({ areas = [], members = [], currentUser = null, isAdmin = false }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-  const [viewTask, setViewTask] = useState(null);
-
-  const showError = (msg) => setErr(String(msg || "Fehler"));
-
-  const memberById = useMemo(() => {
-    const m = new Map();
-    (members || []).forEach((u) => m.set(u.id, u));
-    return m;
-  }, [members]);
+  const [err, setErr] = useState("");
+  const [areaFilter, setAreaFilter] = useState("all");
+  const [userFilter, setUserFilter] = useState("all"); // "all" | "unassigned" | memberId
+  const [openId, setOpenId] = useState(null);
 
   const areaById = useMemo(() => {
-    const m = new Map();
-    (areas || []).forEach((a) => m.set(a.id, a));
-    return m;
+    const map = {};
+    (areas || []).forEach((a) => (map[a.id] = a));
+    return map;
   }, [areas]);
 
-  const load = async () => {
+  const memberById = useMemo(() => {
+    const map = {};
+    (members || []).forEach((m) => (map[m.id] = m));
+    return map;
+  }, [members]);
+
+  const canWriteTask = (t) => {
+    if (!t) return false;
+    if (isAdmin) return true;
+    if (!currentUser?.id) return false;
+    return t.created_by === currentUser.id;
+  };
+
+  async function loadAll() {
     setLoading(true);
-    setErr(null);
+    setErr("");
     try {
       const { data, error } = await supabase
         .from("tasks")
-        .select("id,title,area_id,assigned_to,status,due_date,notes,created_at,updated_at")
-        .order("due_date", { ascending: true, nullsFirst: false })
+        .select("*")
+        .order("due_at", { ascending: true, nullsFirst: false })
         .order("created_at", { ascending: false });
 
       if (error) throw error;
 
-      const decorated = (data || []).map((t) => {
-        const a = areaById.get(t.area_id) || null;
-        const u = t.assigned_to ? memberById.get(t.assigned_to) : null;
-        return {
-          ...t,
-          areaObj: a,
-          assigneeObj: u,
-        };
-      });
+      const enriched = (data || []).map((t) => ({
+        ...t,
+        areaObj: t.area_id ? areaById[t.area_id] : null,
+        assigneeObj: t.assignee_id ? memberById[t.assignee_id] : null,
+      }));
 
-      setTasks(decorated);
+      setTasks(enriched);
     } catch (e) {
-      showError(e.message || String(e));
+      setErr(e?.message || String(e));
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   useEffect(() => {
-    load();
+    loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [areas.length, members.length]);
 
   const filtered = useMemo(() => {
     return (tasks || []).filter((t) => {
-      if (filterArea !== "all" && t.area_id !== filterArea) return false;
-      if (filterUser !== "all" && t.assigned_to !== filterUser) return false;
-      return true;
+      const areaOk = areaFilter === "all" ? true : String(t.area_id) === String(areaFilter);
+      let userOk = true;
+      if (userFilter === "unassigned") userOk = !t.assignee_id;
+      else if (userFilter !== "all") userOk = String(t.assignee_id) === String(userFilter);
+      return areaOk && userOk;
     });
-  }, [tasks, filterArea, filterUser]);
+  }, [tasks, areaFilter, userFilter]);
 
-  const openTasks = useMemo(() => filtered.filter((t) => t.status !== "done"), [filtered]);
-  const doneTasks = useMemo(() => filtered.filter((t) => t.status === "done"), [filtered]);
+  // "In Arbeit" fliegt raus: wir zählen "prog" einfach zu "todo"
+  const columns = useMemo(() => {
+    const todo = [];
+    const done = [];
+    filtered.forEach((t) => {
+      const st = t.status || "todo";
+      if (st === "done") done.push(t);
+      else todo.push(t);
+    });
+    return { todo, done };
+  }, [filtered]);
 
-  const groupByAssignee = useMemo(() => {
-    const map = new Map();
-    // unassigned bucket
-    map.set("unassigned", []);
-    for (const t of openTasks) {
-      const key = t.assigned_to || "unassigned";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(t);
+  const unassignedCount = useMemo(() => (tasks || []).filter((t) => !t.assignee_id).length, [tasks]);
+
+  async function setTaskStatus(taskId, status) {
+    const task = (tasks || []).find((t) => t.id === taskId);
+    if (!canWriteTask(task)) return;
+
+    const prev = tasks;
+    setTasks((arr) => arr.map((t) => (t.id === taskId ? { ...t, status } : t)));
+    const { error } = await supabase.from("tasks").update({ status }).eq("id", taskId);
+    if (error) {
+      setTasks(prev);
+      setErr(error.message);
     }
-    return map;
-  }, [openTasks]);
+  }
 
-  const updateTask = async (taskId, patch) => {
-    try {
-      const { error } = await supabase.from("tasks").update(patch).eq("id", taskId);
-      if (error) throw error;
-      setTasks((prev) =>
-        prev.map((t) => {
-          if (t.id !== taskId) return t;
-          const next = { ...t, ...patch };
-          next.areaObj = areaById.get(next.area_id) || null;
-          next.assigneeObj = next.assigned_to ? memberById.get(next.assigned_to) : null;
-          return next;
-        })
-      );
-    } catch (e) {
-      showError(e.message || String(e));
+  async function setTaskAssignee(taskId, assigneeId) {
+    const task = (tasks || []).find((t) => t.id === taskId);
+    if (!canWriteTask(task)) return;
+
+    const prev = tasks;
+    const nextAssignee = assigneeId ? memberById[assigneeId] : null;
+
+    setTasks((arr) =>
+      arr.map((t) =>
+        t.id === taskId ? { ...t, assignee_id: assigneeId || null, assigneeObj: nextAssignee || null } : t
+      )
+    );
+
+    const { error } = await supabase.from("tasks").update({ assignee_id: assigneeId || null }).eq("id", taskId);
+    if (error) {
+      setTasks(prev);
+      setErr(error.message);
     }
-  };
+  }
 
-  const StatusSelect = ({ t }) => (
-    <select
-      value={t.status || "todo"}
-      onChange={(e) => updateTask(t.id, { status: e.target.value })}
-      style={styles.input}
-    >
-      <option value="todo">Zu erledigen</option>
-      <option value="done">Erledigt</option>
-    </select>
-  );
+  const openTask = useMemo(() => (openId ? (tasks || []).find((t) => t.id === openId) : null), [openId, tasks]);
 
-  const AssignControl = ({ t }) => {
-    const isUnassigned = !t.assigned_to;
+  const peopleGroups = useMemo(() => {
+    const groups = {};
+    // Unassigned
+    groups.__unassigned__ = { id: "__unassigned__", name: `Unzugeordnet (${unassignedCount})`, items: [] };
 
-    if (!isUnassigned) {
-      return (
-        <div style={{ fontSize: 12, opacity: 0.85 }}>
-          Zuständig: {t.assigneeObj?.name || t.assigneeObj?.email || "—"}
-        </div>
-      );
-    }
+    (members || []).forEach((m) => {
+      const name = m.name || m.email || m.id;
+      groups[m.id] = { id: m.id, name, items: [] };
+    });
 
-    // Unassigned tasks: allow assignment here (overview + quick assign)
-    if (isAdmin) {
-      return (
-        <select
-          value={t.assigned_to || ""}
-          onChange={(e) => updateTask(t.id, { assigned_to: e.target.value || null })}
-          style={styles.input}
-          title="Zuständig zuweisen"
-        >
-          <option value="">– Zuständig –</option>
-          {(members || [])
-            .filter((u) => u.is_active !== false)
-            .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email), "de"))
-            .map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name || u.email}
-              </option>
-            ))}
-        </select>
-      );
-    }
+    (tasks || []).forEach((t) => {
+      const key = t.assignee_id ? String(t.assignee_id) : "__unassigned__";
+      if (!groups[key]) groups[key] = { id: key, name: key, items: [] };
+      groups[key].items.push(t);
+    });
 
-    if (currentUser?.id) {
-      return (
-        <button
-          style={styles.smallBtn}
-          type="button"
-          onClick={() => updateTask(t.id, { assigned_to: currentUser.id })}
-        >
-          Mir zuweisen
-        </button>
-      );
-    }
+    // Sort tasks per person: offene zuerst, dann nach due_at
+    Object.values(groups).forEach((g) => {
+      g.items.sort((a, b) => {
+        const aDone = (a.status || "todo") === "done";
+        const bDone = (b.status || "todo") === "done";
+        if (aDone !== bDone) return aDone ? 1 : -1;
+        const ad = a.due_at ? new Date(a.due_at).getTime() : 9e15;
+        const bd = b.due_at ? new Date(b.due_at).getTime() : 9e15;
+        return ad - bd;
+      });
+    });
 
-    return null;
-  };
+    // Keep order: Unassigned first, then members alphabetical
+    const ordered = [groups.__unassigned__].concat(
+      (members || [])
+        .slice()
+        .sort((a, b) => (a.name || a.email || "").localeCompare(b.name || b.email || "", "de"))
+        .map((m) => groups[m.id])
+        .filter(Boolean)
+    );
 
-  const TaskCard = ({ t, right }) => (
-    <div
-      style={{ ...styles.card, cursor: "pointer" }}
-      onClick={() => setViewTask(t)}
-      title="Details öffnen"
-    >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div
-            style={{
-              width: 12,
-              height: 12,
-              borderRadius: 999,
-              background: t.areaObj?.color || "#9aa6c2",
-            }}
-          />
-          <div style={{ fontWeight: 900, fontSize: 15 }}>{t.title || "(Ohne Titel)"}</div>
-        </div>
-        <div onClick={(e) => e.stopPropagation()}>{right}</div>
-      </div>
-
-      <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
-        Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)}
-      </div>
-
-      <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
-        <AssignControl t={t} />
-      </div>
-    </div>
-  );
-
-  const Modal = ({ children, onClose }) => (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,.35)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-        zIndex: 9999,
-      }}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div style={{ width: "min(720px, 96vw)", ...styles.card, padding: 16 }}>{children}</div>
-    </div>
-  );
-
-  const TaskModal = ({ t, onClose }) => (
-    <Modal onClose={onClose}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ fontSize: 18, fontWeight: 900 }}>{t.title || "(Ohne Titel)"}</div>
-        <button style={styles.smallBtn} onClick={onClose} type="button">
-          Schließen
-        </button>
-      </div>
-
-      <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>
-        Bereich: {t.areaObj?.name || "—"} · Fällig: {fmtShort(t.due_date)} · Status:{" "}
-        {t.status === "done" ? "Erledigt" : "Zu erledigen"}
-      </div>
-
-      <div style={{ marginTop: 10 }}>
-        <div style={styles.label}>Zuständig</div>
-        <div style={{ marginTop: 6 }}>{t.assigneeObj?.name || t.assigneeObj?.email || "—"}</div>
-      </div>
-
-      <div style={{ marginTop: 12 }}>
-        <div style={styles.label}>Notizen</div>
-        <div style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>{t.notes || "—"}</div>
-      </div>
-    </Modal>
-  );
-
-  const Col = ({ title, count, children }) => (
-    <div style={styles.col}>
-      <div style={styles.colHeader}>
-        <div style={styles.h3}>{title}</div>
-        <div style={styles.badge}>{count}</div>
-      </div>
-      <div style={{ display: "grid", gap: 12 }}>
-        {children}
-        {count === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
-      </div>
-    </div>
-  );
-
-  const activeMembers = (members || [])
-    .filter((u) => u.is_active !== false)
-    .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email), "de"));
+    return ordered;
+  }, [tasks, members, unassignedCount]);
 
   return (
-    <div style={styles.panel}>
-      <div style={styles.h3}>Kanboard</div>
-      <div style={{ color: "#666", marginBottom: 8 }}>
-        {mode === "status"
-          ? "Übersicht nach Status (Zu erledigen / Erledigt). Karten sind klickbar."
-          : "Übersicht nach Personen (wer hat welche offenen Aufgaben). Karten sind klickbar."}
-      </div>
-
+    <div style={{ display: "grid", gap: 14 }}>
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
-        <button
-          style={{ ...styles.tabBtn, ...(mode === "status" ? styles.tabBtnActive : {}) }}
-          onClick={() => setMode("status")}
-          type="button"
-        >
-          Status
-        </button>
-        <button
-          style={{ ...styles.tabBtn, ...(mode === "people" ? styles.tabBtnActive : {}) }}
-          onClick={() => setMode("people")}
-          type="button"
-        >
-          Personen
-        </button>
+      <div style={styles.panel}>
+        <div style={styles.h3}>Kanboard</div>
+        <div style={styles.sectionSub}>
+          Übersicht nach Status (Zu erledigen / Erledigt). Karten sind klickbar. Nicht zugeordnete Aufgaben können
+          zugeordnet werden.
+        </div>
 
-        <select style={styles.select} value={filterArea} onChange={(e) => setFilterArea(e.target.value)}>
-          <option value="all">Alle Bereiche</option>
-          {(areas || []).map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </select>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
+          <select value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} style={styles.input}>
+            <option value="all">Alle Bereiche</option>
+            {(areas || []).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
 
-        <select style={styles.select} value={filterUser} onChange={(e) => setFilterUser(e.target.value)}>
-          <option value="all">Alle Nutzer</option>
-          {activeMembers.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.name || u.email}
-            </option>
-          ))}
-        </select>
+          <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={styles.input}>
+            <option value="all">Alle Nutzer</option>
+            <option value="unassigned">Unzugeordnet</option>
+            {(members || []).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name || m.email || m.id}
+              </option>
+            ))}
+          </select>
 
-        <button style={styles.smallBtn} onClick={load} type="button">
-          {loading ? "Lade…" : "Neu laden"}
-        </button>
+          <button style={styles.btn} onClick={loadAll} disabled={loading}>
+            {loading ? "Lade…" : "Neu laden"}
+          </button>
+        </div>
+
+        <div style={styles.kanbanColumns2}>
+          <KanCol
+            title="Zu erledigen"
+            count={columns.todo.length}
+            tasks={columns.todo}
+            onOpen={(id) => setOpenId(id)}
+            onStatus={setTaskStatus}
+            onAssignee={setTaskAssignee}
+            areas={areaById}
+            members={members}
+            canWrite={canWriteTask}
+          />
+          <KanCol
+            title="Erledigt"
+            count={columns.done.length}
+            tasks={columns.done}
+            onOpen={(id) => setOpenId(id)}
+            onStatus={setTaskStatus}
+            onAssignee={setTaskAssignee}
+            areas={areaById}
+            members={members}
+            canWrite={canWriteTask}
+          />
+        </div>
       </div>
 
-      {mode === "status" ? (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <Col title="Zu erledigen" count={openTasks.length}>
-            {openTasks.map((t) => (
-              <TaskCard key={t.id} t={t} right={<StatusSelect t={t} />} />
-            ))}
-          </Col>
+      <div style={styles.panel}>
+        <div style={styles.h3}>Übersicht nach Person</div>
+        <div style={styles.sectionSub}>Schnellansicht, wer welche Aufgaben hat (inkl. unzugeordnet).</div>
 
-          <Col title="Erledigt" count={doneTasks.length}>
-            {doneTasks.map((t) => (
-              <TaskCard key={t.id} t={t} right={<StatusSelect t={t} />} />
-            ))}
-          </Col>
+        <div style={styles.peopleGrid}>
+          {peopleGroups.map((g) => {
+            const openItems = g.items.filter((t) => (t.status || "todo") !== "done");
+            const doneItems = g.items.filter((t) => (t.status || "todo") === "done");
+            return (
+              <div key={g.id} style={styles.peopleCard}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={styles.h4}>{g.name}</div>
+                  <span style={styles.pill}>Offen: {openItems.length}</span>
+                  <span style={styles.pill}>Erledigt: {doneItems.length}</span>
+                </div>
+
+                {openItems.length === 0 && doneItems.length === 0 ? (
+                  <div style={{ color: "#666", marginTop: 8 }}>Keine Aufgaben.</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                    {openItems.slice(0, 8).map((t) => (
+                      <div
+                        key={t.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setOpenId(t.id)}
+                        onKeyDown={(e) => (e.key === "Enter" ? setOpenId(t.id) : null)}
+                        style={styles.peopleItem}
+                        title="Öffnen"
+                      >
+                        <span
+                          style={{
+                            ...styles.areaDot,
+                            background: t.areaObj?.color || "#6b7280",
+                            marginRight: 8,
+                            flex: "0 0 auto",
+                          }}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis" }}>{t.title}</div>
+                          <div style={{ color: "#666", fontSize: 12 }}>
+                            {t.areaObj?.name || "—"}
+                            {t.due_at ? ` · fällig ${fmtShort(t.due_at)}` : ""}
+                          </div>
+                        </div>
+
+                        {!t.assignee_id ? (
+                          <select
+                            value=""
+                            onChange={(e) => setTaskAssignee(t.id, e.target.value)}
+                            style={{ ...styles.input, width: 170, height: 34 }}
+                            onClick={(e) => e.stopPropagation()}
+                            title="Zuweisen"
+                          >
+                            <option value="">Zuweisen…</option>
+                            {(members || []).map((m) => (
+                              <option key={m.id} value={m.id}>
+                                {m.name || m.email || m.id}
+                              </option>
+                            ))}
+                          </select>
+                        ) : null}
+                      </div>
+                    ))}
+
+                    {(openItems.length > 8 || doneItems.length > 0) ? (
+                      <div style={{ color: "#666", fontSize: 12 }}>
+                        {openItems.length > 8 ? `Weitere offene: ${openItems.length - 8}. ` : ""}
+                        {doneItems.length > 0 ? `Erledigt: ${doneItems.length}.` : ""}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <div
-            style={{
-              display: "grid",
-              gridAutoFlow: "column",
-              gridAutoColumns: "320px",
-              gap: 16,
-              alignItems: "start",
-              paddingBottom: 6,
-            }}
-          >
-            {/* Unassigned */}
-            <Col title="Nicht zugeordnet" count={(groupByAssignee.get("unassigned") || []).length}>
-              {(groupByAssignee.get("unassigned") || []).map((t) => (
-                <TaskCard key={t.id} t={t} right={<StatusSelect t={t} />} />
-              ))}
-            </Col>
+      </div>
 
-            {activeMembers.map((u) => {
-              const list = groupByAssignee.get(u.id) || [];
-              return (
-                <Col key={u.id} title={u.name || u.email} count={list.length}>
-                  {list.map((t) => (
-                    <TaskCard key={t.id} t={t} right={<StatusSelect t={t} />} />
+      {openTask ? (
+        <div style={styles.modalBackdrop} onMouseDown={() => setOpenId(null)}>
+          <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div style={styles.h4}>Aufgabe</div>
+              <button type="button" style={styles.btnSmall} onClick={() => setOpenId(null)}>
+                Schließen
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ fontSize: 18, fontWeight: 800 }}>{openTask.title}</div>
+              <div style={{ color: "#666" }}>
+                Bereich: {openTask.areaObj?.name || "—"} · Fällig: {openTask.due_at ? fmtDateTime(openTask.due_at) : "—"}
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <select
+                  value={(openTask.status || "todo") === "done" ? "done" : "todo"}
+                  onChange={(e) => setTaskStatus(openTask.id, e.target.value)}
+                  style={{ ...styles.input, width: 220 }}
+                  disabled={!canWriteTask(openTask)}
+                  title="Status"
+                >
+                  <option value="todo">Zu erledigen</option>
+                  <option value="done">Erledigt</option>
+                </select>
+
+                <select
+                  value={openTask.assignee_id || ""}
+                  onChange={(e) => setTaskAssignee(openTask.id, e.target.value)}
+                  style={{ ...styles.input, width: 260 }}
+                  disabled={!canWriteTask(openTask)}
+                  title="Zuständig"
+                >
+                  <option value="">– Unzugeordnet –</option>
+                  {(members || []).map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name || m.email || m.id}
+                    </option>
                   ))}
-                </Col>
-              );
-            })}
+                </select>
+              </div>
+
+              {openTask.description ? (
+                <div style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{openTask.description}</div>
+              ) : (
+                <div style={{ color: "#666" }}>Keine Beschreibung.</div>
+              )}
+            </div>
           </div>
         </div>
-      )}
+      ) : null}
+    </div>
+  );
+}
 
-      {viewTask ? <TaskModal t={viewTask} onClose={() => setViewTask(null)} /> : null}
+function KanCol({ title, count, tasks, onOpen, onStatus, onAssignee, areas, members, canWrite }) {
+  return (
+    <div style={styles.kanbanCol}>
+      <div style={styles.kanbanHeader}>
+        <span style={styles.kanbanTitle}>{title}</span>
+        <span style={styles.kanbanCount}>{count}</span>
+      </div>
+
+      {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+
+      <div style={{ display: "grid", gap: 10 }}>
+        {tasks.map((t) => {
+          const area = t.area_id ? areas[t.area_id] : null;
+          const dot = area?.color || "#6b7280";
+          const statusVal = (t.status || "todo") === "done" ? "done" : "todo";
+
+          return (
+            <div key={t.id} style={styles.kanbanCard} onClick={() => onOpen(t.id)} role="button" tabIndex={0}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ ...styles.areaDot, background: dot }} />
+                <div style={{ fontWeight: 800, flex: 1 }}>{t.title}</div>
+              </div>
+
+              <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
+                Bereich: {area?.name || "—"} · {t.due_at ? `fällig ${fmtShort(t.due_at)}` : "kein Datum"}
+                {t.assignee_id ? ` · ${t.assigneeObj?.name || t.assigneeObj?.email || t.assignee_id}` : " · Unzugeordnet"}
+              </div>
+
+              <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <select
+                  value={statusVal}
+                  onChange={(e) => onStatus(t.id, e.target.value)}
+                  style={{ ...styles.input, width: 160 }}
+                  onClick={(e) => e.stopPropagation()}
+                  disabled={!canWrite(t)}
+                  title="Status"
+                >
+                  <option value="todo">Zu erledigen</option>
+                  <option value="done">Erledigt</option>
+                </select>
+
+                {!t.assignee_id ? (
+                  <select
+                    value=""
+                    onChange={(e) => onAssignee(t.id, e.target.value)}
+                    style={{ ...styles.input, width: 220 }}
+                    onClick={(e) => e.stopPropagation()}
+                    disabled={!canWrite(t)}
+                    title="Zuweisen"
+                  >
+                    <option value="">Zuweisen…</option>
+                    {(members || []).map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name || m.email || m.id}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 /* ---------------- Calendar ---------------- */
+
 function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = false }) {
   const [view, setView] = useState("month"); // "month" | "week"
   const [monthCursor, setMonthCursor] = useState(() => {
@@ -3149,11 +3184,6 @@ export default function Dashboard() {
   const [userSettings, setUserSettings] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
 
-  const [areas, setAreas] = useState([]);
-  const [members, setMembers] = useState([]);
-  const [metaLoading, setMetaLoading] = useState(false);
-
-
 
   async function refreshAuth() {
     setAuthLoading(true);
@@ -3190,10 +3220,6 @@ export default function Dashboard() {
       sub?.subscription?.unsubscribe?.();
     };
   }, []);
-
-  useEffect(() => {
-    refreshMeta();
-  }, [auth?.user?.id]);
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -3329,8 +3355,8 @@ export default function Dashboard() {
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "kanboard" ? <KanboardPanel currentUser={auth.user} isAdmin={auth.isAdmin} areas={areas} members={members} /> : null}
-      {activeTab === "calendar" ? <CalendarPanel areas={areas} users={members} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "kanboard" ? <KanboardPanel currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "calendar" ? <CalendarPanel areas={[]} users={[]} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "settings" ? (
@@ -3639,5 +3665,60 @@ const styles = {
     padding: 10,
     borderBottom: "1px solid #eef2fb",
     verticalAlign: "top",
+  },
+  // Kanboard / Übersicht
+  kanbanColumns2: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 14,
+    marginTop: 14,
+  },
+  kanbanCol: {
+    background: "rgba(255,255,255,0.92)",
+    border: "1px solid #dbeafe",
+    borderRadius: 16,
+    padding: 12,
+    minHeight: 120,
+  },
+  kanbanHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  kanbanTitle: { fontWeight: 900 },
+  kanbanCount: {
+    width: 30,
+    height: 30,
+    borderRadius: 999,
+    background: "#eef2ff",
+    display: "grid",
+    placeItems: "center",
+    fontWeight: 900,
+  },
+  kanbanCard: {
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+    borderRadius: 14,
+    padding: 12,
+    cursor: "pointer",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
+  },
+  peopleGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+    gap: 14,
+    marginTop: 12,
+  },
+  peopleCard: {
+    background: "rgba(255,255,255,0.92)",
+    border: "1px solid #e5e7eb",
+    borderRadius: 16,
+    padding: 12,
+  },
+  peopleItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid #eef2f7",
+    background: "#fff",
+    cursor: "pointer",
   },
 };
