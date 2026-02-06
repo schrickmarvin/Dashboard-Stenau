@@ -1006,6 +1006,13 @@ function fmtDate(value) {
   });
 }
 
+function fmtShort(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" });
+}
+
 function startOfDayISO(dateStr) {
   const d = new Date(dateStr);
   d.setHours(0, 0, 0, 0);
