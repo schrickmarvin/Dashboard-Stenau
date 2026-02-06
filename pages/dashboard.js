@@ -127,12 +127,14 @@ function TasksBoard({ isAdmin }) {
     setMembers((membersRes?.data || []).filter((m) => m.is_active !== false));
     setLoading(false);
   }
-
   async function loadSeries() {
     setSeriesLoading(true);
+
     const { data: seriesData, error: seriesErr } = await supabase
       .from("tasks")
-      .select("id, title, area, area_id, due_at, series_rule, series_interval, series_until, repeat_count, created_at, subtasks ( id, title, guide_id, color )")
+      .select(
+        "id, title, area, area_id, due_at, series_rule, series_interval, series_until, repeat_count, created_at, subtasks ( id, title, guide_id, color )"
+      )
       .eq("is_series", true)
       .order("created_at", { ascending: false });
 
@@ -145,6 +147,7 @@ function TasksBoard({ isAdmin }) {
 
     setSeries(seriesData || []);
     setSeriesLoading(false);
+  }
 
   async function refreshMeta() {
     if (!auth?.user) {
