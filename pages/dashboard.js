@@ -1970,353 +1970,412 @@ function AreasPanel({ isAdmin }) {
 
 
 /* ---------------- Kanboard ---------------- */
-function KanboardPanel({ areas = [], members = [], currentUser = null, isAdmin = false }) {
-  const [tasks, setTasks] = useState([]);
+function KanboardPanel({ areas = [], users = [], currentUser = null, isAdmin = false }) {
+  // NOTE: "areas" / "users" props may be empty depending on the currently loaded Dashboard version.
+  // For the Kanboard we load the needed meta (Bereiche + Nutzer) defensively again.
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [areaFilter, setAreaFilter] = useState("all");
-  const [userFilter, setUserFilter] = useState("all"); // "all" | "unassigned" | memberId
-  const [openId, setOpenId] = useState(null);
+
+  const [kbAreas, setKbAreas] = useState(Array.isArray(areas) ? areas : []);
+  const [kbMembers, setKbMembers] = useState(Array.isArray(users) ? users : []);
+
+  const [filterAreaId, setFilterAreaId] = useState("");
+  const [filterUserId, setFilterUserId] = useState("");
+
+  const [tasks, setTasks] = useState([]);
+  const [subByTask, setSubByTask] = useState({}); // { [taskId]: subtasks[] }
+
+  const [modal, setModal] = useState({ open: false, task: null });
 
   const areaById = useMemo(() => {
     const map = {};
-    (areas || []).forEach((a) => (map[a.id] = a));
+    (kbAreas || []).forEach((a) => (map[a.id] = a));
     return map;
-  }, [areas]);
+  }, [kbAreas]);
 
   const memberById = useMemo(() => {
     const map = {};
-    (members || []).forEach((m) => (map[m.id] = m));
+    (kbMembers || []).forEach((u) => (map[u.id] = u));
     return map;
-  }, [members]);
+  }, [kbMembers]);
 
-  const canWriteTask = (t) => {
-    if (!t) return false;
-    if (isAdmin) return true;
-    if (!currentUser?.id) return false;
-    return t.created_by === currentUser.id;
+  const getAssigneeLabel = (assigneeId) => {
+    if (!assigneeId) return "Unzugeordnet";
+    const u = memberById[assigneeId];
+    return (u && (u.name || u.email || u.id)) || assigneeId;
   };
 
-  async function loadAll() {
-    setLoading(true);
-    setErr("");
+  const loadMeta = async () => {
     try {
-      const { data, error } = await supabase
+      setErr("");
+      // Bereiche
+      const aRes = await supabase.from("areas").select("id,name,color").order("name", { ascending: true });
+      if (aRes.error) throw aRes.error;
+
+      // Nutzer: in diesem Projekt ist die Tabelle "users" (nicht users_profile / profiles)
+      const uRes = await supabase
+        .from("users")
+        .select("id,email,name,role,active,areas")
+        .order("name", { ascending: true });
+
+      if (uRes.error) throw uRes.error;
+
+      setKbAreas(aRes.data || []);
+      setKbMembers((uRes.data || []).filter((u) => u.active !== false));
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  };
+
+  const loadTasks = async () => {
+    try {
+      setLoading(true);
+      setErr("");
+
+      const tRes = await supabase
         .from("tasks")
-        .select("*")
-        .order("due_at", { ascending: true, nullsFirst: false })
-        .order("created_at", { ascending: false });
+        .select("id,title,status,area_id,assignee_id,due_at,created_at")
+        .in("status", ["todo", "done"])
+        .order("due_at", { ascending: true, nullsFirst: false });
 
-      if (error) throw error;
+      if (tRes.error) throw tRes.error;
 
-      const enriched = (data || []).map((t) => ({
-        ...t,
-        areaObj: t.area_id ? areaById[t.area_id] : null,
-        assigneeObj: t.assignee_id ? memberById[t.assignee_id] : null,
-      }));
+      const list = tRes.data || [];
+      setTasks(list);
 
-      setTasks(enriched);
+      const ids = list.map((t) => t.id).filter(Boolean);
+      if (ids.length === 0) {
+        setSubByTask({});
+        return;
+      }
+
+      const sRes = await supabase
+        .from("subtasks")
+        .select("id,task_id,title,done,guide_id,color,created_at")
+        .in("task_id", ids)
+        .order("created_at", { ascending: true });
+
+      if (sRes.error) throw sRes.error;
+
+      const grouped = {};
+      (sRes.data || []).forEach((s) => {
+        if (!grouped[s.task_id]) grouped[s.task_id] = [];
+        grouped[s.task_id].push(s);
+      });
+      setSubByTask(grouped);
     } catch (e) {
       setErr(e?.message || String(e));
     } finally {
       setLoading(false);
     }
-  }
+  };
+
+  const refreshAll = async () => {
+    await loadMeta();
+    await loadTasks();
+  };
 
   useEffect(() => {
-    loadAll();
+    // Initial load
+    refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [areas.length, members.length]);
+  }, []);
 
   const filtered = useMemo(() => {
-    return (tasks || []).filter((t) => {
-      const areaOk = areaFilter === "all" ? true : String(t.area_id) === String(areaFilter);
-      let userOk = true;
-      if (userFilter === "unassigned") userOk = !t.assignee_id;
-      else if (userFilter !== "all") userOk = String(t.assignee_id) === String(userFilter);
-      return areaOk && userOk;
-    });
-  }, [tasks, areaFilter, userFilter]);
+    let list = tasks || [];
+    if (filterAreaId) list = list.filter((t) => t.area_id === filterAreaId);
+    if (filterUserId) list = list.filter((t) => t.assignee_id === filterUserId);
+    return list;
+  }, [tasks, filterAreaId, filterUserId]);
 
-  // "In Arbeit" fliegt raus: wir zählen "prog" einfach zu "todo"
   const columns = useMemo(() => {
     const todo = [];
     const done = [];
-    filtered.forEach((t) => {
-      const st = t.status || "todo";
-      if (st === "done") done.push(t);
-      else todo.push(t);
-    });
+    (filtered || []).forEach((t) => (t.status === "done" ? done : todo).push(t));
     return { todo, done };
   }, [filtered]);
 
-  const unassignedCount = useMemo(() => (tasks || []).filter((t) => !t.assignee_id).length, [tasks]);
-
-  async function setTaskStatus(taskId, status) {
-    const task = (tasks || []).find((t) => t.id === taskId);
-    if (!canWriteTask(task)) return;
-
-    const prev = tasks;
-    setTasks((arr) => arr.map((t) => (t.id === taskId ? { ...t, status } : t)));
-    const { error } = await supabase.from("tasks").update({ status }).eq("id", taskId);
-    if (error) {
-      setTasks(prev);
-      setErr(error.message);
+  const setTaskStatus = async (taskId, status) => {
+    try {
+      setErr("");
+      const { error } = await supabase.from("tasks").update({ status }).eq("id", taskId);
+      if (error) throw error;
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status } : t)));
+      if (modal.open && modal.task?.id === taskId) setModal((m) => ({ ...m, task: { ...m.task, status } }));
+    } catch (e) {
+      setErr(e?.message || String(e));
     }
-  }
+  };
 
-  async function setTaskAssignee(taskId, assigneeId) {
-    const task = (tasks || []).find((t) => t.id === taskId);
-    if (!canWriteTask(task)) return;
+  const assignTask = async (taskId, assigneeId) => {
+    try {
+      setErr("");
+      const payload = { assignee_id: assigneeId || null };
+      const { error } = await supabase.from("tasks").update(payload).eq("id", taskId);
+      if (error) throw error;
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, assignee_id: assigneeId || null } : t)));
+      if (modal.open && modal.task?.id === taskId) setModal((m) => ({ ...m, task: { ...m.task, assignee_id: assigneeId || null } }));
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  };
 
-    const prev = tasks;
-    const nextAssignee = assigneeId ? memberById[assigneeId] : null;
+  const openTask = (t) => setModal({ open: true, task: t });
+  const closeTask = () => setModal({ open: false, task: null });
 
-    setTasks((arr) =>
-      arr.map((t) =>
-        t.id === taskId ? { ...t, assignee_id: assigneeId || null, assigneeObj: nextAssignee || null } : t
-      )
+  const TaskCard = ({ t }) => {
+    const areaName = areaById[t.area_id]?.name || "—";
+    const due = t.due_at ? fmtShort(t.due_at) : "—";
+    const assLabel = getAssigneeLabel(t.assignee_id);
+    const subs = subByTask[t.id] || [];
+    const doneCount = subs.filter((s) => !!s.done).length;
+
+    const canAssignHere = !t.assignee_id; // nur nicht zugeordnet direkt zuordnen
+
+    return (
+      <div
+        style={{ ...styles.card, cursor: "pointer" }}
+        onClick={() => openTask(t)}
+        title="Klicken für Details"
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ ...styles.areaDot, background: areaById[t.area_id]?.color || "#6b7280" }} />
+          <div style={styles.h4}>{t.title || "—"}</div>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+            <select
+              value={t.status || "todo"}
+              onChange={(e) => setTaskStatus(t.id, e.target.value)}
+              style={styles.input}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <option value="todo">Zu erledigen</option>
+              <option value="done">Erledigt</option>
+            </select>
+            {canAssignHere ? (
+              <select
+                value={t.assignee_id || ""}
+                onChange={(e) => assignTask(t.id, e.target.value)}
+                style={styles.input}
+                onClick={(e) => e.stopPropagation()}
+                title="Zuweisen"
+              >
+                <option value="">Zuweisen…</option>
+                {(kbMembers || []).map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name || u.email || u.id}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+          </div>
+        </div>
+
+        <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
+          Bereich: {areaName} · fällig: {due} · Zuständig: {assLabel}
+        </div>
+
+        {subs.length > 0 ? (
+          <div style={{ marginTop: 10, fontSize: 13 }}>
+            <span style={styles.pill}>Unteraufgaben: {doneCount}/{subs.length}</span>
+            <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+              {subs.slice(0, 5).map((s) => (
+                <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="checkbox" checked={!!s.done} readOnly />
+                  <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.title}</span>
+                </div>
+              ))}
+              {subs.length > 5 ? <div style={{ color: "#666" }}>+ {subs.length - 5} weitere…</div> : null}
+            </div>
+          </div>
+        ) : (
+          <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>Keine Unteraufgaben.</div>
+        )}
+      </div>
     );
+  };
 
-    const { error } = await supabase.from("tasks").update({ assignee_id: assigneeId || null }).eq("id", taskId);
-    if (error) {
-      setTasks(prev);
-      setErr(error.message);
-    }
-  }
+  const PersonOverview = () => {
+    const byPerson = {};
+    // Unzugeordnet als eigener Bucket
+    byPerson["__unassigned__"] = { id: "__unassigned__", label: "Unzugeordnet", tasks: [] };
 
-  const openTask = useMemo(() => (openId ? (tasks || []).find((t) => t.id === openId) : null), [openId, tasks]);
-
-  const peopleGroups = useMemo(() => {
-    const groups = {};
-    // Unassigned
-    groups.__unassigned__ = { id: "__unassigned__", name: `Unzugeordnet (${unassignedCount})`, items: [] };
-
-    (members || []).forEach((m) => {
-      const name = m.name || m.email || m.id;
-      groups[m.id] = { id: m.id, name, items: [] };
+    (kbMembers || []).forEach((u) => {
+      byPerson[u.id] = { id: u.id, label: (u.name || u.email || u.id), tasks: [] };
     });
 
     (tasks || []).forEach((t) => {
-      const key = t.assignee_id ? String(t.assignee_id) : "__unassigned__";
-      if (!groups[key]) groups[key] = { id: key, name: key, items: [] };
-      groups[key].items.push(t);
+      const key = t.assignee_id ? t.assignee_id : "__unassigned__";
+      if (!byPerson[key]) byPerson[key] = { id: key, label: getAssigneeLabel(key), tasks: [] };
+      byPerson[key].tasks.push(t);
     });
 
-    // Sort tasks per person: offene zuerst, dann nach due_at
-    Object.values(groups).forEach((g) => {
-      g.items.sort((a, b) => {
-        const aDone = (a.status || "todo") === "done";
-        const bDone = (b.status || "todo") === "done";
-        if (aDone !== bDone) return aDone ? 1 : -1;
-        const ad = a.due_at ? new Date(a.due_at).getTime() : 9e15;
-        const bd = b.due_at ? new Date(b.due_at).getTime() : 9e15;
-        return ad - bd;
-      });
-    });
+    const rows = Object.values(byPerson).filter((r) => r.tasks.length > 0);
 
-    // Keep order: Unassigned first, then members alphabetical
-    const ordered = [groups.__unassigned__].concat(
-      (members || [])
-        .slice()
-        .sort((a, b) => (a.name || a.email || "").localeCompare(b.name || b.email || "", "de"))
-        .map((m) => groups[m.id])
-        .filter(Boolean)
-    );
-
-    return ordered;
-  }, [tasks, members, unassignedCount]);
-
-  return (
-    <div style={{ display: "grid", gap: 14 }}>
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
+    return (
       <div style={styles.panel}>
-        <div style={styles.h3}>Kanboard</div>
-        <div style={styles.sectionSub}>
-          Übersicht nach Status (Zu erledigen / Erledigt). Karten sind klickbar. Nicht zugeordnete Aufgaben können
-          zugeordnet werden.
+        <div style={styles.h3}>Übersicht nach Person</div>
+        <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
+          Schnellansicht, wer welche Aufgaben hat (inkl. unzugeordnet). Klick auf Aufgabe öffnet Details.
         </div>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
-          <select value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} style={styles.input}>
-            <option value="all">Alle Bereiche</option>
-            {(areas || []).map((a) => (
+        <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+          {rows.map((r) => {
+            const open = r.tasks.filter((t) => t.status !== "done").length;
+            const done = r.tasks.filter((t) => t.status === "done").length;
+
+            return (
+              <div key={r.id} style={styles.card}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={styles.h4}>{r.label}</div>
+                  <span style={styles.pill}>Offen: {open}</span>
+                  <span style={styles.pill}>Erledigt: {done}</span>
+                </div>
+
+                <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                  {r.tasks
+                    .slice()
+                    .sort((a, b) => (a.status === b.status ? 0 : a.status === "done" ? 1 : -1))
+                    .map((t) => (
+                      <div key={t.id} style={{ padding: 10, border: "1px solid #e5e7eb", borderRadius: 10 }}>
+                        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                          <span style={{ ...styles.areaDot, background: areaById[t.area_id]?.color || "#6b7280" }} />
+                          <div style={{ fontWeight: 700 }}>{t.title}</div>
+                          <span style={{ marginLeft: "auto", color: "#666", fontSize: 13 }}>
+                            {t.due_at ? fmtShort(t.due_at) : "—"} · {t.status === "done" ? "Erledigt" : "Zu erledigen"}
+                          </span>
+                        </div>
+                        <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
+                          Bereich: {areaById[t.area_id]?.name || "—"} · Unteraufgaben: {(subByTask[t.id] || []).length}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            );
+          })}
+          {rows.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <div style={styles.panel}>
+        <div style={styles.h3}>Kanboard</div>
+        <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
+          Übersicht nach Status (Zu erledigen / Erledigt). Karten sind klickbar. Nicht zugeordnete Aufgaben können zugeordnet werden.
+        </div>
+
+        {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
+          <select value={filterAreaId} onChange={(e) => setFilterAreaId(e.target.value)} style={styles.input}>
+            <option value="">Alle Bereiche</option>
+            {(kbAreas || []).map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
               </option>
             ))}
           </select>
 
-          <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={styles.input}>
-            <option value="all">Alle Nutzer</option>
-            <option value="unassigned">Unzugeordnet</option>
-            {(members || []).map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name || m.email || m.id}
+          <select value={filterUserId} onChange={(e) => setFilterUserId(e.target.value)} style={styles.input}>
+            <option value="">Alle Nutzer</option>
+            {(kbMembers || []).map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email || u.id}
               </option>
             ))}
           </select>
 
-          <button style={styles.btn} onClick={loadAll} disabled={loading}>
+          <button style={styles.btn} onClick={refreshAll} disabled={loading}>
             {loading ? "Lade…" : "Neu laden"}
           </button>
         </div>
 
-        <div style={styles.kanbanColumns2}>
-          <KanCol
-            title="Zu erledigen"
-            count={columns.todo.length}
-            tasks={columns.todo}
-            onOpen={(id) => setOpenId(id)}
-            onStatus={setTaskStatus}
-            onAssignee={setTaskAssignee}
-            areas={areaById}
-            members={members}
-            canWrite={canWriteTask}
-          />
-          <KanCol
-            title="Erledigt"
-            count={columns.done.length}
-            tasks={columns.done}
-            onOpen={(id) => setOpenId(id)}
-            onStatus={setTaskStatus}
-            onAssignee={setTaskAssignee}
-            areas={areaById}
-            members={members}
-            canWrite={canWriteTask}
-          />
+        <div style={{ ...styles.columns, marginTop: 12 }}>
+          <div style={styles.col}>
+            <div style={styles.colHeader}>
+              <div style={styles.h4}>Zu erledigen</div>
+              <span style={styles.badge}>{columns.todo.length}</span>
+            </div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {columns.todo.map((t) => (
+                <TaskCard key={t.id} t={t} />
+              ))}
+              {columns.todo.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+            </div>
+          </div>
+
+          <div style={styles.col}>
+            <div style={styles.colHeader}>
+              <div style={styles.h4}>Erledigt</div>
+              <span style={styles.badge}>{columns.done.length}</span>
+            </div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {columns.done.map((t) => (
+                <TaskCard key={t.id} t={t} />
+              ))}
+              {columns.done.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+            </div>
+          </div>
         </div>
       </div>
 
-      <div style={styles.panel}>
-        <div style={styles.h3}>Übersicht nach Person</div>
-        <div style={styles.sectionSub}>Schnellansicht, wer welche Aufgaben hat (inkl. unzugeordnet).</div>
+      <PersonOverview />
 
-        <div style={styles.peopleGrid}>
-          {peopleGroups.map((g) => {
-            const openItems = g.items.filter((t) => (t.status || "todo") !== "done");
-            const doneItems = g.items.filter((t) => (t.status || "todo") === "done");
-            return (
-              <div key={g.id} style={styles.peopleCard}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={styles.h4}>{g.name}</div>
-                  <span style={styles.pill}>Offen: {openItems.length}</span>
-                  <span style={styles.pill}>Erledigt: {doneItems.length}</span>
-                </div>
-
-                {openItems.length === 0 && doneItems.length === 0 ? (
-                  <div style={{ color: "#666", marginTop: 8 }}>Keine Aufgaben.</div>
-                ) : (
-                  <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-                    {openItems.slice(0, 8).map((t) => (
-                      <div
-                        key={t.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => setOpenId(t.id)}
-                        onKeyDown={(e) => (e.key === "Enter" ? setOpenId(t.id) : null)}
-                        style={styles.peopleItem}
-                        title="Öffnen"
-                      >
-                        <span
-                          style={{
-                            ...styles.areaDot,
-                            background: t.areaObj?.color || "#6b7280",
-                            marginRight: 8,
-                            flex: "0 0 auto",
-                          }}
-                        />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis" }}>{t.title}</div>
-                          <div style={{ color: "#666", fontSize: 12 }}>
-                            {t.areaObj?.name || "—"}
-                            {t.due_at ? ` · fällig ${fmtShort(t.due_at)}` : ""}
-                          </div>
-                        </div>
-
-                        {!t.assignee_id ? (
-                          <select
-                            value=""
-                            onChange={(e) => setTaskAssignee(t.id, e.target.value)}
-                            style={{ ...styles.input, width: 170, height: 34 }}
-                            onClick={(e) => e.stopPropagation()}
-                            title="Zuweisen"
-                          >
-                            <option value="">Zuweisen…</option>
-                            {(members || []).map((m) => (
-                              <option key={m.id} value={m.id}>
-                                {m.name || m.email || m.id}
-                              </option>
-                            ))}
-                          </select>
-                        ) : null}
-                      </div>
-                    ))}
-
-                    {(openItems.length > 8 || doneItems.length > 0) ? (
-                      <div style={{ color: "#666", fontSize: 12 }}>
-                        {openItems.length > 8 ? `Weitere offene: ${openItems.length - 8}. ` : ""}
-                        {doneItems.length > 0 ? `Erledigt: ${doneItems.length}.` : ""}
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {openTask ? (
-        <div style={styles.modalBackdrop} onMouseDown={() => setOpenId(null)}>
+      {modal.open && modal.task ? (
+        <div style={styles.modalBackdrop} onMouseDown={closeTask}>
           <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
               <div style={styles.h4}>Aufgabe</div>
-              <button type="button" style={styles.btnSmall} onClick={() => setOpenId(null)}>
+              <button style={styles.btnSmall} onClick={closeTask}>
                 Schließen
               </button>
             </div>
 
-            <div style={{ display: "grid", gap: 10 }}>
-              <div style={{ fontSize: 18, fontWeight: 800 }}>{openTask.title}</div>
-              <div style={{ color: "#666" }}>
-                Bereich: {openTask.areaObj?.name || "—"} · Fällig: {openTask.due_at ? fmtDateTime(openTask.due_at) : "—"}
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 20, fontWeight: 800 }}>{modal.task.title}</div>
+              <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
+                Bereich: {areaById[modal.task.area_id]?.name || "—"} · fällig: {modal.task.due_at ? fmtShort(modal.task.due_at) : "—"} · Zuständig: {getAssigneeLabel(modal.task.assignee_id)}
               </div>
 
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <select
-                  value={(openTask.status || "todo") === "done" ? "done" : "todo"}
-                  onChange={(e) => setTaskStatus(openTask.id, e.target.value)}
-                  style={{ ...styles.input, width: 220 }}
-                  disabled={!canWriteTask(openTask)}
-                  title="Status"
-                >
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
+                <label style={{ fontSize: 13, color: "#666" }}>Status</label>
+                <select value={modal.task.status || "todo"} onChange={(e) => setTaskStatus(modal.task.id, e.target.value)} style={styles.input}>
                   <option value="todo">Zu erledigen</option>
                   <option value="done">Erledigt</option>
                 </select>
 
-                <select
-                  value={openTask.assignee_id || ""}
-                  onChange={(e) => setTaskAssignee(openTask.id, e.target.value)}
-                  style={{ ...styles.input, width: 260 }}
-                  disabled={!canWriteTask(openTask)}
-                  title="Zuständig"
-                >
-                  <option value="">– Unzugeordnet –</option>
-                  {(members || []).map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name || m.email || m.id}
+                <label style={{ fontSize: 13, color: "#666" }}>Zuständig</label>
+                <select value={modal.task.assignee_id || ""} onChange={(e) => assignTask(modal.task.id, e.target.value)} style={styles.input}>
+                  <option value="">Unzugeordnet</option>
+                  {(kbMembers || []).map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name || u.email || u.id}
                     </option>
                   ))}
                 </select>
               </div>
 
-              {openTask.description ? (
-                <div style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{openTask.description}</div>
-              ) : (
-                <div style={{ color: "#666" }}>Keine Beschreibung.</div>
-              )}
+              <div style={{ marginTop: 16 }}>
+                <div style={styles.h4}>Unteraufgaben</div>
+                {(subByTask[modal.task.id] || []).length === 0 ? (
+                  <div style={{ color: "#666", marginTop: 8 }}>Keine Unteraufgaben.</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                    {(subByTask[modal.task.id] || []).map((s) => (
+                      <div key={s.id} style={styles.subRow}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <input type="checkbox" checked={!!s.done} readOnly />
+                          <div>{s.title}</div>
+                        </div>
+                        <span style={{ ...styles.areaDot, background: s.color || "#6b7280" }} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -2325,72 +2384,6 @@ function KanboardPanel({ areas = [], members = [], currentUser = null, isAdmin =
   );
 }
 
-function KanCol({ title, count, tasks, onOpen, onStatus, onAssignee, areas, members, canWrite }) {
-  return (
-    <div style={styles.kanbanCol}>
-      <div style={styles.kanbanHeader}>
-        <span style={styles.kanbanTitle}>{title}</span>
-        <span style={styles.kanbanCount}>{count}</span>
-      </div>
-
-      {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
-
-      <div style={{ display: "grid", gap: 10 }}>
-        {tasks.map((t) => {
-          const area = t.area_id ? areas[t.area_id] : null;
-          const dot = area?.color || "#6b7280";
-          const statusVal = (t.status || "todo") === "done" ? "done" : "todo";
-
-          return (
-            <div key={t.id} style={styles.kanbanCard} onClick={() => onOpen(t.id)} role="button" tabIndex={0}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ ...styles.areaDot, background: dot }} />
-                <div style={{ fontWeight: 800, flex: 1 }}>{t.title}</div>
-              </div>
-
-              <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
-                Bereich: {area?.name || "—"} · {t.due_at ? `fällig ${fmtShort(t.due_at)}` : "kein Datum"}
-                {t.assignee_id ? ` · ${t.assigneeObj?.name || t.assigneeObj?.email || t.assignee_id}` : " · Unzugeordnet"}
-              </div>
-
-              <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <select
-                  value={statusVal}
-                  onChange={(e) => onStatus(t.id, e.target.value)}
-                  style={{ ...styles.input, width: 160 }}
-                  onClick={(e) => e.stopPropagation()}
-                  disabled={!canWrite(t)}
-                  title="Status"
-                >
-                  <option value="todo">Zu erledigen</option>
-                  <option value="done">Erledigt</option>
-                </select>
-
-                {!t.assignee_id ? (
-                  <select
-                    value=""
-                    onChange={(e) => onAssignee(t.id, e.target.value)}
-                    style={{ ...styles.input, width: 220 }}
-                    onClick={(e) => e.stopPropagation()}
-                    disabled={!canWrite(t)}
-                    title="Zuweisen"
-                  >
-                    <option value="">Zuweisen…</option>
-                    {(members || []).map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name || m.email || m.id}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 /* ---------------- Calendar ---------------- */
 
