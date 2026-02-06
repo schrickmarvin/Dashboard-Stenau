@@ -2654,7 +2654,6 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
         </div>
       </div>
     </div>
-    </div>
   );
 }
 
@@ -2957,6 +2956,8 @@ export default function Dashboard() {
       {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
       <div style={{ height: 24 }} />
+    </div>
+      </div>
     </div>
   );
 }
