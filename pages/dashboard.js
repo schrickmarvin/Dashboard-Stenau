@@ -2651,6 +2651,9 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
             )}
           </div>
         </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
