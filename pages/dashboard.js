@@ -2662,7 +2662,6 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
       const dueIso = mergeDateKeepTime(null, selectedDate);
       const insert = {
         title,
-        description: "",
         status: "open",
         area_id: filterAreaId !== "all" ? filterAreaId : null,
         assignee_id:
@@ -2990,16 +2989,6 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
               </div>
             </div>
 
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={styles.label}>Beschreibung</label>
-              <textarea
-                style={styles.textarea}
-                defaultValue={task.description || ""}
-                rows={3}
-                onBlur={(e) => updateTask(task.id, { description: e.target.value })}
-                disabled={disabled}
-              />
-            </div>
           </div>
         ) : null}
       </div>
@@ -3151,6 +3140,10 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
             )}
           </div>
         </div>
+      </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
