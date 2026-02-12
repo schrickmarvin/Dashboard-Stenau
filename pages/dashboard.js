@@ -808,168 +808,12 @@ function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite,
       </div>
 
       <div style={{ display: "grid", gap: 12 }}>
-        {tasks.map((t) => {
+{tasks.map((t) => {
           const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
           return (
             <div key={t.id} style={styles.card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <div style={styles.h4}>{t.title}</div>
-              {t.area_color ? (
-                <span title={t.area || t.area_label || ""} style={{...styles.areaDot, background: t.area_color}} />
-              ) : null}
-                <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
-
-                <select
-                  value={t.assignee_id || ""}
-                  onChange={(e) => onAssigneeChange(t.id, e.target.value || null)}
-                  style={{ ...styles.input, minWidth: 180 }}
-                  title="Zuständig"
-                >
-                  <option value="">– Zuständig –</option>
-                  {(members || []).map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {(m.name || m.email || m.id)}
-                    </option>
-                  ))}
-                </select>
-
-                <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
-                  Status
-                </button>
-              </div>
-
-              <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                Bereich: {areaName} · Zuständig: {t.assignee?.name || t.assignee?.email || "–"} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
-              </div>
-
-              <div style={{ marginTop: 10 }}>
-              <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
-                {(() => {
-                  const subs = Array.isArray(t.subtasks) ? t.subtasks : [];
-                  const done = subs.filter((s) => s.is_done).length;
-                  return `Unteraufgaben ${done}/${subs.length}`;
-                })()}
-              </div>
-
-              {Array.isArray(t.subtasks) && t.subtasks.length > 0 ? (
-                <div style={{ display: "grid", gap: 8 }}>
-                  {t.subtasks.map((s) => (
-                    <div key={s.id} style={styles.subRow}>
-                      <input
-                        type="checkbox"
-                        checked={!!s.is_done}
-                        onChange={(e) => onSubUpdate(s.id, { is_done: e.target.checked })}
-                        disabled={!canWrite}
-                      />
-
-                      <input
-                        value={s.title ?? ""}
-                        onChange={(e) => onSubUpdate(s.id, { title: e.target.value })}
-                        style={{ ...styles.input, minWidth: 220 }}
-                        disabled={!canWrite}
-                      />
-
-                      <select
-                        value={s.guide_id ?? ""}
-                        onChange={(e) =>
-                          onSubUpdate(s.id, { guide_id: e.target.value || null })
-                        }
-                        style={{ ...styles.input, minWidth: 220 }}
-                        disabled={!canWrite}
-                        title="Anleitung verknüpfen"
-                      >
-                        <option value="">– Anleitung –</option>
-                        {(guides || []).map((g) => (
-                          <option key={g.id} value={g.id}>
-                            {g.title}
-                          </option>
-                        ))}
-                      </select>
-
-                      {s.guide_id ? (
-                        <button
-                          type="button"
-                          style={styles.btnSmall}
-                          onClick={() => onGuideOpen(s.guide_id)}
-                          title="Anleitung öffnen"
-                        >
-                          Anleitung
-                        </button>
-                      ) : (
-                        <span style={{ width: 78 }} />
-                      )}
-
-                      <input
-                        type="color"
-                        value={s.color || t.area_color || "#6b7280"}
-                        onChange={(e) => onSubUpdate(s.id, { color: e.target.value })}
-                        disabled={!canWrite}
-                        title="Farbe"
-                        style={styles.colorInput}
-                      />
-
-                      <button
-                        style={styles.btnSmall}
-                        onClick={() => onSubDelete(s.id)}
-                        disabled={!canWrite}
-                        title="Löschen"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              {canWrite ? (
-                <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  {(() => {
-                    const d = getSubDraft(t.id, t.area_color || "#6b7280");
-                    return (
-                      <>
-                        <input
-                          value={d.title}
-                          onChange={(e) => setSubDraft(t.id, { title: e.target.value }, t.area_color || "#6b7280")}
-                          placeholder="Neue Unteraufgabe…"
-                          style={{ ...styles.input, minWidth: 260 }}
-                        />
-                        <select
-                          value={d.guide_id || ""}
-                          onChange={(e) => setSubDraft(t.id, { guide_id: e.target.value }, t.area_color || "#6b7280")}
-                          style={{ ...styles.input, minWidth: 220 }}
-                          title="Anleitung verknüpfen"
-                        >
-                          <option value="">– Anleitung –</option>
-                          {(guides || []).map((g) => (
-                            <option key={g.id} value={g.id}>
-                              {g.title}
-                            </option>
-                          ))}
-                        </select>
-                        <input
-                          type="color"
-                          value={d.color || t.area_color || "#6b7280"}
-                          onChange={(e) => setSubDraft(t.id, { color: e.target.value }, t.area_color || "#6b7280")}
-                          title="Farbe"
-                          style={styles.colorInput}
-                        />
-                        <button
-                          style={styles.btnSmallPrimary}
-                          onClick={() => onSubAdd(t, t.area_color || "#6b7280")}
-                          title="Hinzufügen"
-                        >
-                          +
-                        </button>
-                      </>
-                    );
-                  })()}
-                </div>
-              ) : null}
-            </div>
-            </div>
-          );
-        })}
-
+                <div style={styles.h4}>{t.title}
         {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
       </div>
     </div>
@@ -2172,7 +2016,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
       const { data, error } = await supabase
         .from("tasks")
         .insert(insert)
-        .select("id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at")
+        .select("id,title,status,area_id,assigned_to,due_at,created_at,updated_at")
         .single();
       if (error) throw error;
       setTasks((prev) => [...prev, data].sort((a, b) => new Date(a.due_at) - new Date(b.due_at)));
@@ -2489,17 +2333,6 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
                 </select>
               </div>
             </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={styles.label}>Beschreibung</label>
-              <textarea
-                style={styles.textarea}
-                defaultValue={task.description || ""}
-                rows={3}
-                onBlur={(e) => updateTask(task.id, { description: e.target.value })}
-                disabled={disabled}
-              />
-            </div>
           </div>
         ) : null}
       </div>
@@ -2650,7 +2483,6 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
               </div>
             )}
           </div>
-        </div>
         </div>
       </div>
     </div>
