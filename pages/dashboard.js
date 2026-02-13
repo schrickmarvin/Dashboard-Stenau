@@ -1,374 +1,721 @@
-// pages/dashboard.js
-import { useEffect, useMemo, useCallback, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
 
 /**
- * Stenau Dashboard – Single-file implementation (Next.js pages router)
- * Features:
- * - Login (Supabase Auth)
- * - Tasks: create, list, status toggle
- * - Subtasks (supports is_done/done/status fallback)
- * - Guides: list + open (content)
- * - Areas: list (for filter + create form)
- * - Kanboard: Status view + People view (overview who has which tasks)
- * - Calendar (month list) - tolerant (no hard dependency on tasks.description)
- * - User settings panel (colors/background) – optional table, tolerant
+ * pages/dashboard.js
+ * Stenau Dashboard – Single-file page (Next.js pages router)
  *
- * IMPORTANT:
- * This file is designed to compile even if some DB columns/tables differ.
- * It uses defensive selects and fallbacks.
+ * Ziel: Stabil laufende Gesamt-Datei mit:
+ * - Plan: Aufgaben + Unteraufgaben + Serienaufgaben + Guide-Einsicht + Farben + Löschen
+ * - Kanboard: Status/Personen-Ansichten inkl. Filter Bereich/Nutzer
+ * - Kalender: Monats-/Wochenansicht inkl. Filter Bereich/Nutzer
+ * - Anleitungen: Liste + Upload (Supabase Storage) + Bereich-Zuordnung + Datei-Übersicht
+ * - Nutzer: Profile verwalten (Name/Role/Bereich) + Profil anlegen/ändern + Bereiche + Farben
+ * - Einstellungen: User-Theme (Fallback, wenn Tabelle fehlt)
+ *
+ * Backend-Schema kann variieren -> robust:
+ * - select('*') um fehlende Spalten wie tasks.description zu vermeiden
+ * - Subtask done fallback (is_done/done/completed/status)
  */
+
+import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase =
+  SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+/* ---------------- Helpers ---------------- */
+
+function fmtDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString("de-DE");
+}
+function fmtDateTime(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString("de-DE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+function safeLower(s) {
+  return String(s || "").toLowerCase();
+}
+function uuidv4() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  const rnd = () =>
+    Math.floor(Math.random() * 0xffffffff)
+      .toString(16)
+      .padStart(8, "0");
+  return `${rnd().slice(0, 8)}-${rnd().slice(0, 4)}-4${rnd().slice(
+    1,
+    4
+  )}-a${rnd().slice(1, 4)}-${rnd()}`;
+}
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function addDays(d, days) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  return x;
+}
+function addMonths(d, months) {
+  const x = new Date(d);
+  x.setMonth(x.getMonth() + months);
+  return x;
+}
+function isSameDay(a, b) {
+  if (!a || !b) return false;
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+}
+
+/**
+ * Subtask done-field fallback:
+ * supports: is_done | done | completed | status ("done")
+ */
+function getSubDone(sub) {
+  if (!sub) return false;
+  if (typeof sub.is_done === "boolean") return sub.is_done;
+  if (typeof sub.done === "boolean") return sub.done;
+  if (typeof sub.completed === "boolean") return sub.completed;
+  if (typeof sub.status === "string") return safeLower(sub.status) === "done";
+  return false;
+}
+function setSubDonePatch(sub, next) {
+  if (!sub) return { field: "is_done", value: !!next };
+  if ("is_done" in sub) return { field: "is_done", value: !!next };
+  if ("done" in sub) return { field: "done", value: !!next };
+  if ("completed" in sub) return { field: "completed", value: !!next };
+  if ("status" in sub) return { field: "status", value: next ? "done" : "todo" };
+  return { field: "is_done", value: !!next };
+}
+
+/* ---------------- Styles ---------------- */
 
 const styles = {
-  page: { minHeight: "100vh", padding: 20, background: "#f3f6fb" },
-  shell: { maxWidth: 1250, margin: "0 auto" },
-  topbar: {
+  page: { minHeight: "100vh", background: "#f4f7fb" },
+  wrap: { maxWidth: 1180, margin: "0 auto", padding: "18px 14px 80px" },
+  topBar: {
     display: "flex",
-    justifyContent: "space-between",
     alignItems: "center",
-    gap: 12,
-    padding: 12,
+    justifyContent: "space-between",
+    background: "#fff",
+    border: "1px solid #e6e9f0",
     borderRadius: 12,
-    background: "white",
-    border: "1px solid #e5e7eb",
+    padding: "12px 14px",
   },
-  h1: { margin: 0, fontSize: 20 },
+  brand: { fontSize: 20, fontWeight: 700 },
+  small: { fontSize: 12, color: "#666" },
   tabs: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 },
-  tab: {
+  tab: (active) => ({
     padding: "8px 12px",
     borderRadius: 10,
-    border: "1px solid #e5e7eb",
-    background: "white",
+    border: "1px solid #111",
+    background: active ? "#0b6b2a" : "#fff",
+    color: active ? "#fff" : "#111",
     cursor: "pointer",
-    fontSize: 14,
-  },
-  tabActive: { background: "#0b6b2a", color: "white", borderColor: "#0b6b2a" },
-  panel: {
-    marginTop: 12,
-    padding: 14,
-    borderRadius: 12,
-    background: "white",
-    border: "1px solid #e5e7eb",
-  },
-  row: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
-  input: {
-    padding: "10px 10px",
-    borderRadius: 10,
-    border: "1px solid #e5e7eb",
-    fontSize: 14,
-    outline: "none",
-    minWidth: 210,
-  },
-  select: {
-    padding: "10px 10px",
-    borderRadius: 10,
-    border: "1px solid #e5e7eb",
-    fontSize: 14,
-    outline: "none",
-    minWidth: 210,
-    background: "white",
-  },
+    fontSize: 13,
+  }),
   btn: {
-    padding: "10px 12px",
+    padding: "8px 12px",
     borderRadius: 10,
-    border: "1px solid #e5e7eb",
-    background: "white",
+    border: "1px solid #d0d7e2",
+    background: "#fff",
     cursor: "pointer",
-    fontSize: 14,
   },
   btnPrimary: {
-    padding: "10px 12px",
+    padding: "8px 12px",
     borderRadius: 10,
     border: "1px solid #0b6b2a",
     background: "#0b6b2a",
-    color: "white",
-    cursor: "pointer",
-    fontSize: 14,
-  },
-  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
-  grid3: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 },
-  card: {
-    padding: 12,
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "white",
-  },
-  cardClickable: {
-    padding: 12,
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "white",
+    color: "#fff",
     cursor: "pointer",
   },
-  small: { color: "#6b7280", fontSize: 13 },
-  error: {
-    padding: 10,
+  btnSmall: {
+    padding: "6px 9px",
     borderRadius: 10,
-    background: "#ffe6e6",
-    border: "1px solid #ffb3b3",
-    color: "#8a1f1f",
-    marginTop: 10,
+    border: "1px solid #d0d7e2",
+    background: "#fff",
+    cursor: "pointer",
+    fontSize: 12,
+  },
+  btnSmallPrimary: {
+    padding: "6px 9px",
+    borderRadius: 10,
+    border: "1px solid #0b6b2a",
+    background: "#0b6b2a",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: 12,
+  },
+  panel: {
+    background: "#fff",
+    border: "1px solid #e6e9f0",
+    borderRadius: 14,
+    padding: 14,
+    marginTop: 12,
+  },
+  h2: { fontSize: 16, fontWeight: 700, marginBottom: 10 },
+  h3: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
+  h4: { fontSize: 13, fontWeight: 700 },
+  input: {
+    width: "100%",
+    padding: "10px 10px",
+    borderRadius: 10,
+    border: "1px solid #d0d7e2",
+    outline: "none",
+    fontSize: 13,
+    background: "#fff",
+  },
+  textarea: {
+    width: "100%",
+    padding: "10px 10px",
+    borderRadius: 10,
+    border: "1px solid #d0d7e2",
+    outline: "none",
+    fontSize: 13,
+    background: "#fff",
+    minHeight: 90,
+  },
+  select: {
+    width: "100%",
+    padding: "10px 10px",
+    borderRadius: 10,
+    border: "1px solid #d0d7e2",
+    outline: "none",
+    fontSize: 13,
+    background: "#fff",
+  },
+  grid3: { display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr", gap: 10 },
+  cols: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+  hr: { height: 1, background: "#e6e9f0", margin: "14px 0" },
+  error: {
+    background: "#fef2f2",
+    border: "1px solid #fecaca",
+    color: "#991b1b",
+    padding: 10,
+    borderRadius: 12,
+    fontSize: 13,
+    whiteSpace: "pre-wrap",
+  },
+  ok: {
+    background: "#ecfdf5",
+    border: "1px solid #a7f3d0",
+    color: "#065f46",
+    padding: 10,
+    borderRadius: 12,
+    fontSize: 13,
+    whiteSpace: "pre-wrap",
   },
   pill: {
     display: "inline-flex",
     alignItems: "center",
     gap: 6,
-    padding: "4px 10px",
+    padding: "2px 8px",
     borderRadius: 999,
-    border: "1px solid #e5e7eb",
+    border: "1px solid #e6e9f0",
     fontSize: 12,
-    color: "#374151",
-    background: "#fafafa",
+    color: "#111",
+    background: "#fff",
+  },
+  dot: (c) => ({
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    background: c || "#94a3b8",
+    display: "inline-block",
+  }),
+  card: { border: "1px solid #e6e9f0", borderRadius: 12, padding: 12, background: "#fff" },
+  subRow: {
+    display: "grid",
+    gridTemplateColumns: "22px 1fr auto auto",
+    gap: 8,
+    alignItems: "center",
+    padding: "6px 0",
+    borderBottom: "1px dashed #eef2f7",
   },
   modalBackdrop: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,.35)",
+    background: "rgba(0,0,0,0.35)",
     display: "flex",
-    justifyContent: "center",
     alignItems: "center",
+    justifyContent: "center",
     padding: 16,
     zIndex: 50,
   },
   modal: {
-    width: "min(900px, 100%)",
-    maxHeight: "85vh",
+    width: "min(900px, 96vw)",
+    maxHeight: "86vh",
     overflow: "auto",
-    background: "white",
+    background: "#fff",
     borderRadius: 14,
-    border: "1px solid #e5e7eb",
+    border: "1px solid #e6e9f0",
     padding: 14,
   },
-  modalHeader: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" },
-  split: { display: "grid", gridTemplateColumns: "1.3fr .7fr", gap: 12 },
-  col: { display: "grid", gap: 10 },
+  modalHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    borderBottom: "1px solid #eef2f7",
+    paddingBottom: 10,
+    marginBottom: 10,
+  },
 };
 
-function fmtShort(value) {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleDateString("de-DE");
-}
-
-function fmtDateTime(value) {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleString("de-DE", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-}
-
-function isSubDone(sub) {
-  if (!sub) return false;
-  if (typeof sub.is_done === "boolean") return sub.is_done;
-  if (typeof sub.done === "boolean") return sub.done;
-  if (typeof sub.completed === "boolean") return sub.completed;
-  if (typeof sub.status === "string") return sub.status === "done";
-  return false;
-}
-
-async function safeSelect(table, selectStr = "*", opts = {}) {
-  // opts: { orderBy, ascending }
-  try {
-    let q = supabase.from(table).select(selectStr);
-    if (opts.orderBy) q = q.order(opts.orderBy, { ascending: opts.ascending ?? true });
-    const { data, error } = await q;
-    if (error) return { data: null, error };
-    return { data: data || null, error: null };
-  } catch (e) {
-    return { data: null, error: e };
-  }
-}
-
-async function safeUpdate(table, values, match) {
-  try {
-    const { error } = await supabase.from(table).update(values).match(match);
-    return { error: error || null };
-  } catch (e) {
-    return { error: e };
-  }
-}
-
-async function safeInsert(table, values) {
-  try {
-    const { data, error } = await supabase.from(table).insert(values).select("*");
-    if (error) return { data: null, error };
-    return { data: data || null, error: null };
-  } catch (e) {
-    return { data: null, error: e };
-  }
-}
-
-async function loadProfiles() {
-  // Try common profile tables, return best effort
-  const candidates = ["profiles", "users_profile", "user_profiles", "users"];
-  for (const t of candidates) {
-    const r = await safeSelect(t, "*", { orderBy: "name", ascending: true });
-    if (!r.error && Array.isArray(r.data)) return { table: t, rows: r.data };
-  }
-  return { table: null, rows: [] };
-}
-
-function displayUser(u) {
-  if (!u) return "—";
-  return u.name || u.full_name || u.display_name || u.email || u.username || u.id;
-}
-
-function buildUserMap(rows) {
-  const map = new Map();
-  for (const u of rows || []) map.set(u.id, displayUser(u));
-  return map;
-}
+/* ---------------- Main Page ---------------- */
 
 export default function DashboardPage() {
-  const [session, setSession] = useState(null);
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPass, setAuthPass] = useState("");
-  const [authErr, setAuthErr] = useState("");
+  const [tab, setTab] = useState("plan"); // plan|kanboard|calendar|guides|users|settings
+  const [authUser, setAuthUser] = useState(null);
 
-  const [tab, setTab] = useState("plan"); // plan | kanboard | calendar | guides | users | settings
-  const [me, setMe] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [loadingMeta, setLoadingMeta] = useState(false);
+  const [loadingTasks, setLoadingTasks] = useState(false);
 
   const [areas, setAreas] = useState([]);
+  const [profiles, setProfiles] = useState([]);
   const [guides, setGuides] = useState([]);
-  const [members, setMembers] = useState([]);
-  const [membersTable, setMembersTable] = useState(null);
 
   const [tasks, setTasks] = useState([]);
-  const [subtasks, setSubtasks] = useState([]); // flat list
+  const [subtasksByTaskId, setSubtasksByTaskId] = useState({});
 
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
+  const [metaError, setMetaError] = useState("");
+  const [taskError, setTaskError] = useState("");
+  const [info, setInfo] = useState("");
 
-  const userMap = useMemo(() => buildUserMap(members), [members]);
-  const areaMap = useMemo(() => {
-    const m = new Map();
-    for (const a of areas) m.set(a.id, a);
+  const ensureSupabase = useCallback(() => {
+    if (!supabase) {
+      throw new Error(
+        "Supabase ist nicht konfiguriert. Bitte NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY setzen."
+      );
+    }
+  }, []);
+
+  const loadAuth = useCallback(async () => {
+    try {
+      ensureSupabase();
+      const { data } = await supabase.auth.getSession();
+      setAuthUser(data?.session?.user || null);
+
+      supabase.auth.onAuthStateChange((_event, newSession) => {
+        setAuthUser(newSession?.user || null);
+      });
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase]);
+
+  useEffect(() => {
+    loadAuth();
+  }, [loadAuth]);
+
+  const loadMeta = useCallback(async () => {
+    setLoadingMeta(true);
+    setMetaError("");
+    try {
+      ensureSupabase();
+      const [areasRes, profilesRes, guidesRes] = await Promise.all([
+        supabase.from("areas").select("*").order("name", { ascending: true }),
+        supabase.from("profiles").select("*").order("name", { ascending: true }),
+        supabase.from("guides").select("*").order("title", { ascending: true }),
+      ]);
+
+      if (areasRes.error) throw areasRes.error;
+      if (profilesRes.error) throw profilesRes.error;
+
+      setAreas(areasRes.data || []);
+      setProfiles(profilesRes.data || []);
+      setGuides(guidesRes.error ? [] : guidesRes.data || []);
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    } finally {
+      setLoadingMeta(false);
+    }
+  }, [ensureSupabase]);
+
+  const loadTasksAndSubtasks = useCallback(async () => {
+    setLoadingTasks(true);
+    setTaskError("");
+    try {
+      ensureSupabase();
+      const tRes = await supabase
+        .from("tasks")
+        .select("*")
+        .order("due_at", { ascending: true, nullsFirst: true });
+      if (tRes.error) throw tRes.error;
+      setTasks(tRes.data || []);
+
+      const stRes = await supabase
+        .from("subtasks")
+        .select("*")
+        .order("created_at", { ascending: true });
+      if (stRes.error) {
+        setSubtasksByTaskId({});
+      } else {
+        const map = {};
+        (stRes.data || []).forEach((s) => {
+          const tid = s.task_id || s.parent_task_id;
+          if (!tid) return;
+          if (!map[tid]) map[tid] = [];
+          map[tid].push(s);
+        });
+        setSubtasksByTaskId(map);
+      }
+    } catch (e) {
+      setTaskError(String(e?.message || e));
+    } finally {
+      setLoadingTasks(false);
+    }
+  }, [ensureSupabase]);
+
+  const reloadAll = useCallback(async () => {
+    setInfo("");
+    await loadMeta();
+    await loadTasksAndSubtasks();
+  }, [loadMeta, loadTasksAndSubtasks]);
+
+  useEffect(() => {
+    if (authUser?.id) reloadAll();
+  }, [authUser?.id, reloadAll]);
+
+  const logout = useCallback(async () => {
+    try {
+      ensureSupabase();
+      await supabase.auth.signOut();
+      setInfo("Abgemeldet.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase]);
+
+  const profileById = useMemo(() => {
+    const m = {};
+    (profiles || []).forEach((p) => (m[p.id] = p));
+    return m;
+  }, [profiles]);
+
+  const areaById = useMemo(() => {
+    const m = {};
+    (areas || []).forEach((a) => (m[a.id] = a));
     return m;
   }, [areas]);
 
-  // Auth bootstrap
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session || null);
+  const currentProfile = useMemo(() => {
+    if (!authUser) return null;
+    return profiles.find((p) => p.id === authUser.id) || null;
+  }, [authUser, profiles]);
+
+  const isAdmin = useMemo(
+    () => safeLower(currentProfile?.role) === "admin",
+    [currentProfile]
+  );
+
+  const taskWithResolved = useMemo(() => {
+    return (tasks || []).map((t) => {
+      const areaObj = t.area_id ? areaById[t.area_id] : null;
+      const assignee = t.assignee_id ? profileById[t.assignee_id] : null;
+      const subs = subtasksByTaskId[t.id] || [];
+      const doneCount = subs.filter(getSubDone).length;
+      return { ...t, _areaObj: areaObj, _assignee: assignee, _subtasks: subs, _subDoneCount: doneCount };
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s);
-    });
-    return () => sub.subscription.unsubscribe();
-  }, []);
+  }, [tasks, areaById, profileById, subtasksByTaskId]);
 
-  const refreshMeta = useCallback(async () => {
-    setErr("");
-    const [areasR, guidesR, profR] = await Promise.all([
-      safeSelect("areas", "*", { orderBy: "name", ascending: true }),
-      safeSelect("guides", "*", { orderBy: "title", ascending: true }),
-      loadProfiles(),
-    ]);
+  /* ---------------- CRUD ---------------- */
 
-    setAreas(Array.isArray(areasR.data) ? areasR.data : []);
-    setGuides(Array.isArray(guidesR.data) ? guidesR.data : []);
-    setMembers(profR.rows || []);
-    setMembersTable(profR.table);
+  const createTask = useCallback(
+    async (payload) => {
+      setTaskError("");
+      setInfo("");
+      try {
+        ensureSupabase();
+        const ins = await supabase.from("tasks").insert(payload).select("*").single();
+        if (ins.error) throw ins.error;
+        setTasks((prev) => [ins.data, ...prev]);
+        setInfo("Aufgabe angelegt.");
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
 
-    // me + admin flag best effort
-    const uid = session?.user?.id || null;
-    if (!uid) return;
-    const mine = (profR.rows || []).find((r) => r.id === uid) || { id: uid, email: session.user.email };
-    setMe(mine);
+  const updateTask = useCallback(
+    async (taskId, patch) => {
+      setTaskError("");
+      setInfo("");
+      try {
+        ensureSupabase();
+        const res = await supabase.from("tasks").update(patch).eq("id", taskId).select("*").single();
+        if (res.error) throw res.error;
+        setTasks((prev) => prev.map((t) => (t.id === taskId ? res.data : t)));
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
 
-    // role / is_admin best effort
-    const admin =
-      mine?.is_admin === true ||
-      mine?.role === "admin" ||
-      mine?.roles?.includes?.("admin") === true ||
-      (Array.isArray(mine?.roles) && mine.roles.includes("admin"));
-    setIsAdmin(Boolean(admin));
-  }, [session?.user?.id]);
+  const deleteTask = useCallback(
+    async (taskId) => {
+      setTaskError("");
+      setInfo("");
+      try {
+        ensureSupabase();
+        await supabase.from("subtasks").delete().eq("task_id", taskId);
+        const res = await supabase.from("tasks").delete().eq("id", taskId);
+        if (res.error) throw res.error;
+        setTasks((prev) => prev.filter((t) => t.id !== taskId));
+        setSubtasksByTaskId((prev) => {
+          const n = { ...prev };
+          delete n[taskId];
+          return n;
+        });
+        setInfo("Aufgabe gelöscht.");
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
 
-  const refreshTasks = useCallback(async () => {
-    setErr("");
-    setLoading(true);
+  const addSubtask = useCallback(
+    async (taskId, title) => {
+      setTaskError("");
+      try {
+        ensureSupabase();
+        const payload = { task_id: taskId, title: (title || "").trim() };
+        const res = await supabase.from("subtasks").insert(payload).select("*").single();
+        if (res.error) throw res.error;
+        setSubtasksByTaskId((prev) => {
+          const next = { ...prev };
+          next[taskId] = [...(next[taskId] || []), res.data];
+          return next;
+        });
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
+
+  const toggleSubtaskDone = useCallback(
+    async (sub) => {
+      setTaskError("");
+      try {
+        ensureSupabase();
+        const nextVal = !getSubDone(sub);
+        const { field, value } = setSubDonePatch(sub, nextVal);
+        const res = await supabase.from("subtasks").update({ [field]: value }).eq("id", sub.id).select("*").single();
+        if (res.error) throw res.error;
+        const tid = res.data.task_id || res.data.parent_task_id;
+        setSubtasksByTaskId((prev) => {
+          const next = { ...prev };
+          next[tid] = (next[tid] || []).map((s) => (s.id === sub.id ? res.data : s));
+          return next;
+        });
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
+
+  const deleteSubtask = useCallback(
+    async (sub) => {
+      setTaskError("");
+      try {
+        ensureSupabase();
+        const tid = sub.task_id || sub.parent_task_id;
+        const res = await supabase.from("subtasks").delete().eq("id", sub.id);
+        if (res.error) throw res.error;
+        setSubtasksByTaskId((prev) => {
+          const next = { ...prev };
+          next[tid] = (next[tid] || []).filter((s) => s.id !== sub.id);
+          return next;
+        });
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
+
+  /* ---------- Guides ---------- */
+
+  const [guideModal, setGuideModal] = useState({ open: false, guide: null, loading: false, error: "" });
+
+  const openGuide = useCallback(async (guideId) => {
+    setGuideModal({ open: true, guide: null, loading: true, error: "" });
     try {
-      // tasks (tolerant)
-      const tasksR = await safeSelect("tasks", "*", { orderBy: "due_at", ascending: true });
-      if (tasksR.error) throw tasksR.error;
-
-      // subtasks: try with a couple of common columns
-      let subsR = await safeSelect("subtasks", "*", { orderBy: "created_at", ascending: true });
-      // if table missing, keep empty (no throw)
-      if (subsR.error) subsR = { data: [] };
-
-      setTasks(Array.isArray(tasksR.data) ? tasksR.data : []);
-      setSubtasks(Array.isArray(subsR.data) ? subsR.data : []);
+      ensureSupabase();
+      const res = await supabase.from("guides").select("*").eq("id", guideId).single();
+      if (res.error) throw res.error;
+      setGuideModal({ open: true, guide: res.data, loading: false, error: "" });
     } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
-      setLoading(false);
+      setGuideModal({ open: true, guide: null, loading: false, error: String(e?.message || e) });
     }
-  }, []);
+  }, [ensureSupabase]);
+
+  const closeGuide = useCallback(() => setGuideModal({ open: false, guide: null, loading: false, error: "" }), []);
+
+  const uploadGuideFile = useCallback(async ({ file, title, description, area_id }) => {
+    setMetaError("");
+    setInfo("");
+    try {
+      ensureSupabase();
+      if (!file) throw new Error("Bitte Datei auswählen.");
+      const path = `guides/${Date.now()}_${file.name}`.replace(/\s+/g, "_");
+      const bucket = "guides";
+      const up = await supabase.storage.from(bucket).upload(path, file, { upsert: false });
+      if (up.error) throw up.error;
+
+      const ins = await supabase.from("guides").insert({
+        title: title?.trim() || file.name,
+        description: description || null,
+        area_id: area_id || null,
+        bucket,
+        path,
+        mime_type: file.type || null,
+        size: file.size || null,
+      }).select("*").single();
+      if (ins.error) throw ins.error;
+      setGuides((prev) => [ins.data, ...prev]);
+      setInfo("Anleitung hochgeladen.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase]);
+
+  const getGuideDownloadUrl = useCallback(async (g) => {
+    ensureSupabase();
+    const bucket = g.bucket || "guides";
+    const path = g.path || g.storage_path;
+    if (!path) return null;
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60);
+    if (!error) return data?.signedUrl || null;
+    const pub = supabase.storage.from(bucket).getPublicUrl(path);
+    return pub?.data?.publicUrl || null;
+  }, [ensureSupabase]);
+
+  /* ---------- Profiles / Areas ---------- */
+
+  const upsertProfile = useCallback(async (profile) => {
+    setMetaError("");
+    setInfo("");
+    try {
+      ensureSupabase();
+      const res = await supabase.from("profiles").upsert(profile).select("*").single();
+      if (res.error) throw res.error;
+      await loadMeta();
+      setInfo("Profil gespeichert.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase, loadMeta]);
+
+  const upsertArea = useCallback(async (area) => {
+    setMetaError("");
+    setInfo("");
+    try {
+      ensureSupabase();
+      const res = await supabase.from("areas").upsert(area).select("*").single();
+      if (res.error) throw res.error;
+      await loadMeta();
+      setInfo("Bereich gespeichert.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase, loadMeta]);
+
+  /* ---------- Settings ---------- */
+
+  const [userSettings, setUserSettings] = useState(null);
 
   useEffect(() => {
-    if (!session) return;
-    refreshMeta();
-    refreshTasks();
-  }, [session, refreshMeta, refreshTasks]);
+    (async () => {
+      try {
+        if (!authUser?.id) return;
+        const sRes = await supabase.from("user_settings").select("*").eq("user_id", authUser.id).maybeSingle();
+        if (!sRes.error) setUserSettings(sRes.data || null);
+      } catch (_) {}
+    })();
+  }, [authUser?.id]);
 
-  const signIn = useCallback(async () => {
-    setAuthErr("");
-    const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPass });
-    if (error) setAuthErr(error.message);
-  }, [authEmail, authPass]);
+  useEffect(() => {
+    if (!userSettings) return;
+    try {
+      const root = document.documentElement;
+      if (userSettings.primary_color) root.style.setProperty("--stenau-primary", userSettings.primary_color);
+      if (userSettings.background_color) root.style.setProperty("--stenau-bg", userSettings.background_color);
+      if (userSettings.background_image_url) {
+        document.body.style.backgroundImage = `url(${userSettings.background_image_url})`;
+        document.body.style.backgroundSize = "cover";
+        document.body.style.backgroundAttachment = "fixed";
+      } else {
+        document.body.style.backgroundImage = "";
+      }
+    } catch (_) {}
+  }, [userSettings]);
 
-  const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-  }, []);
-
-  // Derived helpers
-  const tasksWithSubs = useMemo(() => {
-    const byTask = new Map();
-    for (const s of subtasks) {
-      const tid = s.task_id || s.parent_task_id || s.taskId;
-      if (!tid) continue;
-      if (!byTask.has(tid)) byTask.set(tid, []);
-      byTask.get(tid).push(s);
+  const saveUserSettings = useCallback(async (patch) => {
+    setMetaError("");
+    setInfo("");
+    try {
+      ensureSupabase();
+      if (!authUser?.id) throw new Error("Nicht angemeldet.");
+      const res = await supabase.from("user_settings").upsert({ user_id: authUser.id, ...patch }).select("*").single();
+      if (res.error) throw res.error;
+      setUserSettings(res.data);
+      setInfo("Einstellungen gespeichert.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
     }
-    return (tasks || []).map((t) => ({
-      ...t,
-      __subtasks: byTask.get(t.id) || [],
-    }));
-  }, [tasks, subtasks]);
+  }, [ensureSupabase, authUser?.id]);
 
-  if (!session) {
+  /* ---------------- Render guards ---------------- */
+
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return (
       <div style={styles.page}>
-        <div style={styles.shell}>
-          <div style={{ ...styles.panel, maxWidth: 520, margin: "80px auto" }}>
-            <div style={{ fontSize: 18, marginBottom: 8 }}>Login</div>
-            <div style={styles.small}>Bitte mit deinem Dashboard-Account anmelden.</div>
-            {authErr ? <div style={styles.error}>Fehler: {authErr}</div> : null}
-            <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-              <input style={styles.input} placeholder="E-Mail" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} />
-              <input
-                style={styles.input}
-                placeholder="Passwort"
-                value={authPass}
-                type="password"
-                onChange={(e) => setAuthPass(e.target.value)}
-              />
-              <button style={styles.btnPrimary} onClick={signIn}>
-                Anmelden
-              </button>
+        <div style={styles.wrap}>
+          <div style={styles.panel}>
+            <div style={styles.h2}>Supabase fehlt</div>
+            <div style={styles.error}>
+              Bitte setze NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel / .env.
             </div>
-            <div style={{ marginTop: 10, ...styles.small }}>
-              Hinweis: Wenn „Failed to fetch“ kommt, prüfe die Vercel ENV: NEXT_PUBLIC_SUPABASE_URL/ANON_KEY.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authUser) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.wrap}>
+          <div style={styles.panel}>
+            <div style={styles.h2}>Nicht angemeldet</div>
+            <div style={{ color: "#666", fontSize: 13 }}>
+              Bitte zuerst einloggen (Supabase Auth).
             </div>
+            {metaError ? <div style={{ ...styles.error, marginTop: 12 }}>{metaError}</div> : null}
           </div>
         </div>
       </div>
@@ -377,741 +724,953 @@ export default function DashboardPage() {
 
   return (
     <div style={styles.page}>
-      <div style={styles.shell}>
-        <div style={styles.topbar}>
+      <div style={styles.wrap}>
+        <div style={styles.topBar}>
           <div>
-            <div style={styles.h1}>Stenau Dashboard</div>
+            <div style={styles.brand}>Stenau Dashboard</div>
             <div style={styles.small}>
-              Angemeldet als {me ? displayUser(me) : session.user.email} {isAdmin ? "· Admin" : ""}
+              Angemeldet als {currentProfile?.name || authUser.email || authUser.id} · {isAdmin ? "Admin" : "User"}
             </div>
           </div>
-          <div style={styles.row}>
-            <button style={styles.btn} onClick={() => refreshMeta()}>
-              Meta neu laden
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button style={styles.btn} onClick={loadMeta} disabled={loadingMeta}>
+              {loadingMeta ? "Lade…" : "Meta neu laden"}
             </button>
-            <button style={styles.btn} onClick={() => refreshTasks()}>
-              Aufgaben neu laden
+            <button style={styles.btn} onClick={loadTasksAndSubtasks} disabled={loadingTasks}>
+              {loadingTasks ? "Lade…" : "Aufgaben neu laden"}
             </button>
-            <button style={styles.btn} onClick={signOut}>
-              Logout
-            </button>
+            <button style={styles.btn} onClick={logout}>Logout</button>
           </div>
         </div>
 
         <div style={styles.tabs}>
-          <button style={{ ...styles.tab, ...(tab === "plan" ? styles.tabActive : null) }} onClick={() => setTab("plan")}>
-            Plan
-          </button>
-          <button style={{ ...styles.tab, ...(tab === "kanboard" ? styles.tabActive : null) }} onClick={() => setTab("kanboard")}>
-            Kanboard
-          </button>
-          <button style={{ ...styles.tab, ...(tab === "calendar" ? styles.tabActive : null) }} onClick={() => setTab("calendar")}>
-            Kalender
-          </button>
-          <button style={{ ...styles.tab, ...(tab === "guides" ? styles.tabActive : null) }} onClick={() => setTab("guides")}>
-            Anleitungen
-          </button>
-          <button style={{ ...styles.tab, ...(tab === "users" ? styles.tabActive : null) }} onClick={() => setTab("users")}>
-            Nutzer
-          </button>
-          <button style={{ ...styles.tab, ...(tab === "settings" ? styles.tabActive : null) }} onClick={() => setTab("settings")}>
-            Einstellungen
-          </button>
+          <button style={styles.tab(tab === "plan")} onClick={() => setTab("plan")}>Plan</button>
+          <button style={styles.tab(tab === "kanboard")} onClick={() => setTab("kanboard")}>Kanboard</button>
+          <button style={styles.tab(tab === "calendar")} onClick={() => setTab("calendar")}>Kalender</button>
+          <button style={styles.tab(tab === "guides")} onClick={() => setTab("guides")}>Anleitungen</button>
+          <button style={styles.tab(tab === "users")} onClick={() => setTab("users")}>Nutzer</button>
+          <button style={styles.tab(tab === "settings")} onClick={() => setTab("settings")}>Einstellungen</button>
         </div>
 
-        {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-        {loading ? <div style={{ ...styles.panel, color: "#6b7280" }}>Lade…</div> : null}
+        {metaError ? <div style={{ ...styles.error, marginTop: 12 }}>{metaError}</div> : null}
+        {taskError ? <div style={{ ...styles.error, marginTop: 12 }}>{taskError}</div> : null}
+        {info ? <div style={{ ...styles.ok, marginTop: 12 }}>{info}</div> : null}
 
         {tab === "plan" ? (
-          <TasksPanel
-            tasks={tasksWithSubs}
+          <PlanPanel
             areas={areas}
+            profiles={profiles}
             guides={guides}
-            members={members}
-            userMap={userMap}
-            areaMap={areaMap}
-            isAdmin={isAdmin}
-            currentUserId={session.user.id}
-            onChanged={refreshTasks}
+            tasks={taskWithResolved}
+            onCreateTask={createTask}
+            onUpdateTask={updateTask}
+            onDeleteTask={deleteTask}
+            onAddSubtask={addSubtask}
+            onToggleSubtask={toggleSubtaskDone}
+            onDeleteSubtask={deleteSubtask}
+            onGuideOpen={openGuide}
           />
         ) : null}
 
         {tab === "kanboard" ? (
-          <KanboardPanel
-            tasks={tasksWithSubs}
-            areas={areas}
-            members={members}
-            userMap={userMap}
-            areaMap={areaMap}
-            isAdmin={isAdmin}
-            currentUserId={session.user.id}
-            onChanged={refreshTasks}
-          />
+          <KanboardPanel areas={areas} profiles={profiles} tasks={taskWithResolved} onUpdateTask={updateTask} onDeleteTask={deleteTask} />
         ) : null}
 
         {tab === "calendar" ? (
-          <CalendarPanel
-            tasks={tasksWithSubs}
-            areas={areas}
-            members={members}
-            userMap={userMap}
-            areaMap={areaMap}
-          />
+          <CalendarPanel areas={areas} profiles={profiles} tasks={taskWithResolved} onUpdateTask={updateTask} />
         ) : null}
 
-        {tab === "guides" ? <GuidesPanel guides={guides} onChanged={refreshMeta} /> : null}
+        {tab === "guides" ? (
+          <GuidesPanel areas={areas} guides={guides} isAdmin={isAdmin} onUpload={uploadGuideFile} onReload={loadMeta} onOpen={openGuide} getDownloadUrl={getGuideDownloadUrl} />
+        ) : null}
 
         {tab === "users" ? (
-          <UsersPanel
-            members={members}
-            membersTable={membersTable}
-            isAdmin={isAdmin}
-            currentUserEmail={session.user.email}
-            onRefresh={refreshMeta}
-          />
+          <UsersPanel areas={areas} profiles={profiles} currentUserId={authUser.id} isAdmin={isAdmin} onUpsertProfile={upsertProfile} onUpsertArea={upsertArea} />
         ) : null}
 
-        {tab === "settings" ? <UserSettingsPanel userId={session.user.id} /> : null}
+        {tab === "settings" ? (
+          <SettingsPanel settings={userSettings} onSave={saveUserSettings} />
+        ) : null}
 
-        <div style={{ height: 24 }} />
+        {guideModal.open ? (
+          <div style={styles.modalBackdrop} onMouseDown={closeGuide}>
+            <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+              <div style={styles.modalHeader}>
+                <div style={styles.h3}>{guideModal.loading ? "Lade…" : guideModal.guide?.title || "Anleitung"}</div>
+                <button style={styles.btnSmall} onClick={closeGuide}>Schließen</button>
+              </div>
+              {guideModal.error ? <div style={styles.error}>{guideModal.error}</div> : null}
+              {!guideModal.loading && guideModal.guide ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {guideModal.guide.description ? <div style={{ color: "#666", fontSize: 13 }}>{guideModal.guide.description}</div> : null}
+                  {guideModal.guide.content ? (
+                    <div style={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.5 }}>{guideModal.guide.content}</div>
+                  ) : (
+                    <div style={{ color: "#666", fontSize: 13 }}>Kein Textinhalt.</div>
+                  )}
+                  {(guideModal.guide.path || guideModal.guide.storage_path) ? (
+                    <GuideDownloadButton guide={guideModal.guide} getUrl={getGuideDownloadUrl} />
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
 }
 
-/* ---------------- Tasks Panel (Plan) ---------------- */
+/* ---------------- Components ---------------- */
 
-function TasksPanel({ tasks, areas, guides, members, userMap, areaMap, isAdmin, currentUserId, onChanged }) {
-  const [form, setForm] = useState({
-    title: "",
-    due_at: "",
-    area_id: "",
-    status: "todo",
-    assignee_id: "",
-    notes: "",
-  });
-  const [subDraft, setSubDraft] = useState({}); // taskId -> title
+function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
+  const [form, setForm] = useState({ title: "", due_at: "", status: "todo", area_id: "", assignee_id: "", notes: "", guide_ids: [] });
+  const [seriesForm, setSeriesForm] = useState({ title: "", area_id: "", assignee_id: "", start_at: "", recurrence: "weekly", interval: 1, count: 4, notes: "", guide_ids: [] });
+  const [seriesMsg, setSeriesMsg] = useState("");
 
-  const createTask = useCallback(async () => {
-    if (!form.title.trim()) return;
-    const payload = {
-      title: form.title.trim(),
-      status: form.status || "todo",
-      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
-      area_id: form.area_id || null,
-      assignee_id: form.assignee_id || null,
-      notes: form.notes || null,
-    };
-    const r = await safeInsert("tasks", payload);
-    if (r.error) return alert(r.error.message || String(r.error));
-    setForm((f) => ({ ...f, title: "", notes: "" }));
-    onChanged();
-  }, [form, onChanged]);
+  const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
+  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
 
-  const toggleTask = useCallback(
-    async (t) => {
-      const next = t.status === "done" ? "todo" : "done";
-      const r = await safeUpdate("tasks", { status: next }, { id: t.id });
-      if (r.error) return alert(r.error.message || String(r.error));
-      onChanged();
-    },
-    [onChanged]
-  );
+  const onGuideSelect = (e, setter) => {
+    const values = Array.from(e.target.selectedOptions).map((o) => o.value);
+    setter((f) => ({ ...f, guide_ids: values }));
+  };
 
-  const addSubtask = useCallback(
-    async (taskId) => {
-      const title = (subDraft[taskId] || "").trim();
-      if (!title) return;
-      // insert best effort for various schemas
-      const base = { title, task_id: taskId };
-      let r = await safeInsert("subtasks", { ...base, is_done: false });
-      if (r.error) r = await safeInsert("subtasks", { ...base, done: false });
-      if (r.error) r = await safeInsert("subtasks", { ...base, status: "todo" });
-      if (r.error) return alert(r.error.message || String(r.error));
-      setSubDraft((m) => ({ ...m, [taskId]: "" }));
-      onChanged();
-    },
-    [subDraft, onChanged]
-  );
+  const createSeries = async () => {
+    setSeriesMsg("");
+    const title = (seriesForm.title || "").trim();
+    if (!title) return setSeriesMsg("Serienaufgabe: Titel fehlt.");
+    const start = seriesForm.start_at ? new Date(seriesForm.start_at) : null;
+    if (!start || Number.isNaN(start.getTime())) return setSeriesMsg("Serienaufgabe: Startdatum fehlt/ungültig.");
+    const count = Math.max(1, parseInt(seriesForm.count || 1, 10));
+    const interval = Math.max(1, parseInt(seriesForm.interval || 1, 10));
+    const rule = seriesForm.recurrence;
+    const seriesId = uuidv4();
 
-  const toggleSubtask = useCallback(
-    async (sub) => {
-      const tid = sub.id;
-      const done = !isSubDone(sub);
+    const dates = [];
+    for (let i = 0; i < count; i++) {
+      if (rule === "daily") dates.push(addDays(start, i * interval));
+      else if (rule === "weekly") dates.push(addDays(start, i * 7 * interval));
+      else dates.push(addMonths(start, i * interval));
+    }
 
-      // try update fields in order
-      let r = await safeUpdate("subtasks", { is_done: done }, { id: tid });
-      if (r.error) r = await safeUpdate("subtasks", { done }, { id: tid });
-      if (r.error) r = await safeUpdate("subtasks", { completed: done }, { id: tid });
-      if (r.error) r = await safeUpdate("subtasks", { status: done ? "done" : "todo" }, { id: tid });
-      if (r.error) return alert(r.error.message || String(r.error));
+    for (let i = 0; i < dates.length; i++) {
+      await onCreateTask({
+        title,
+        due_at: dates[i].toISOString(),
+        status: "todo",
+        area_id: seriesForm.area_id || null,
+        assignee_id: seriesForm.assignee_id || null,
+        notes: seriesForm.notes || null,
+        guide_ids: seriesForm.guide_ids || [],
+        series_id: seriesId,
+        series_rule: rule,
+        series_interval: interval,
+        repeat_count: count,
+      });
+    }
+    setSeriesMsg("Serie angelegt.");
+  };
 
-      onChanged();
-    },
-    [onChanged]
-  );
+  const groupedSeries = useMemo(() => {
+    const m = {};
+    (tasks || []).forEach((t) => {
+      if (!t.series_id) return;
+      if (!m[t.series_id]) m[t.series_id] = [];
+      m[t.series_id].push(t);
+    });
+    const items = Object.entries(m).map(([sid, list]) => {
+      list.sort((a, b) => new Date(a.due_at || 0) - new Date(b.due_at || 0));
+      const head = list[0];
+      return { series_id: sid, head, count: list.length };
+    });
+    items.sort((a, b) => String(a.head?.title || "").localeCompare(String(b.head?.title || ""), "de"));
+    return items;
+  }, [tasks]);
+
+  const columns = useMemo(() => {
+    const todo = [];
+    const done = [];
+    (tasks || []).forEach((t) => (safeLower(t.status) === "done" ? done : todo).push(t));
+    return { todo, done };
+  }, [tasks]);
 
   return (
-    <div style={styles.panel}>
-      <div style={{ display: "grid", gap: 12 }}>
-        <div style={{ fontSize: 16 }}>Aufgabe anlegen</div>
+    <div>
+      <div style={styles.panel}>
+        <div style={styles.h2}>Aufgabe anlegen</div>
 
         <div style={styles.grid3}>
-          <input style={styles.input} placeholder="Titel" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
-          <input
-            style={styles.input}
-            type="datetime-local"
-            value={form.due_at}
-            onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))}
-          />
-          <select style={styles.select} value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>
+          <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Titel" style={styles.input} />
+          <input type="datetime-local" value={form.due_at} onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))} style={styles.input} />
+          <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} style={styles.select}>
             <option value="todo">Zu erledigen</option>
             <option value="done">Erledigt</option>
           </select>
 
-          <select style={styles.select} value={form.area_id} onChange={(e) => setForm((f) => ({ ...f, area_id: e.target.value }))}>
+          <select value={form.area_id} onChange={(e) => setForm((f) => ({ ...f, area_id: e.target.value }))} style={styles.select}>
             <option value="">– Bereich –</option>
-            {(areas || []).map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name || a.title || a.id}
-              </option>
+            {areaOpts.map((a) => (
+              <option key={a.id} value={a.id}>{a.label}</option>
             ))}
           </select>
 
-          <select
-            style={styles.select}
-            value={form.assignee_id}
-            onChange={(e) => setForm((f) => ({ ...f, assignee_id: e.target.value }))}
-            title="Zuständig"
-          >
+          <select value={form.assignee_id} onChange={(e) => setForm((f) => ({ ...f, assignee_id: e.target.value }))} style={styles.select}>
             <option value="">– Zuständig –</option>
-            {(members || []).map((m) => (
-              <option key={m.id} value={m.id}>
-                {displayUser(m)}
-              </option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
             ))}
           </select>
 
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <button style={styles.btnPrimary} onClick={createTask}>
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
+            <button
+              style={styles.btnPrimary}
+              onClick={() =>
+                onCreateTask({
+                  title: form.title?.trim(),
+                  due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+                  status: form.status || "todo",
+                  area_id: form.area_id || null,
+                  assignee_id: form.assignee_id || null,
+                  notes: form.notes || null,
+                  guide_ids: form.guide_ids || [],
+                })
+              }
+            >
               Anlegen
             </button>
           </div>
         </div>
 
-        <textarea
-          style={{ ...styles.input, minWidth: "auto" }}
-          placeholder="Notizen (optional)"
-          value={form.notes}
-          onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
-        />
-
-        <div style={{ height: 8 }} />
-
-        <div style={styles.grid2}>
-          <TaskColumn
-            title="Zu erledigen"
-            tasks={(tasks || []).filter((t) => t.status !== "done")}
-            areaMap={areaMap}
-            guides={guides}
-            userMap={userMap}
-            onToggle={toggleTask}
-            subDraft={subDraft}
-            setSubDraft={setSubDraft}
-            onSubAdd={addSubtask}
-            onSubToggle={toggleSubtask}
-          />
-          <TaskColumn
-            title="Erledigt"
-            tasks={(tasks || []).filter((t) => t.status === "done")}
-            areaMap={areaMap}
-            guides={guides}
-            userMap={userMap}
-            onToggle={toggleTask}
-            subDraft={subDraft}
-            setSubDraft={setSubDraft}
-            onSubAdd={addSubtask}
-            onSubToggle={toggleSubtask}
-          />
+        <div style={{ marginTop: 10 }}>
+          <textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Notizen (optional)" style={styles.textarea} />
         </div>
 
-        <div style={styles.small}>
-          Hinweis: Unteraufgaben-Checkbox nutzt Fallback-Felder (is_done/done/completed/status). Wenn du standardisieren willst: `subtasks.is_done`.
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 13, color: "#111", marginBottom: 6 }}>Anleitungen (Mehrfachauswahl möglich)</div>
+          <select multiple value={form.guide_ids} onChange={(e) => onGuideSelect(e, setForm)} style={{ ...styles.select, height: 110 }}>
+            {(guides || []).map((g) => (
+              <option key={g.id} value={g.id}>{g.title}</option>
+            ))}
+          </select>
+          <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>Tipp: Strg/Cmd + Klick</div>
+        </div>
+      </div>
+
+      <div style={styles.panel}>
+        <div style={styles.h2}>Aufgaben</div>
+        <div style={styles.cols}>
+          <TaskColumn title="Zu erledigen" tasks={columns.todo} guides={guides} onUpdateTask={onUpdateTask} onDeleteTask={onDeleteTask} onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onGuideOpen={onGuideOpen} />
+          <TaskColumn title="Erledigt" tasks={columns.done} guides={guides} onUpdateTask={onUpdateTask} onDeleteTask={onDeleteTask} onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onGuideOpen={onGuideOpen} />
+        </div>
+      </div>
+
+      <div style={styles.panel}>
+        <div style={styles.h2}>Serienaufgabe</div>
+        <div style={styles.grid3}>
+          <input value={seriesForm.title} onChange={(e) => setSeriesForm((f) => ({ ...f, title: e.target.value }))} placeholder="Serientitel" style={styles.input} />
+          <input type="datetime-local" value={seriesForm.start_at} onChange={(e) => setSeriesForm((f) => ({ ...f, start_at: e.target.value }))} style={styles.input} />
+          <select value={seriesForm.recurrence} onChange={(e) => setSeriesForm((f) => ({ ...f, recurrence: e.target.value }))} style={styles.select}>
+            <option value="daily">Täglich</option>
+            <option value="weekly">Wöchentlich</option>
+            <option value="monthly">Monatlich</option>
+          </select>
+
+          <select value={seriesForm.area_id} onChange={(e) => setSeriesForm((f) => ({ ...f, area_id: e.target.value }))} style={styles.select}>
+            <option value="">– Bereich –</option>
+            {areaOpts.map((a) => (
+              <option key={a.id} value={a.id}>{a.label}</option>
+            ))}
+          </select>
+
+          <select value={seriesForm.assignee_id} onChange={(e) => setSeriesForm((f) => ({ ...f, assignee_id: e.target.value }))} style={styles.select}>
+            <option value="">– Zuständig –</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input type="number" min="1" value={seriesForm.interval} onChange={(e) => setSeriesForm((f) => ({ ...f, interval: e.target.value }))} style={{ ...styles.input, width: 140 }} placeholder="Intervall" />
+            <input type="number" min="1" value={seriesForm.count} onChange={(e) => setSeriesForm((f) => ({ ...f, count: e.target.value }))} style={{ ...styles.input, width: 140 }} placeholder="Anzahl" />
+            <button style={styles.btnPrimary} onClick={createSeries}>Serie anlegen</button>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <textarea value={seriesForm.notes} onChange={(e) => setSeriesForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Notizen (optional)" style={styles.textarea} />
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 13, color: "#111", marginBottom: 6 }}>Anleitungen (Mehrfachauswahl möglich)</div>
+          <select multiple value={seriesForm.guide_ids} onChange={(e) => onGuideSelect(e, setSeriesForm)} style={{ ...styles.select, height: 110 }}>
+            {(guides || []).map((g) => (
+              <option key={g.id} value={g.id}>{g.title}</option>
+            ))}
+          </select>
+        </div>
+
+        {seriesMsg ? <div style={{ ...styles.ok, marginTop: 10 }}>{seriesMsg}</div> : null}
+
+        <div style={styles.hr} />
+        <div style={styles.h3}>Serienübersicht</div>
+        {(groupedSeries || []).length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Noch keine Serien.</div> : null}
+        <div style={{ display: "grid", gap: 10 }}>
+          {groupedSeries.map((s) => (
+            <div key={s.series_id} style={styles.card}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={styles.h4}>{s.head?.title || "Serie"}</div>
+                <span style={styles.pill}>Instanzen: {s.count}</span>
+                <span style={styles.pill}>Regel: {s.head?.series_rule || "—"}</span>
+                <span style={styles.pill}>Intervall: {s.head?.series_interval || 1}</span>
+                <span style={styles.pill}>Start: {s.head?.due_at ? fmtDateTime(s.head.due_at) : "—"}</span>
+                <button style={{ ...styles.btnSmall, marginLeft: "auto" }} onClick={() => {
+                  const list = (tasks || []).filter((t) => t.series_id === s.series_id);
+                  list.forEach((t) => onDeleteTask(t.id));
+                }}>Serie löschen</button>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
   );
 }
 
-function TaskColumn({ title, tasks, areaMap, userMap, onToggle, subDraft, setSubDraft, onSubAdd, onSubToggle }) {
-  const [openTask, setOpenTask] = useState(null);
-
+function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
+  const [subDraft, setSubDraft] = useState({});
   return (
-    <div style={styles.card}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-        <div style={{ fontSize: 15 }}>
-          {title} <span style={styles.small}>({(tasks || []).length})</span>
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+    <div style={styles.panel}>
+      <div style={styles.h3}>{title} ({(tasks || []).length})</div>
+      <div style={{ display: "grid", gap: 10 }}>
         {(tasks || []).map((t) => {
-          const area = t.area_id ? areaMap.get(t.area_id) : null;
-          const subs = t.__subtasks || [];
-          const doneCount = subs.filter(isSubDone).length;
+          const color = t._areaObj?.color || t.color || "#94a3b8";
+          const assigneeName =
+            t._assignee?.name ||
+            t._assignee?.full_name ||
+            t._assignee?.email ||
+            (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
+          const subs = t._subtasks || [];
+          const doneCount = t._subDoneCount || 0;
 
           return (
-            <div key={t.id} style={styles.cardClickable} onClick={() => setOpenTask(t)}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ fontWeight: 600 }}>{t.title}</div>
-                {area ? <span style={styles.pill}>{area.name || area.title}</span> : null}
-                <span style={{ marginLeft: "auto", ...styles.small }}>{t.due_at ? fmtShort(t.due_at) : "—"}</span>
+            <div key={t.id} style={styles.card}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={styles.dot(color)} />
+                <div style={{ fontWeight: 700 }}>{t.title}</div>
+                {t._areaObj?.name ? <span style={styles.pill}>{t._areaObj.name}</span> : null}
+                <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
               </div>
 
-              <div style={{ marginTop: 6, ...styles.small }}>
-                Zuständig: {t.assignee_id ? userMap.get(t.assignee_id) || t.assignee_id : "Unzugeordnet"} · Unteraufgaben: {doneCount}/{subs.length}
+              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                Zuständig: {assigneeName} · Unteraufgaben: {doneCount}/{subs.length}
               </div>
 
-              <div style={{ display: "flex", gap: 8, marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
-                <button style={styles.btn} onClick={() => onToggle(t)}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                <button style={styles.btnSmall} onClick={() => onUpdateTask(t.id, { status: safeLower(t.status) === "done" ? "todo" : "done" })}>
                   Status wechseln
                 </button>
+                <button style={styles.btnSmall} onClick={() => onDeleteTask(t.id)}>
+                  Aufgabe löschen
+                </button>
+                {(t.guide_ids || []).map((gid) => {
+                  const g = (guides || []).find((x) => x.id === gid);
+                  return (
+                    <button key={gid} style={styles.btnSmall} onClick={() => onGuideOpen(gid)}>
+                      Anleitung: {g?.title || gid}
+                    </button>
+                  );
+                })}
               </div>
 
-              <div style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input
-                    style={{ ...styles.input, minWidth: "auto", flex: 1 }}
-                    placeholder="Unteraufgabe hinzufügen…"
-                    value={subDraft[t.id] || ""}
-                    onChange={(e) => setSubDraft((m) => ({ ...m, [t.id]: e.target.value }))}
-                  />
-                  <button style={styles.btnPrimary} onClick={() => onSubAdd(t.id)}>
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input value={subDraft[t.id] || ""} onChange={(e) => setSubDraft((p) => ({ ...p, [t.id]: e.target.value }))} placeholder="Unteraufgabe hinzufügen…" style={styles.input} />
+                  <button
+                    style={styles.btnSmallPrimary}
+                    onClick={() => {
+                      const txt = (subDraft[t.id] || "").trim();
+                      if (!txt) return;
+                      onAddSubtask(t.id, txt);
+                      setSubDraft((p) => ({ ...p, [t.id]: "" }));
+                    }}
+                  >
                     +
                   </button>
                 </div>
 
-                {subs.length > 0 ? (
-                  <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
-                    {subs.slice(0, 5).map((s) => (
-                      <label key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 14 }}>
-                        <input type="checkbox" checked={isSubDone(s)} onChange={() => onSubToggle(s)} />
-                        <span style={{ textDecoration: isSubDone(s) ? "line-through" : "none" }}>{s.title}</span>
-                      </label>
-                    ))}
-                    {subs.length > 5 ? <div style={styles.small}>… +{subs.length - 5} weitere</div> : null}
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 8, ...styles.small }}>Keine Unteraufgaben</div>
-                )}
+                <div style={{ marginTop: 10 }}>
+                  {subs.length === 0 ? <div style={{ fontSize: 13, color: "#666" }}>Keine Unteraufgaben</div> : null}
+                  {subs.map((s) => (
+                    <div key={s.id} style={styles.subRow}>
+                      <input type="checkbox" checked={getSubDone(s)} onChange={() => onToggleSubtask(s)} />
+                      <div style={{ fontSize: 13 }}>{s.title}</div>
+                      <span style={styles.dot(s.color || "#94a3b8")} />
+                      <button style={styles.btnSmall} onClick={() => onDeleteSubtask(s)}>✕</button>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           );
         })}
-
-        {(tasks || []).length === 0 ? <div style={styles.small}>Keine Einträge</div> : null}
-      </div>
-
-      {openTask ? (
-        <TaskModal task={openTask} areaMap={areaMap} userMap={userMap} onClose={() => setOpenTask(null)} />
-      ) : null}
-    </div>
-  );
-}
-
-function TaskModal({ task, areaMap, userMap, onClose }) {
-  const area = task.area_id ? areaMap.get(task.area_id) : null;
-  const subs = task.__subtasks || [];
-
-  return (
-    <div style={styles.modalBackdrop} onMouseDown={onClose}>
-      <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
-        <div style={styles.modalHeader}>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>{task.title}</div>
-          <button style={styles.btn} onClick={onClose}>
-            Schließen
-          </button>
-        </div>
-
-        <div style={{ marginTop: 10, ...styles.small }}>
-          Bereich: {area ? area.name || area.title : "—"} · Zuständig:{" "}
-          {task.assignee_id ? userMap.get(task.assignee_id) || task.assignee_id : "Unzugeordnet"} · Status: {task.status || "—"}
-        </div>
-
-        <div style={{ marginTop: 10, ...styles.small }}>Fällig: {task.due_at ? fmtDateTime(task.due_at) : "—"}</div>
-
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Notizen</div>
-          <div style={{ whiteSpace: "pre-wrap" }}>{task.notes || task.description || "—"}</div>
-        </div>
-
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Unteraufgaben ({subs.length})</div>
-          {subs.length ? (
-            <div style={{ display: "grid", gap: 6 }}>
-              {subs.map((s) => (
-                <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={styles.pill}>{isSubDone(s) ? "Erledigt" : "Offen"}</span>
-                  <span>{s.title}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={styles.small}>Keine Unteraufgaben</div>
-          )}
-        </div>
       </div>
     </div>
   );
 }
 
-/* ---------------- Kanboard Panel ---------------- */
-
-function KanboardPanel({ tasks, areas, members, userMap, areaMap, isAdmin, currentUserId, onChanged }) {
-  const [mode, setMode] = useState("status"); // status | people
+function KanboardPanel({ areas, profiles, tasks, onUpdateTask, onDeleteTask }) {
+  const [view, setView] = useState("status");
   const [areaFilter, setAreaFilter] = useState("");
   const [userFilter, setUserFilter] = useState("");
+
+  const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
+  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
 
   const filtered = useMemo(() => {
     return (tasks || []).filter((t) => {
       if (areaFilter && t.area_id !== areaFilter) return false;
-      if (userFilter && t.assignee_id !== userFilter) return false;
+      if (userFilter && (t.assignee_id || "") !== userFilter) return false;
       return true;
     });
   }, [tasks, areaFilter, userFilter]);
 
-  const columns = useMemo(() => {
-    const todo = filtered.filter((t) => t.status !== "done");
-    const done = filtered.filter((t) => t.status === "done");
+  const byStatus = useMemo(() => {
+    const todo = [];
+    const done = [];
+    filtered.forEach((t) => (safeLower(t.status) === "done" ? done : todo).push(t));
     return { todo, done };
   }, [filtered]);
 
-  const setAssignee = useCallback(
-    async (taskId, assigneeId) => {
-      const r = await safeUpdate("tasks", { assignee_id: assigneeId || null }, { id: taskId });
-      if (r.error) return alert(r.error.message || String(r.error));
-      onChanged();
-    },
-    [onChanged]
-  );
-
-  const claimMe = useCallback(
-    async (taskId) => {
-      const r = await safeUpdate("tasks", { assignee_id: currentUserId }, { id: taskId });
-      if (r.error) return alert(r.error.message || String(r.error));
-      onChanged();
-    },
-    [currentUserId, onChanged]
-  );
-
-  const openCountByUser = useMemo(() => {
-    const m = new Map();
-    for (const t of filtered.filter((x) => x.status !== "done")) {
-      const uid = t.assignee_id || "__unassigned__";
-      m.set(uid, (m.get(uid) || 0) + 1);
-    }
-    return m;
+  const byPerson = useMemo(() => {
+    const map = {};
+    filtered.forEach((t) => {
+      const key = t.assignee_id || "unassigned";
+      if (!map[key]) map[key] = [];
+      map[key].push(t);
+    });
+    return map;
   }, [filtered]);
-
-  const peopleColumns = useMemo(() => {
-    const cols = [];
-    cols.push({ id: "__unassigned__", title: "Nicht zugeordnet" });
-
-    for (const u of members || []) cols.push({ id: u.id, title: displayUser(u) });
-
-    return cols;
-  }, [members]);
 
   return (
     <div style={styles.panel}>
-      <div style={styles.row}>
-        <button style={{ ...styles.btn, ...(mode === "status" ? styles.tabActive : null) }} onClick={() => setMode("status")}>
-          Status
-        </button>
-        <button style={{ ...styles.btn, ...(mode === "people" ? styles.tabActive : null) }} onClick={() => setMode("people")}>
-          Personen
-        </button>
+      <div style={styles.h2}>Kanboard</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+        <button style={styles.btnSmallPrimary} onClick={() => setView("status")} disabled={view === "status"}>Status</button>
+        <button style={styles.btnSmallPrimary} onClick={() => setView("people")} disabled={view === "people"}>Personen</button>
 
-        <span style={{ width: 10 }} />
-
-        <select style={styles.select} value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)}>
+        <select value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} style={{ ...styles.select, width: 220 }}>
           <option value="">Alle Bereiche</option>
-          {(areas || []).map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name || a.title || a.id}
-            </option>
-          ))}
+          {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
         </select>
 
-        <select style={styles.select} value={userFilter} onChange={(e) => setUserFilter(e.target.value)}>
+        <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={{ ...styles.select, width: 220 }}>
           <option value="">Alle Nutzer</option>
-          {(members || []).map((m) => (
-            <option key={m.id} value={m.id}>
-              {displayUser(m)}
-            </option>
-          ))}
+          {members.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
+
+        <button style={styles.btnSmall} onClick={() => { setAreaFilter(""); setUserFilter(""); }}>Filter löschen</button>
       </div>
 
-      {mode === "status" ? (
-        <div style={{ marginTop: 12, ...styles.grid2 }}>
-          <KanColumn
-            title="Zu erledigen"
-            tasks={columns.todo}
-            areaMap={areaMap}
-            userMap={userMap}
-            members={members}
-            isAdmin={isAdmin}
-            onAssignee={setAssignee}
-            onClaimMe={claimMe}
-            showAssignForUnassigned
-          />
-          <KanColumn
-            title="Erledigt"
-            tasks={columns.done}
-            areaMap={areaMap}
-            userMap={userMap}
-            members={members}
-            isAdmin={isAdmin}
-            onAssignee={setAssignee}
-            onClaimMe={claimMe}
-            showAssignForUnassigned={false}
-          />
+      <div style={styles.hr} />
+
+      {view === "status" ? (
+        <div style={styles.cols}>
+          <KanColumn title="Zu erledigen" tasks={byStatus.todo} onUpdateTask={onUpdateTask} onDeleteTask={onDeleteTask} />
+          <KanColumn title="Erledigt" tasks={byStatus.done} onUpdateTask={onUpdateTask} onDeleteTask={onDeleteTask} />
         </div>
       ) : (
-        <div style={{ marginTop: 12, overflowX: "auto" }}>
-          <div style={{ display: "grid", gridAutoFlow: "column", gridAutoColumns: "320px", gap: 12 }}>
-            {peopleColumns.map((col) => {
-              const list =
-                col.id === "__unassigned__"
-                  ? filtered.filter((t) => t.status !== "done" && !t.assignee_id)
-                  : filtered.filter((t) => t.status !== "done" && t.assignee_id === col.id);
+        <PeopleBoard tasksByPerson={byPerson} members={members} onUpdateTask={onUpdateTask} />
+      )}
+    </div>
+  );
+}
 
-              return (
-                <div key={col.id} style={styles.card}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ fontWeight: 700 }}>{col.title}</div>
-                    <span style={styles.pill}>{list.length}</span>
-                  </div>
-
-                  <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-                    {list.map((t) => (
-                      <KanTaskCard
-                        key={t.id}
-                        task={t}
-                        areaMap={areaMap}
-                        userMap={userMap}
-                        members={members}
-                        isAdmin={isAdmin}
-                        onAssignee={setAssignee}
-                        onClaimMe={claimMe}
-                        allowAssign={!t.assignee_id} // only unassigned can be assigned here
-                      />
-                    ))}
-                    {list.length === 0 ? <div style={styles.small}>—</div> : null}
-                  </div>
-                </div>
-              );
-            })}
+function KanColumn({ title, tasks, onUpdateTask, onDeleteTask }) {
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h3}>{title} ({tasks.length})</div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {tasks.map((t) => (
+          <div key={t.id} style={styles.card}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ fontWeight: 700 }}>{t.title}</div>
+              <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDate(t.due_at) : ""}</div>
+            </div>
+            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <select value={safeLower(t.status) === "done" ? "done" : "todo"} onChange={(e) => onUpdateTask(t.id, { status: e.target.value })} style={{ ...styles.select, width: 160, padding: "8px 10px" }}>
+                <option value="todo">Zu erledigen</option>
+                <option value="done">Erledigt</option>
+              </select>
+              <button style={styles.btnSmall} onClick={() => onDeleteTask(t.id)}>Löschen</button>
+            </div>
           </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PeopleBoard({ tasksByPerson, members, onUpdateTask }) {
+  const cols = useMemo(() => {
+    const keys = Object.keys(tasksByPerson || {});
+    keys.sort((a, b) => {
+      if (a === "unassigned") return -1;
+      if (b === "unassigned") return 1;
+      const la = members.find((m) => m.id === a)?.label || a;
+      const lb = members.find((m) => m.id === b)?.label || b;
+      return la.localeCompare(lb, "de");
+    });
+    return keys;
+  }, [tasksByPerson, members]);
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <div style={{ display: "flex", gap: 12, minWidth: 900 }}>
+        {cols.map((key) => {
+          const label = key === "unassigned" ? "Nicht zugeordnet" : members.find((m) => m.id === key)?.label || key;
+          const list = tasksByPerson[key] || [];
+          return (
+            <div key={key} style={{ minWidth: 260, maxWidth: 260 }}>
+              <div style={styles.card}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={styles.h4}>{label}</div>
+                  <span style={styles.pill}>{list.length}</span>
+                </div>
+                <div style={{ height: 10 }} />
+                {list.map((t) => (
+                  <div key={t.id} style={{ border: "1px solid #eef2f7", borderRadius: 10, padding: 10, marginBottom: 8 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{t.title}</div>
+                    <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>{t.due_at ? fmtDate(t.due_at) : ""}</div>
+                    <div style={{ marginTop: 8 }}>
+                      <button style={styles.btnSmall} onClick={() => onUpdateTask(t.id, { status: safeLower(t.status) === "done" ? "todo" : "done" })}>Status wechseln</button>
+                    </div>
+                  </div>
+                ))}
+                {list.length === 0 ? <div style={{ fontSize: 13, color: "#666" }}>—</div> : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CalendarPanel({ areas, profiles, tasks, onUpdateTask }) {
+  const [view, setView] = useState("month");
+  const [cursor, setCursor] = useState(() => startOfDay(new Date()));
+  const [areaFilter, setAreaFilter] = useState("");
+  const [userFilter, setUserFilter] = useState("");
+
+  const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
+  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
+
+  const filtered = useMemo(() => {
+    return (tasks || []).filter((t) => {
+      if (!t.due_at) return false;
+      if (areaFilter && t.area_id !== areaFilter) return false;
+      if (userFilter && (t.assignee_id || "") !== userFilter) return false;
+      return true;
+    });
+  }, [tasks, areaFilter, userFilter]);
+
+  const monthLabel = useMemo(() => cursor.toLocaleDateString("de-DE", { month: "long", year: "numeric" }), [cursor]);
+
+  const weekStart = useMemo(() => {
+    const d = new Date(cursor);
+    const day = d.getDay();
+    const diff = (day + 6) % 7;
+    return startOfDay(addDays(d, -diff));
+  }, [cursor]);
+
+  const daysMonthGrid = useMemo(() => {
+    const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+    const firstDay = (first.getDay() + 6) % 7;
+    const start = addDays(first, -firstDay);
+    const days = [];
+    for (let i = 0; i < 42; i++) days.push(addDays(start, i));
+    return days;
+  }, [cursor]);
+
+  const tasksByDay = useMemo(() => {
+    const map = {};
+    filtered.forEach((t) => {
+      const d = startOfDay(new Date(t.due_at));
+      const key = d.toISOString().slice(0, 10);
+      if (!map[key]) map[key] = [];
+      map[key].push(t);
+    });
+    return map;
+  }, [filtered]);
+
+  const [selectedDay, setSelectedDay] = useState(() => startOfDay(new Date()));
+
+  const dayKey = (d) => startOfDay(d).toISOString().slice(0, 10);
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h2}>Kalender</div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button style={styles.btnSmallPrimary} onClick={() => setView("month")} disabled={view === "month"}>Monat</button>
+        <button style={styles.btnSmallPrimary} onClick={() => setView("week")} disabled={view === "week"}>Woche</button>
+
+        <button style={styles.btnSmall} onClick={() => setCursor((c) => (view === "month" ? new Date(c.getFullYear(), c.getMonth() - 1, 1) : addDays(c, -7)))}>←</button>
+        <div style={{ fontWeight: 700 }}>{view === "month" ? monthLabel : `Woche ab ${fmtDate(weekStart)}`}</div>
+        <button style={styles.btnSmall} onClick={() => setCursor((c) => (view === "month" ? new Date(c.getFullYear(), c.getMonth() + 1, 1) : addDays(c, 7)))}>→</button>
+
+        <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <select value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} style={{ ...styles.select, width: 220 }}>
+            <option value="">Alle Bereiche</option>
+            {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+          </select>
+
+          <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={{ ...styles.select, width: 220 }}>
+            <option value="">Alle Nutzer</option>
+            {members.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div style={styles.hr} />
+
+      {view === "month" ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
+          {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((d) => <div key={d} style={{ fontSize: 12, color: "#666", paddingLeft: 6 }}>{d}</div>)}
+          {daysMonthGrid.map((d, idx) => {
+            const k = dayKey(d);
+            const list = tasksByDay[k] || [];
+            const inMonth = d.getMonth() === cursor.getMonth();
+            const isSel = isSameDay(d, selectedDay);
+            return (
+              <div
+                key={idx}
+                onClick={() => setSelectedDay(startOfDay(d))}
+                style={{
+                  border: "1px solid #e6e9f0",
+                  borderRadius: 12,
+                  padding: 8,
+                  minHeight: 88,
+                  cursor: "pointer",
+                  background: isSel ? "#ecfdf5" : "#fff",
+                  opacity: inMonth ? 1 : 0.55,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700 }}>{d.getDate()}</div>
+                  {list.length ? <span style={styles.pill}>{list.length}</span> : null}
+                </div>
+                <div style={{ height: 6 }} />
+                {list.slice(0, 2).map((t) => (
+                  <div key={t.id} style={{ fontSize: 12, color: "#111", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>• {t.title}</div>
+                ))}
+                {list.length > 2 ? <div style={{ fontSize: 12, color: "#666" }}>+{list.length - 2} …</div> : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
+          {Array.from({ length: 7 }).map((_, i) => {
+            const d = addDays(weekStart, i);
+            const k = dayKey(d);
+            const list = tasksByDay[k] || [];
+            const isSel = isSameDay(d, selectedDay);
+            return (
+              <div
+                key={i}
+                onClick={() => setSelectedDay(startOfDay(d))}
+                style={{
+                  border: "1px solid #e6e9f0",
+                  borderRadius: 12,
+                  padding: 10,
+                  minHeight: 130,
+                  cursor: "pointer",
+                  background: isSel ? "#ecfdf5" : "#fff",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700 }}>{fmtDate(d)}</div>
+                  {list.length ? <span style={styles.pill}>{list.length}</span> : null}
+                </div>
+                <div style={{ height: 8 }} />
+                {list.slice(0, 4).map((t) => (
+                  <div key={t.id} style={{ fontSize: 12, color: "#111", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>• {t.title}</div>
+                ))}
+                {list.length > 4 ? <div style={{ fontSize: 12, color: "#666" }}>+{list.length - 4} …</div> : null}
+              </div>
+            );
+          })}
         </div>
       )}
 
-      <div style={{ marginTop: 10, ...styles.small }}>
-        Personen-Ansicht ist als Überblick gedacht: Zugeordnete Aufgaben bleiben Übersicht; nur unzugeordnete sind direkt zuweisbar.
-      </div>
+      <div style={{ height: 12 }} />
+      <DayDetail day={selectedDay} tasks={(tasksByDay[dayKey(selectedDay)] || []).slice()} onUpdateTask={onUpdateTask} />
     </div>
   );
 }
 
-function KanColumn({ title, tasks, areaMap, userMap, members, isAdmin, onAssignee, onClaimMe, showAssignForUnassigned }) {
+function DayDetail({ day, tasks, onUpdateTask }) {
   return (
     <div style={styles.card}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontWeight: 700 }}>{title}</div>
-        <span style={styles.pill}>{(tasks || []).length}</span>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div style={styles.h3}>Aufgaben am {fmtDate(day)}</div>
+        <div style={styles.pill}>{tasks.length} Einträge</div>
       </div>
-
-      <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-        {(tasks || []).map((t) => (
-          <KanTaskCard
-            key={t.id}
-            task={t}
-            areaMap={areaMap}
-            userMap={userMap}
-            members={members}
-            isAdmin={isAdmin}
-            onAssignee={onAssignee}
-            onClaimMe={onClaimMe}
-            allowAssign={showAssignForUnassigned && !t.assignee_id && t.status !== "done"}
-          />
+      <div style={{ height: 10 }} />
+      {tasks.length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Keine Einträge.</div> : null}
+      <div style={{ display: "grid", gap: 8 }}>
+        {tasks.map((t) => (
+          <div key={t.id} style={{ border: "1px solid #eef2f7", borderRadius: 10, padding: 10 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ fontWeight: 700 }}>{t.title}</div>
+              <div style={{ marginLeft: "auto", color: "#666", fontSize: 12 }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
+              <span style={styles.pill}>{safeLower(t.status) === "done" ? "Erledigt" : "Offen"}</span>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <button style={styles.btnSmall} onClick={() => onUpdateTask(t.id, { status: safeLower(t.status) === "done" ? "todo" : "done" })}>Status wechseln</button>
+            </div>
+          </div>
         ))}
-        {(tasks || []).length === 0 ? <div style={styles.small}>—</div> : null}
       </div>
     </div>
   );
 }
 
-function KanTaskCard({ task, areaMap, userMap, members, isAdmin, onAssignee, onClaimMe, allowAssign }) {
-  const [open, setOpen] = useState(false);
-  const area = task.area_id ? areaMap.get(task.area_id) : null;
-  const subs = task.__subtasks || [];
-  const doneCount = subs.filter(isSubDone).length;
+function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDownloadUrl }) {
+  const [filterArea, setFilterArea] = useState("");
+  const [upload, setUpload] = useState({ file: null, title: "", description: "", area_id: "" });
+  const [urlMap, setUrlMap] = useState({});
+  const [loadingUrls, setLoadingUrls] = useState(false);
 
-  return (
-    <>
-      <div style={styles.cardClickable} onClick={() => setOpen(true)}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ fontWeight: 600 }}>{task.title}</div>
-          {area ? <span style={styles.pill}>{area.name || area.title}</span> : null}
-          <span style={{ marginLeft: "auto", ...styles.small }}>{task.due_at ? fmtShort(task.due_at) : "—"}</span>
-        </div>
+  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
 
-        <div style={{ marginTop: 6, ...styles.small }}>
-          Zuständig: {task.assignee_id ? userMap.get(task.assignee_id) || task.assignee_id : "Unzugeordnet"} · Unteraufgaben: {doneCount}/{subs.length}
-        </div>
+  const filtered = useMemo(() => {
+    const list = guides || [];
+    if (!filterArea) return list;
+    return list.filter((g) => (g.area_id || "") === filterArea);
+  }, [guides, filterArea]);
 
-        {allowAssign ? (
-          <div style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
-            {isAdmin ? (
-              <select style={styles.select} value={task.assignee_id || ""} onChange={(e) => onAssignee(task.id, e.target.value || null)}>
-                <option value="">– Zuständig wählen –</option>
-                {(members || []).map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {displayUser(m)}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <button style={styles.btnPrimary} onClick={() => onClaimMe(task.id)}>
-                Mir zuweisen
-              </button>
-            )}
-          </div>
-        ) : null}
-      </div>
-
-      {open ? <TaskModal task={task} areaMap={areaMap} userMap={userMap} onClose={() => setOpen(false)} /> : null}
-    </>
-  );
-}
-
-/* ---------------- Calendar Panel ---------------- */
-
-function CalendarPanel({ tasks, areaMap, userMap }) {
-  const [cursor, setCursor] = useState(() => {
-    const d = new Date();
-    d.setDate(1);
-    return d;
-  });
-
-  const monthTasks = useMemo(() => {
-    const start = new Date(cursor);
-    const end = new Date(cursor);
-    end.setMonth(end.getMonth() + 1);
-    return (tasks || [])
-      .filter((t) => {
-        if (!t.due_at) return false;
-        const d = new Date(t.due_at);
-        return d >= start && d < end;
-      })
-      .sort((a, b) => new Date(a.due_at).getTime() - new Date(b.due_at).getTime());
-  }, [tasks, cursor]);
-
-  const grouped = useMemo(() => {
-    const map = new Map();
-    for (const t of monthTasks) {
-      const key = fmtShort(t.due_at);
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(t);
+  const resolveUrls = async () => {
+    setLoadingUrls(true);
+    const next = {};
+    for (const g of filtered.slice(0, 40)) {
+      const url = await getDownloadUrl(g);
+      if (url) next[g.id] = url;
     }
-    return Array.from(map.entries());
-  }, [monthTasks]);
-
-  const monthLabel = useMemo(() => cursor.toLocaleDateString("de-DE", { year: "numeric", month: "long" }), [cursor]);
+    setUrlMap(next);
+    setLoadingUrls(false);
+  };
 
   return (
     <div style={styles.panel}>
-      <div style={styles.row}>
-        <button style={styles.btn} onClick={() => setCursor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}>
-          ←
-        </button>
-        <div style={{ fontWeight: 700 }}>{monthLabel}</div>
-        <button style={styles.btn} onClick={() => setCursor((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}>
-          →
-        </button>
+      <div style={styles.h2}>Anleitungen</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={{ ...styles.select, width: 260 }}>
+          <option value="">Alle Bereiche</option>
+          {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+        </select>
+
+        <button style={styles.btnSmall} onClick={onReload}>Neu laden</button>
+        <button style={styles.btnSmall} onClick={resolveUrls} disabled={loadingUrls}>{loadingUrls ? "Lade Links…" : "Datei-Links anzeigen"}</button>
       </div>
 
-      <div style={{ marginTop: 12 }}>
-        {grouped.length === 0 ? <div style={styles.small}>Keine Aufgaben in diesem Monat.</div> : null}
+      <div style={styles.hr} />
 
-        <div style={{ display: "grid", gap: 12 }}>
-          {grouped.map(([day, list]) => (
-            <div key={day} style={styles.card}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ fontWeight: 700 }}>{day}</div>
-                <span style={styles.pill}>{list.length}</span>
+      {isAdmin ? (
+        <div style={styles.card}>
+          <div style={styles.h3}>Upload</div>
+          <div style={styles.grid3}>
+            <input value={upload.title} onChange={(e) => setUpload((u) => ({ ...u, title: e.target.value }))} placeholder="Titel (optional)" style={styles.input} />
+            <select value={upload.area_id} onChange={(e) => setUpload((u) => ({ ...u, area_id: e.target.value }))} style={styles.select}>
+              <option value="">– Bereich –</option>
+              {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            </select>
+            <input type="file" onChange={(e) => setUpload((u) => ({ ...u, file: e.target.files?.[0] || null }))} style={styles.input} />
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <input value={upload.description} onChange={(e) => setUpload((u) => ({ ...u, description: e.target.value }))} placeholder="Beschreibung (optional)" style={styles.input} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+            <button
+              style={styles.btnPrimary}
+              onClick={() =>
+                onUpload({ file: upload.file, title: upload.title, description: upload.description, area_id: upload.area_id || null }).then(() =>
+                  setUpload({ file: null, title: "", description: "", area_id: "" })
+                )
+              }
+            >
+              Hochladen
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ color: "#666", fontSize: 13 }}>Upload ist nur für Admin sichtbar.</div>
+      )}
+
+      <div style={{ height: 12 }} />
+
+      <div style={{ display: "grid", gap: 10 }}>
+        {filtered.map((g) => (
+          <div key={g.id} style={styles.card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 700 }}>{g.title || "—"}</div>
+              {g.area_id ? <span style={styles.pill}>Bereich: {g.area_id}</span> : <span style={styles.pill}>Ohne Bereich</span>}
+              <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button style={styles.btnSmall} onClick={() => onOpen(g.id)}>Öffnen</button>
+                {urlMap[g.id] ? (
+                  <a href={urlMap[g.id]} target="_blank" rel="noreferrer" style={{ ...styles.btnSmall, display: "inline-block", textDecoration: "none", color: "#111" }}>
+                    Datei öffnen
+                  </a>
+                ) : null}
               </div>
+            </div>
+            {g.description ? <div style={{ marginTop: 6, color: "#666", fontSize: 13 }}>{g.description}</div> : null}
+            {(g.path || g.storage_path) ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Datei: {(g.path || g.storage_path)}</div> : null}
+          </div>
+        ))}
+        {filtered.length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Keine Anleitungen gefunden.</div> : null}
+      </div>
+    </div>
+  );
+}
 
-              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-                {list.map((t) => {
-                  const area = t.area_id ? areaMap.get(t.area_id) : null;
-                  return (
-                    <div key={t.id} style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ fontWeight: 600 }}>{t.title}</div>
-                        {area ? <span style={styles.pill}>{area.name || area.title}</span> : null}
-                        <span style={{ marginLeft: "auto", ...styles.small }}>{t.status === "done" ? "Erledigt" : "Offen"}</span>
-                      </div>
-                      <div style={{ marginTop: 4, ...styles.small }}>
-                        Zuständig: {t.assignee_id ? userMap.get(t.assignee_id) || t.assignee_id : "Unzugeordnet"} · {t.due_at ? fmtDateTime(t.due_at) : ""}
-                      </div>
-                    </div>
-                  );
-                })}
+function UsersPanel({ areas, profiles, currentUserId, isAdmin, onUpsertProfile, onUpsertArea }) {
+  const [draftNew, setDraftNew] = useState({ id: "", email: "", name: "", role: "user", area_id: "" });
+  const [editId, setEditId] = useState("");
+  const [edit, setEdit] = useState({ id: "", email: "", name: "", role: "user", area_id: "" });
+
+  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name, color: a.color || "#94a3b8" })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
+
+  const startEdit = (p) => {
+    setEditId(p.id);
+    setEdit({
+      id: p.id,
+      email: p.email || "",
+      name: p.name || p.full_name || "",
+      role: p.role || "user",
+      area_id: p.area_id || "",
+    });
+  };
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h2}>Nutzer</div>
+      <div style={{ color: "#666", fontSize: 13 }}>Quelle: profiles · Angemeldete ID: {currentUserId}</div>
+
+      <div style={styles.hr} />
+
+      {isAdmin ? (
+        <div style={styles.card}>
+          <div style={styles.h3}>Profil anlegen (für bestehenden Auth-User)</div>
+          <div style={styles.grid3}>
+            <input value={draftNew.id} onChange={(e) => setDraftNew((d) => ({ ...d, id: e.target.value }))} placeholder="User-ID (uuid)" style={styles.input} />
+            <input value={draftNew.email} onChange={(e) => setDraftNew((d) => ({ ...d, email: e.target.value }))} placeholder="E-Mail" style={styles.input} />
+            <input value={draftNew.name} onChange={(e) => setDraftNew((d) => ({ ...d, name: e.target.value }))} placeholder="Name" style={styles.input} />
+
+            <select value={draftNew.role} onChange={(e) => setDraftNew((d) => ({ ...d, role: e.target.value }))} style={styles.select}>
+              <option value="user">user</option>
+              <option value="admin">admin</option>
+            </select>
+
+            <select value={draftNew.area_id} onChange={(e) => setDraftNew((d) => ({ ...d, area_id: e.target.value }))} style={styles.select}>
+              <option value="">– Standard-Bereich –</option>
+              {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            </select>
+
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                style={styles.btnPrimary}
+                onClick={() => {
+                  onUpsertProfile({
+                    id: draftNew.id.trim(),
+                    email: draftNew.email.trim() || null,
+                    name: draftNew.name.trim() || null,
+                    role: draftNew.role || "user",
+                    area_id: draftNew.area_id || null,
+                  });
+                  setDraftNew({ id: "", email: "", name: "", role: "user", area_id: "" });
+                }}
+              >
+                Anlegen
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isAdmin ? (
+        <div style={{ ...styles.card, marginTop: 12 }}>
+          <div style={styles.h3}>Bereiche verwalten</div>
+          <AreaManager areas={areas} onUpsertArea={onUpsertArea} />
+        </div>
+      ) : null}
+
+      <div style={{ ...styles.card, marginTop: 12 }}>
+        <div style={styles.h3}>Liste</div>
+        <div style={{ display: "grid", gap: 10 }}>
+          {(profiles || []).map((p) => (
+            <div key={p.id} style={{ border: "1px solid #eef2f7", borderRadius: 12, padding: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 700 }}>{p.name || p.full_name || "—"}</div>
+                  <div style={{ fontSize: 12, color: "#666" }}>{p.email || ""}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={styles.pill}>{p.role || "user"}</span>
+                  {isAdmin ? <button style={styles.btnSmall} onClick={() => startEdit(p)}>Bearbeiten</button> : null}
+                </div>
               </div>
             </div>
           ))}
         </div>
       </div>
-    </div>
-  );
-}
 
-/* ---------------- Guides Panel ---------------- */
-
-function GuidesPanel({ guides, onChanged }) {
-  const [open, setOpen] = useState(null);
-
-  return (
-    <div style={styles.panel}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontWeight: 700 }}>Anleitungen</div>
-        <button style={styles.btn} onClick={onChanged}>
-          Neu laden
-        </button>
-      </div>
-
-      <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-        {(guides || []).map((g) => (
-          <div key={g.id} style={styles.cardClickable} onClick={() => setOpen(g)}>
-            <div style={{ fontWeight: 600 }}>{g.title || g.name || "Anleitung"}</div>
-            <div style={styles.small}>{(g.content || "").slice(0, 120) || "—"}</div>
-          </div>
-        ))}
-        {(guides || []).length === 0 ? <div style={styles.small}>Keine Anleitungen vorhanden.</div> : null}
-      </div>
-
-      {open ? (
-        <div style={styles.modalBackdrop} onMouseDown={() => setOpen(null)}>
+      {isAdmin && editId ? (
+        <div style={{ ...styles.modalBackdrop, zIndex: 60 }} onMouseDown={() => setEditId("")}>
           <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
-              <div style={{ fontWeight: 700 }}>{open.title || open.name || "Anleitung"}</div>
-              <button style={styles.btn} onClick={() => setOpen(null)}>
-                Schließen
-              </button>
+              <div style={styles.h3}>Profil bearbeiten</div>
+              <button style={styles.btnSmall} onClick={() => setEditId("")}>Schließen</button>
             </div>
-            <div style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>{open.content || "—"}</div>
+
+            <div style={styles.grid3}>
+              <input value={edit.id} readOnly style={{ ...styles.input, background: "#f8fafc" }} />
+              <input value={edit.email} onChange={(e) => setEdit((d) => ({ ...d, email: e.target.value }))} placeholder="E-Mail" style={styles.input} />
+              <input value={edit.name} onChange={(e) => setEdit((d) => ({ ...d, name: e.target.value }))} placeholder="Name" style={styles.input} />
+
+              <select value={edit.role} onChange={(e) => setEdit((d) => ({ ...d, role: e.target.value }))} style={styles.select}>
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </select>
+
+              <select value={edit.area_id} onChange={(e) => setEdit((d) => ({ ...d, area_id: e.target.value }))} style={styles.select}>
+                <option value="">– Standard-Bereich –</option>
+                {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+              </select>
+
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  style={styles.btnPrimary}
+                  onClick={() => {
+                    onUpsertProfile({
+                      id: edit.id,
+                      email: edit.email.trim() || null,
+                      name: edit.name.trim() || null,
+                      role: edit.role || "user",
+                      area_id: edit.area_id || null,
+                    });
+                    setEditId("");
+                  }}
+                >
+                  Speichern
+                </button>
+              </div>
+            </div>
+
+            <div style={{ fontSize: 12, color: "#666", marginTop: 8 }}>
+              Einladungen/Passwort-Reset brauchen Admin-Server-Keys – bauen wir separat.
+            </div>
           </div>
         </div>
       ) : null}
@@ -1119,131 +1678,96 @@ function GuidesPanel({ guides, onChanged }) {
   );
 }
 
-/* ---------------- Users Panel ---------------- */
+function AreaManager({ areas, onUpsertArea }) {
+  const [draft, setDraft] = useState({ id: "", name: "", color: "#94a3b8" });
 
-function UsersPanel({ members, membersTable, isAdmin, currentUserEmail, onRefresh }) {
   return (
-    <div style={styles.panel}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontWeight: 700 }}>Nutzer</div>
-        <button style={styles.btn} onClick={onRefresh}>
-          Neu laden
-        </button>
+    <div>
+      <div style={styles.grid3}>
+        <input value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Bereichsname" style={styles.input} />
+        <input type="color" value={draft.color} onChange={(e) => setDraft((d) => ({ ...d, color: e.target.value }))} style={{ ...styles.input, padding: 6, height: 42 }} />
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button style={styles.btnSmallPrimary} onClick={() => {
+            onUpsertArea({ id: draft.id || undefined, name: draft.name.trim(), color: draft.color });
+            setDraft({ id: "", name: "", color: "#94a3b8" });
+          }}>Bereich speichern</button>
+        </div>
       </div>
 
-      <div style={{ marginTop: 8, ...styles.small }}>
-        Quelle: {membersTable || "—"} · Angemeldete E-Mail: {currentUserEmail}
-      </div>
+      <div style={{ height: 10 }} />
 
-      {!isAdmin ? <div style={{ marginTop: 10, ...styles.small }}>Hinweis: Admin-Funktionen sind nur für Admins sichtbar.</div> : null}
-
-      <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-        {(members || []).map((m) => (
-          <div key={m.id} style={styles.card}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-              <div>
-                <div style={{ fontWeight: 700 }}>{displayUser(m)}</div>
-                <div style={styles.small}>{m.email || "—"}</div>
-              </div>
-              <div style={styles.small}>{m.role || (m.is_admin ? "admin" : "")}</div>
-            </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        {(areas || []).map((a) => (
+          <div key={a.id} style={{ display: "flex", gap: 10, alignItems: "center", border: "1px solid #eef2f7", borderRadius: 12, padding: 10 }}>
+            <span style={styles.dot(a.color || "#94a3b8")} />
+            <div style={{ fontWeight: 700 }}>{a.name}</div>
+            <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{a.id}</div>
           </div>
         ))}
-        {(members || []).length === 0 ? <div style={styles.small}>Keine Nutzer gefunden (prüfe RLS/Policies).</div> : null}
       </div>
     </div>
   );
 }
 
-/* ---------------- User Settings Panel ---------------- */
-
-function UserSettingsPanel({ userId }) {
-  const [draft, setDraft] = useState({
-    primary_color: "#0b6b2a",
-    background_color: "#f3f6fb",
-    background_image_url: "",
-  });
-  const [status, setStatus] = useState("");
-  const [tableOk, setTableOk] = useState(true);
-
-  const load = useCallback(async () => {
-    setStatus("");
-    // Optional table "user_settings" expected: user_id, primary_color, background_color, background_image_url
-    const r = await safeSelect("user_settings", "*");
-    if (r.error) {
-      setTableOk(false);
-      return;
-    }
-    const row = (r.data || []).find((x) => x.user_id === userId);
-    if (row) {
-      setDraft({
-        primary_color: row.primary_color || "#0b6b2a",
-        background_color: row.background_color || "#f3f6fb",
-        background_image_url: row.background_image_url || "",
-      });
-    }
-    setTableOk(true);
-  }, [userId]);
+function SettingsPanel({ settings, onSave }) {
+  const [draft, setDraft] = useState(() => ({
+    primary_color: settings?.primary_color || "#0b6b2a",
+    background_color: settings?.background_color || "#f4f7fb",
+    background_image_url: settings?.background_image_url || "",
+  }));
 
   useEffect(() => {
-    load();
-  }, [load]);
-
-  const save = useCallback(async () => {
-    setStatus("");
-    // Upsert pattern (best effort)
-    try {
-      const { error } = await supabase.from("user_settings").upsert({ user_id: userId, ...draft });
-      if (error) {
-        setStatus("Fehler: " + error.message);
-      } else {
-        setStatus("Gespeichert.");
-      }
-    } catch (e) {
-      setStatus("Fehler: " + (e?.message || String(e)));
-    }
-  }, [userId, draft]);
+    setDraft({
+      primary_color: settings?.primary_color || "#0b6b2a",
+      background_color: settings?.background_color || "#f4f7fb",
+      background_image_url: settings?.background_image_url || "",
+    });
+  }, [settings]);
 
   return (
     <div style={styles.panel}>
-      <div style={{ fontWeight: 700 }}>Einstellungen</div>
-      {!tableOk ? (
-        <div style={{ marginTop: 10, ...styles.small }}>
-          Hinweis: Tabelle <code>user_settings</code> nicht gefunden oder keine Rechte. Dieser Bereich ist optional.
-        </div>
-      ) : null}
+      <div style={styles.h2}>Einstellungen</div>
+      <div style={{ color: "#666", fontSize: 13 }}>
+        Optional: Tabelle „user_settings“ (user_id, primary_color, background_color, background_image_url).
+      </div>
 
-      <div style={{ marginTop: 12, ...styles.grid3 }}>
-        <div>
-          <div style={styles.small}>Primärfarbe</div>
-          <input type="color" value={draft.primary_color} onChange={(e) => setDraft((d) => ({ ...d, primary_color: e.target.value }))} />
-        </div>
+      <div style={styles.hr} />
 
+      <div style={styles.grid3}>
         <div>
-          <div style={styles.small}>Hintergrundfarbe</div>
-          <input type="color" value={draft.background_color} onChange={(e) => setDraft((d) => ({ ...d, background_color: e.target.value }))} />
+          <div style={{ fontSize: 13, marginBottom: 6 }}>Primärfarbe</div>
+          <input type="color" value={draft.primary_color} onChange={(e) => setDraft((d) => ({ ...d, primary_color: e.target.value }))} style={{ ...styles.input, padding: 6, height: 42 }} />
         </div>
 
         <div>
-          <div style={styles.small}>Hintergrundbild-URL (optional)</div>
-          <input
-            style={{ ...styles.input, minWidth: "auto" }}
-            value={draft.background_image_url}
-            onChange={(e) => setDraft((d) => ({ ...d, background_image_url: e.target.value }))}
-            placeholder="https://..."
-          />
+          <div style={{ fontSize: 13, marginBottom: 6 }}>Hintergrundfarbe</div>
+          <input type="color" value={draft.background_color} onChange={(e) => setDraft((d) => ({ ...d, background_color: e.target.value }))} style={{ ...styles.input, padding: 6, height: 42 }} />
+        </div>
+
+        <div>
+          <div style={{ fontSize: 13, marginBottom: 6 }}>Hintergrundbild URL</div>
+          <input value={draft.background_image_url} onChange={(e) => setDraft((d) => ({ ...d, background_image_url: e.target.value }))} placeholder="https://…" style={styles.input} />
         </div>
       </div>
 
-      <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center" }}>
-        <button style={styles.btnPrimary} onClick={save} disabled={!tableOk}>
-          Speichern
-        </button>
-        <button style={styles.btn} onClick={load}>
-          Neu laden
-        </button>
-        {status ? <span style={styles.small}>{status}</span> : null}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button style={styles.btnPrimary} onClick={() => onSave(draft)}>Speichern</button>
       </div>
     </div>
+  );
+}
+
+function GuideDownloadButton({ guide, getUrl }) {
+  const [loading, setLoading] = useState(false);
+  const open = async () => {
+    setLoading(true);
+    const url = await getUrl(guide);
+    setLoading(false);
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+  };
+  return (
+    <button style={styles.btnSmall} onClick={open} disabled={loading}>
+      {loading ? "Lade…" : "Datei öffnen"}
+    </button>
   );
 }
