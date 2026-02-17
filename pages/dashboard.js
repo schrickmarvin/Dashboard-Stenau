@@ -1052,6 +1052,10 @@ function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSub
             (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
           const subs = t._subtasks || [];
           const doneCount = t._subDoneCount || 0;
+          // guides can be stored as single uuid (guide_id) or as an array (guide_ids/guide_id)
+          const gidsSingle = Array.isArray(t.guide_id) ? t.guide_id : (t.guide_id ? [t.guide_id] : []);
+          const gidsArray = Array.isArray(t.guide_ids) ? t.guide_ids : [];
+          const gids = Array.from(new Set([...(gidsSingle || []), ...(gidsArray || [])]));
 
           return (
             <div key={t.id} style={styles.card}>
@@ -1073,7 +1077,7 @@ function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSub
                 <button style={styles.btnSmall} onClick={() => onDeleteTask(t.id)}>
                   Aufgabe löschen
                 </button>
-                {(t.guide_id || []).map((gid) => {
+                {gids.map((gid) => {
                   const g = (guides || []).find((x) => x.id === gid);
                   return (
                     <button key={gid} style={styles.btnSmall} onClick={() => onGuideOpen(gid)}>
