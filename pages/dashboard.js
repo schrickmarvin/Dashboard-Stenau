@@ -27,6 +27,9 @@ const supabase =
 
 /* ---------------- Helpers ---------------- */
 
+const firstGuideId = (v) => (Array.isArray(v) ? (v[0] || null) : (v || null));
+
+
 function fmtDate(value) {
   if (!value) return "";
   const d = new Date(value);
@@ -591,10 +594,7 @@ export default function DashboardPage() {
         description: description || null,
         area_id: area_id || null,
         bucket,
-        path,
-        mime_type: file.type || null,
-        size: file.size || null,
-      }).select("*").single();
+        path,}).select("*").single();
       if (ins.error) throw ins.error;
       setGuides((prev) => [ins.data, ...prev]);
       setInfo("Anleitung hochgeladen.");
@@ -605,8 +605,8 @@ export default function DashboardPage() {
 
   const getGuideDownloadUrl = useCallback(async (g) => {
     ensureSupabase();
-    const bucket = g.bucket || "guides";
-    const path = g.path || g.storage_path;
+    const bucket = "guides";
+    const path = g.file_path;
     if (!path) return null;
     const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60);
     if (!error) return data?.signedUrl || null;
@@ -808,7 +808,7 @@ export default function DashboardPage() {
                   ) : (
                     <div style={{ color: "#666", fontSize: 13 }}>Kein Textinhalt.</div>
                   )}
-                  {(guideModal.guide.path || guideModal.guide.storage_path) ? (
+                  {(guideModal.guide.path || guideModal.guide.file_path) ? (
                     <GuideDownloadButton guide={guideModal.guide} getUrl={getGuideDownloadUrl} />
                   ) : null}
                 </div>
@@ -824,8 +824,8 @@ export default function DashboardPage() {
 /* ---------------- Components ---------------- */
 
 function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
-  const [form, setForm] = useState({ title: "", due_at: "", status: "todo", area_id: "", assignee_id: "", notes: "", guide_ids: [] });
-  const [seriesForm, setSeriesForm] = useState({ title: "", area_id: "", assignee_id: "", start_at: "", recurrence: "weekly", interval: 1, count: 4, notes: "", guide_ids: [] });
+  const [form, setForm] = useState({ title: "", due_at: "", status: "todo", area_id: "", assignee_id: "", notes: "", guide_id: [] });
+  const [seriesForm, setSeriesForm] = useState({ title: "", area_id: "", assignee_id: "", start_at: "", recurrence: "weekly", interval: 1, count: 4, notes: "", guide_id: [] });
   const [seriesMsg, setSeriesMsg] = useState("");
 
   const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
@@ -833,7 +833,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
 
   const onGuideSelect = (e, setter) => {
     const values = Array.from(e.target.selectedOptions).map((o) => o.value);
-    setter((f) => ({ ...f, guide_ids: values }));
+    setter((f) => ({ ...f, guide_id: values }));
   };
 
   const createSeries = async () => {
@@ -862,7 +862,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
         area_id: seriesForm.area_id || null,
         assignee_id: seriesForm.assignee_id || null,
         notes: seriesForm.notes || null,
-        guide_ids: seriesForm.guide_ids || [],
+        guide_id: firstGuideId(seriesForm.guide_id),
         series_id: seriesId,
         series_rule: rule,
         series_interval: interval,
@@ -891,7 +891,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
   const columns = useMemo(() => {
     const todo = [];
     const done = [];
-    (tasks || []).forEach((t) => (safeLower(t.status) === "done" ? done : todo).push(t));
+    (tasks || []).forEach((t) => (safeLower(t.status) === "done" ? is_done : todo).push(t));
     return { todo, done };
   }, [tasks]);
 
@@ -933,7 +933,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
                   area_id: form.area_id || null,
                   assignee_id: form.assignee_id || null,
                   notes: form.notes || null,
-                  guide_ids: form.guide_ids || [],
+                  guide_id: firstGuideId(form.guide_id),
                 })
               }
             >
@@ -948,7 +948,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
 
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 13, color: "#111", marginBottom: 6 }}>Anleitungen (Mehrfachauswahl möglich)</div>
-          <select multiple value={form.guide_ids} onChange={(e) => onGuideSelect(e, setForm)} style={{ ...styles.select, height: 110 }}>
+          <select multiple value={form.guide_id} onChange={(e) => onGuideSelect(e, setForm)} style={{ ...styles.select, height: 110 }}>
             {(guides || []).map((g) => (
               <option key={g.id} value={g.id}>{g.title}</option>
             ))}
@@ -1003,7 +1003,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
 
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 13, color: "#111", marginBottom: 6 }}>Anleitungen (Mehrfachauswahl möglich)</div>
-          <select multiple value={seriesForm.guide_ids} onChange={(e) => onGuideSelect(e, setSeriesForm)} style={{ ...styles.select, height: 110 }}>
+          <select multiple value={seriesForm.guide_id} onChange={(e) => onGuideSelect(e, setSeriesForm)} style={{ ...styles.select, height: 110 }}>
             {(guides || []).map((g) => (
               <option key={g.id} value={g.id}>{g.title}</option>
             ))}
@@ -1073,7 +1073,7 @@ function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSub
                 <button style={styles.btnSmall} onClick={() => onDeleteTask(t.id)}>
                   Aufgabe löschen
                 </button>
-                {(t.guide_ids || []).map((gid) => {
+                {(t.guide_id || []).map((gid) => {
                   const g = (guides || []).find((x) => x.id === gid);
                   return (
                     <button key={gid} style={styles.btnSmall} onClick={() => onGuideOpen(gid)}>
@@ -1138,7 +1138,7 @@ function KanboardPanel({ areas, profiles, tasks, onUpdateTask, onDeleteTask }) {
   const byStatus = useMemo(() => {
     const todo = [];
     const done = [];
-    filtered.forEach((t) => (safeLower(t.status) === "done" ? done : todo).push(t));
+    filtered.forEach((t) => (safeLower(t.status) === "done" ? is_done : todo).push(t));
     return { todo, done };
   }, [filtered]);
 
@@ -1526,7 +1526,7 @@ function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDo
               </div>
             </div>
             {g.description ? <div style={{ marginTop: 6, color: "#666", fontSize: 13 }}>{g.description}</div> : null}
-            {(g.path || g.storage_path) ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Datei: {(g.path || g.storage_path)}</div> : null}
+            {(g.file_path) ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Datei: {(g.file_path)}</div> : null}
           </div>
         ))}
         {filtered.length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Keine Anleitungen gefunden.</div> : null}
