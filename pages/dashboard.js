@@ -891,7 +891,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
   const columns = useMemo(() => {
     const todo = [];
     const done = [];
-    (tasks || []).forEach((t) => (safeLower(t.status) === "done" ? is_done : todo).push(t));
+    (tasks || []).forEach((t) => (safeLower(t.status) === "done" ? done : todo).push(t));
     return { todo, done };
   }, [tasks]);
 
@@ -1138,7 +1138,7 @@ function KanboardPanel({ areas, profiles, tasks, onUpdateTask, onDeleteTask }) {
   const byStatus = useMemo(() => {
     const todo = [];
     const done = [];
-    filtered.forEach((t) => (safeLower(t.status) === "done" ? is_done : todo).push(t));
+    filtered.forEach((t) => (safeLower(t.status) === "done" ? done : todo).push(t));
     return { todo, done };
   }, [filtered]);
 
