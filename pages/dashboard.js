@@ -1824,6 +1824,13 @@ function DayDetail({ day, tasks, onUpdateTask }) {
 }
 
 function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDownloadUrl, onUpdateGuide, onDeleteGuide }) {
+  // Edit/Delete modal state
+  const [editGuide, setEditGuide] = useState(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editAreaId, setEditAreaId] = useState("");
+  const [editVisibility, setEditVisibility] = useState("private");
+
   const [filterArea, setFilterArea] = useState("");
   const [upload, setUpload] = useState({ file: null, title: "", description: "", area_id: "" });
   const [urlMap, setUrlMap] = useState({});
