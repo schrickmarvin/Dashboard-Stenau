@@ -1,996 +1,45 @@
-// pages/dashboard.js
-// Standalone dashboard page (React) for Next.js + Supabase
-// Hinweis: Datei vollständig übernehmen (keine diff-Markierungen wie "diff --git" einfügen).
 
-import React, { useEffect, useMemo, useState } from "react";
+/**
+ * pages/dashboard.js
+ * Stenau Dashboard – Single-file page (Next.js pages router)
+ *
+ * Ziel: Stabil laufende Gesamt-Datei mit:
+ * - Plan: Aufgaben + Unteraufgaben + Serienaufgaben + Guide-Einsicht + Farben + Löschen
+ * - Kanboard: Status/Personen-Ansichten inkl. Filter Bereich/Nutzer
+ * - Kalender: Monats-/Wochenansicht inkl. Filter Bereich/Nutzer
+ * - Anleitungen: Liste + Upload (Supabase Storage) + Bereich-Zuordnung + Datei-Übersicht
+ * - Nutzer: Profile verwalten (Name/Role/Bereich) + Profil anlegen/ändern + Bereiche + Farben
+ * - Einstellungen: User-Theme (Fallback, wenn Tabelle fehlt)
+ *
+ * Backend-Schema kann variieren -> robust:
+ * - select('*') um fehlende Spalten wie tasks.description zu vermeiden
+ * - Subtask done fallback (is_done/done/completed/status)
+ */
+
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------------- Supabase --------------- */
+// App version (shown in header)
+const APP_VERSION = "2026.02.17.1";
 
-function TasksBoard({ isAdmin }) {
-  const [areas, setAreas] = useState([]);
-  const [guides, setGuides] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [series, setSeries] = useState([]);
-  const [members, setMembers] = useState([]);
 
-  const [form, setForm] = useState({
-    title: "",
-    area: "",
-    due_at: "",
-    status: "todo",
-    guideIds: [],
-    assignee_id: "",
-  });
-  const [subDrafts, setSubDrafts] = useState({});
-  const [guideModal, setGuideModal] = useState({ open: false, loading: false, guide: null, error: null });
-  const [seriesForm, setSeriesForm] = useState({
-    title: "",
-    area: "",
-    start_at: new Date().toISOString().slice(0, 16),
-    recurrence: "weekly",
-    interval: 1,
-    count: 8,
-    updateFuture: false,
-  });
-  const [seriesEditId, setSeriesEditId] = useState(null);
-  const [seriesSubDraft, setSeriesSubDraft] = useState({ title: "", guide_id: "", color: "#6b7280" });
-  const [seriesSubtasks, setSeriesSubtasks] = useState([]);
-  const [seriesLoading, setSeriesLoading] = useState(false);
-
-  async function openGuide(gid) {
-    if (!gid) return;
-    setGuideModal({ open: true, loading: true, guide: null, error: null });
-    const { data, error } = await supabase
-      .from("guides")
-      .select("id, title, content, created_at")
-      .eq("id", gid)
-      .maybeSingle();
-    if (error) {
-      setGuideModal({ open: true, loading: false, guide: null, error: error.message });
-      return;
-    }
-    if (!data) {
-      setGuideModal({ open: true, loading: false, guide: null, error: "Anleitung nicht gefunden." });
-      return;
-    }
-    setGuideModal({ open: true, loading: false, guide: data, error: null });
-  }
-
-  function closeGuide() {
-    setGuideModal({ open: false, loading: false, guide: null, error: null });
-  }
-
-
-  function getSubDraft(taskId, fallbackColor) {
-    const d = subDrafts[taskId] || { title: "", guide_id: "", color: fallbackColor || "" };
-    return { ...d, color: d.color || fallbackColor || "" };
-  }
-
-  function setSubDraft(taskId, patch, fallbackColor) {
-    setSubDrafts((prev) => {
-      const cur = prev[taskId] || { title: "", guide_id: "", color: fallbackColor || "" };
-      return { ...prev, [taskId]: { ...cur, ...patch } };
-    });
-  }
-
-
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-  const canWrite = true;
-
-  async function loadAll() {
-    setErr(null);
-    setLoading(true);
-
-    // Tasks: use area_id, due_at, status, title
-    const { data: tData, error: tErr } = await supabase
-      .from("tasks")
-      .select("id, title, area, area_id, due_at, status, assignee_id, created_at, is_series, series_parent_id, assignee:profiles!tasks_assignee_id_fkey ( id, name, email ), subtasks ( id, title, is_done, color, created_at, guide_id, guides ( id, title ) )")
-      .order("created_at", { ascending: false });
-
-    if (tErr) {
-      setErr(tErr.message);
-      setLoading(false);
-      return;
-    }
-
-    const [areasList, guidesRes, membersRes] = await Promise.all([
-      loadAreas(),
-      supabase.from("guides").select("id, title").order("title", { ascending: true }),
-      supabase.from("profiles").select("id, name, email, is_active").order("name", { ascending: true }),
-    ]);
-
-    if (guidesRes.error) {
-      console.warn("guides load failed:", guidesRes.error.message);
-    }
-
-    if (membersRes?.error) {
-      console.warn("members load failed:", membersRes.error.message);
-    }
-
-    const areaByIdTmp = new Map((areasList || []).map((a) => [a.id, a]));
-    const areaByNameTmp = new Map((areasList || []).map((a) => [String(a.name || "").toLowerCase(), a]));
-
-    const decoratedTasks = (tData || []).map((t) => {
-      const areaObj = t.area_id
-        ? areaByIdTmp.get(t.area_id)
-        : (t.area ? areaByNameTmp.get(String(t.area).toLowerCase()) : null);
-      const areaLabel = areaObj?.name || t.area || "";
-      const areaColor = areaObj?.color || null;
-      return { ...t, area_label: areaLabel, area_color: areaColor };
-    });
-
-    setTasks(decoratedTasks.filter((t) => !t.is_series));
-    setAreas(areasList || []);
-    setGuides(guidesRes.data || []);
-    setMembers((membersRes?.data || []).filter((m) => m.is_active !== false));
-    setLoading(false);
-  }
-
-  async function loadSeries() {
-    setSeriesLoading(true);
-    const { data: seriesData, error: seriesErr } = await supabase
-      .from("tasks")
-      .select("id, title, area, area_id, due_at, series_rule, series_interval, series_until, repeat_count, created_at, subtasks ( id, title, guide_id, color )")
-      .eq("is_series", true)
-      .order("created_at", { ascending: false });
-
-    if (seriesErr) {
-      console.warn("series load failed:", seriesErr.message);
-      setSeries([]);
-      setSeriesLoading(false);
-      return;
-    }
-
-    setSeries(seriesData || []);
-    setSeriesLoading(false);
-  }
-
-  useEffect(() => {
-    loadAll();
-    loadSeries();
-  }, []);
-
-  const areaById = useMemo(() => {
-    const m = new Map();
-    for (const a of areas) m.set(a.id, a);
-    return m;
-  }, [areas]);
-
-  const columns = useMemo(() => {
-    const todo = [];
-    const done = [];
-    for (const t of tasks) {
-      if ((t.status ?? "todo") === "done") done.push(t);
-      else todo.push(t);
-    }
-    return { todo, done };
-  }, [tasks]);
-
-  function onGuideSelect(e) {
-    const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
-    setForm((f) => ({ ...f, guideIds: selected }));
-  }
-
-  function addSeriesSubtask() {
-    if (!seriesSubDraft.title.trim()) return;
-    const tempId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    setSeriesSubtasks((prev) => [
-      ...prev,
-      {
-        id: tempId,
-        title: seriesSubDraft.title.trim(),
-        guide_id: seriesSubDraft.guide_id || null,
-        color: seriesSubDraft.color || "#6b7280",
-      },
-    ]);
-    setSeriesSubDraft({ title: "", guide_id: "", color: seriesSubDraft.color || "#6b7280" });
-  }
-
-  function removeSeriesSubtask(id) {
-    setSeriesSubtasks((prev) => prev.filter((s) => s.id !== id));
-  }
-
-  function generateSeriesDates(startAt, recurrence, interval, count) {
-    const dates = [];
-    const base = new Date(startAt);
-    for (let i = 0; i < count; i += 1) {
-      const d = new Date(base);
-      if (recurrence === "daily") d.setDate(base.getDate() + i * interval);
-      if (recurrence === "weekly") d.setDate(base.getDate() + i * interval * 7);
-      if (recurrence === "monthly") d.setMonth(base.getMonth() + i * interval);
-      dates.push(d.toISOString());
-    }
-    return dates;
-  }
-
-  async function createTask() {
-    if (!form.title.trim()) return;
-    setErr(null);
-    const areaText = (form.area || "").trim();
-    const matched = areaText
-      ? (areas || []).find((a) => String(a.name || "").toLowerCase() === areaText.toLowerCase())
-      : null;
-
-    const payload = {
-      title: form.title.trim(),
-      status: form.status || "todo",
-      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
-      area_id: matched ? matched.id : null,
-      area: areaText || null,
-      assignee_id: form.assignee_id || null,
-    };
-
-    const { data: inserted, error: insErr } = await supabase.from("tasks").insert(payload).select("id").single();
-
-    if (insErr) {
-      setErr(insErr.message);
-      return;
-    }
-
-    const taskId = inserted?.id;
-
-    // Many-to-many task_guides (optional)
-    if (taskId && Array.isArray(form.guideIds) && form.guideIds.length > 0) {
-      const rows = form.guideIds.map((gid) => ({ task_id: taskId, guide_id: gid }));
-      const { error: linkErr } = await supabase.from("task_guides").insert(rows);
-      if (linkErr) console.warn("task_guides insert failed:", linkErr.message);
-    }
-
-    setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [], assignee_id: "" });
-    loadAll();
-  }
-
-  async function addSubtask(task, fallbackColor) {
-    if (!canWrite) return;
-    const taskId = task?.id;
-    if (!taskId) return;
-    const d = getSubDraft(taskId, fallbackColor);
-    if (!d.title.trim()) return;
-
-    setErr(null);
-    const payload = {
-      task_id: taskId,
-      title: d.title.trim(),
-      guide_id: d.guide_id ? d.guide_id : null,
-      color: d.color || fallbackColor || null,
-    };
-    const { data: row, error } = await supabase.from("subtasks").insert(payload).select("id, title, is_done, color, created_at, guide_id, guides ( id, title )").single();
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-
-    // clear draft
-    setSubDrafts((prev) => ({ ...prev, [taskId]: { title: "", guide_id: "", color: fallbackColor || "" } }));
-
-    // optimistic update
-    setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, subtasks: [row, ...(t.subtasks || [])] } : t))
-    );
-  }
-
-  async function updateSubtask(subId, patch) {
-    if (!canWrite) return;
-    setErr(null);
-    const { error } = await supabase.from("subtasks").update(patch).eq("id", subId);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setTasks((prev) =>
-      prev.map((t) => ({
-        ...t,
-        subtasks: (t.subtasks || []).map((s) => (s.id === subId ? { ...s, ...patch } : s)),
-      }))
-    );
-  }
-
-  async function deleteSubtask(subId) {
-    if (!canWrite) return;
-    setErr(null);
-    const { error } = await supabase.from("subtasks").delete().eq("id", subId);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setTasks((prev) =>
-      prev.map((t) => ({ ...t, subtasks: (t.subtasks || []).filter((s) => s.id !== subId) }))
-    );
-  }
-
-
-  async function setTaskAssignee(taskId, assigneeId) {
-    if (!taskId) return;
-    setErr(null);
-    const { error } = await supabase.from("tasks").update({ assignee_id: assigneeId || null }).eq("id", taskId);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    const assigneeObj = (members || []).find((m) => m.id === assigneeId) || null;
-    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, assignee_id: assigneeId || null, assignee: assigneeObj ? { id: assigneeObj.id, name: assigneeObj.name, email: assigneeObj.email } : null } : t)));
-  }
-
-  async function toggleStatus(task) {
-    const next = (task.status ?? "todo") === "done" ? "todo" : "done";
-    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
-  }
-
-  async function createSeries() {
-    if (!seriesForm.title.trim()) return;
-    setErr(null);
-    const areaText = (seriesForm.area || "").trim();
-    const matched = areaText
-      ? (areas || []).find((a) => String(a.name || "").toLowerCase() === areaText.toLowerCase())
-      : null;
-    const count = Math.max(1, Number(seriesForm.count) || 1);
-    const interval = Math.max(1, Number(seriesForm.interval) || 1);
-
-    const dates = generateSeriesDates(seriesForm.start_at, seriesForm.recurrence, interval, count);
-    const seriesUntil = dates[dates.length - 1];
-
-    const { data: seriesRow, error: seriesErr } = await supabase
-      .from("tasks")
-      .insert({
-        title: seriesForm.title.trim(),
-        status: "todo",
-        due_at: dates[0],
-        area_id: matched ? matched.id : null,
-        area: areaText || null,
-        is_series: true,
-        series_rule: seriesForm.recurrence,
-        series_interval: interval,
-        series_until: seriesUntil,
-        repeat_count: count,
-      })
-      .select("id")
-      .single();
-
-    if (seriesErr) {
-      setErr(seriesErr.message);
-      return;
-    }
-
-    const seriesId = seriesRow?.id;
-    const templates = seriesSubtasks.map((s) => ({
-      title: s.title,
-      guide_id: s.guide_id || null,
-      color: s.color || null,
-    }));
-
-    if (templates.length > 0) {
-      const { error: tempErr } = await supabase.from("subtasks").insert(
-        templates.map((t) => ({
-          ...t,
-          task_id: seriesId,
-        }))
-      );
-      if (tempErr) console.warn("series subtasks insert failed:", tempErr.message);
-    }
-    const taskRows = dates.map((dueAt) => ({
-      title: seriesForm.title.trim(),
-      status: "todo",
-      due_at: dueAt,
-      area_id: matched ? matched.id : null,
-      area: areaText || null,
-      series_parent_id: seriesId,
-    }));
-
-    const { data: createdTasks, error: taskErr } = await supabase
-      .from("tasks")
-      .insert(taskRows)
-      .select("id");
-    if (taskErr) {
-      setErr(taskErr.message);
-      return;
-    }
-
-    const subtaskRows = [];
-    for (const t of createdTasks || []) {
-      for (const s of templates) {
-        subtaskRows.push({
-          task_id: t.id,
-          title: s.title,
-          guide_id: s.guide_id || null,
-          color: s.color || null,
-        });
-      }
-    }
-
-    if (subtaskRows.length > 0) {
-      const { error: subErr } = await supabase.from("subtasks").insert(subtaskRows);
-      if (subErr) console.warn("series subtasks copy failed:", subErr.message);
-    }
-
-    setSeriesForm((prev) => ({ ...prev, title: "", area: "" }));
-    setSeriesSubtasks([]);
-    loadAll();
-    loadSeries();
-  }
-
-  async function saveSeries() {
-    if (!seriesEditId) return;
-    if (!seriesForm.title.trim()) return;
-    setErr(null);
-    const areaText = (seriesForm.area || "").trim();
-    const matched = areaText
-      ? (areas || []).find((a) => String(a.name || "").toLowerCase() === areaText.toLowerCase())
-      : null;
-    const count = Math.max(1, Number(seriesForm.count) || 1);
-    const interval = Math.max(1, Number(seriesForm.interval) || 1);
-    const dates = generateSeriesDates(seriesForm.start_at, seriesForm.recurrence, interval, count);
-    const seriesUntil = dates[dates.length - 1];
-
-    const { error: seriesErr } = await supabase
-      .from("tasks")
-      .update({
-        title: seriesForm.title.trim(),
-        area_id: matched ? matched.id : null,
-        area: areaText || null,
-        due_at: dates[0],
-        series_rule: seriesForm.recurrence,
-        series_interval: interval,
-        series_until: seriesUntil,
-        repeat_count: count,
-      })
-      .eq("id", seriesEditId);
-    if (seriesErr) {
-      setErr(seriesErr.message);
-      return;
-    }
-
-    await supabase.from("subtasks").delete().eq("task_id", seriesEditId);
-    const templates = seriesSubtasks.map((s) => ({
-      task_id: seriesEditId,
-      title: s.title,
-      guide_id: s.guide_id || null,
-      color: s.color || null,
-    }));
-    if (templates.length > 0) {
-      const { error: tempErr } = await supabase.from("subtasks").insert(templates);
-      if (tempErr) console.warn("series subtasks update failed:", tempErr.message);
-    }
-
-    if (seriesForm.updateFuture) {
-      const { data: futureTasks, error: futureErr } = await supabase
-        .from("tasks")
-        .select("id")
-        .eq("series_parent_id", seriesEditId)
-        .gte("due_at", new Date().toISOString());
-
-      if (futureErr) {
-        setErr(futureErr.message);
-        return;
-      }
-
-      await supabase
-        .from("tasks")
-        .update({
-          title: seriesForm.title.trim(),
-          area_id: matched ? matched.id : null,
-          area: areaText || null,
-        })
-        .eq("series_parent_id", seriesEditId)
-        .gte("due_at", new Date().toISOString());
-
-      for (const t of futureTasks || []) {
-        await supabase.from("subtasks").delete().eq("task_id", t.id);
-        const subRows = templates.map((s) => ({
-          task_id: t.id,
-          title: s.title,
-          guide_id: s.guide_id || null,
-          color: s.color || null,
-        }));
-        if (subRows.length > 0) {
-          await supabase.from("subtasks").insert(subRows);
-        }
-      }
-    }
-
-    setSeriesEditId(null);
-    setSeriesForm((prev) => ({ ...prev, updateFuture: false }));
-    loadAll();
-    loadSeries();
-  }
-
-  function startEditSeries(seriesRow) {
-    setSeriesEditId(seriesRow.id);
-    setSeriesForm({
-      title: seriesRow.title || "",
-      area: seriesRow.area || "",
-      start_at: seriesRow.due_at ? new Date(seriesRow.due_at).toISOString().slice(0, 16) : new Date().toISOString().slice(0, 16),
-      recurrence: seriesRow.series_rule || "weekly",
-      interval: seriesRow.series_interval || 1,
-      count: seriesRow.repeat_count || 8,
-      updateFuture: false,
-    });
-    setSeriesSubtasks(seriesRow.subtasks || []);
-  }
-
-  function cancelEditSeries() {
-    setSeriesEditId(null);
-    setSeriesForm((prev) => ({ ...prev, title: "", area: "", updateFuture: false }));
-    setSeriesSubtasks([]);
-  }
-
-  return (
-    <div>
-      <div style={styles.panel}>
-        <div style={styles.h3}>Aufgabe anlegen</div>
-
-        {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
-        <div style={styles.taskFormGrid}>
-          <input
-            value={form.title}
-            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-            placeholder="Titel"
-            style={styles.input}
-          />
-
-          <input
-            value={form.area}
-            onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))}
-            placeholder="Bereich"
-            list="areas-list"
-            style={styles.input}
-          />
-          <datalist id="areas-list">
-            {areas.map((a) => (
-              <option key={a.id} value={a.name} />
-            ))}
-          </datalist>
-
-          <input
-            type="datetime-local"
-            value={form.due_at}
-            onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))}
-            style={styles.input}
-          />
-
-          <select
-            value={form.status}
-            onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
-            style={styles.input}
-          >
-            <option value="todo">Zu erledigen</option>
-            <option value="done">Erledigt</option>
-          </select>
-
-          <select
-            multiple
-            value={form.guideIds}
-            onChange={onGuideSelect}
-            style={{ ...styles.input, height: 94 }}
-            title="Mehrfachauswahl: Strg/Cmd + Klick"
-          >
-            {guides.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.title}
-              </option>
-            ))}
-          </select>
-
-
-          <select
-            value={form.assignee_id}
-            onChange={(e) => setForm((f) => ({ ...f, assignee_id: e.target.value }))}
-            style={styles.input}
-            title="Zuständig"
-          >
-            <option value="">– Zuständig –</option>
-            {members.map((m) => (
-              <option key={m.id} value={m.id}>
-                {(m.name || m.email || m.id)}
-              </option>
-            ))}
-          </select>
-
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
-            <button style={styles.btnPrimary} onClick={createTask}>
-              Anlegen
-            </button>
-          </div>
-        </div>
-
-        <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick</div>
-      </div>
-
-      <div style={styles.columns}>
-        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} />
-        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} />
-      </div>
-
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
-        <button style={styles.btn} onClick={loadAll} disabled={loading}>
-          {loading ? "Lade…" : "Neu laden"}
-        </button>
-      </div>
-
-      {!isAdmin ? (
-        <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
-          Hinweis: Aufgaben anlegen ist für alle Nutzer erlaubt. Admin-Funktionen findest du im Tab „Nutzer“.
-        </div>
-      ) : null}
-
-      <div style={styles.panel}>
-        <div style={styles.h3}>Serienaufgabe</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 1fr 120px 120px auto", gap: 10 }}>
-          <input
-            value={seriesForm.title}
-            onChange={(e) => setSeriesForm((f) => ({ ...f, title: e.target.value }))}
-            placeholder="Serientitel"
-            style={styles.input}
-          />
-          <input
-            value={seriesForm.area}
-            onChange={(e) => setSeriesForm((f) => ({ ...f, area: e.target.value }))}
-            placeholder="Bereich"
-            list="areas-list"
-            style={styles.input}
-          />
-          <input
-            type="datetime-local"
-            value={seriesForm.start_at}
-            onChange={(e) => setSeriesForm((f) => ({ ...f, start_at: e.target.value }))}
-            style={styles.input}
-          />
-          <select
-            value={seriesForm.recurrence}
-            onChange={(e) => setSeriesForm((f) => ({ ...f, recurrence: e.target.value }))}
-            style={styles.input}
-          >
-            <option value="daily">Täglich</option>
-            <option value="weekly">Wöchentlich</option>
-            <option value="monthly">Monatlich</option>
-          </select>
-          <input
-            type="number"
-            min="1"
-            value={seriesForm.interval}
-            onChange={(e) => setSeriesForm((f) => ({ ...f, interval: e.target.value }))}
-            placeholder="Intervall"
-            style={styles.input}
-          />
-          <input
-            type="number"
-            min="1"
-            value={seriesForm.count}
-            onChange={(e) => setSeriesForm((f) => ({ ...f, count: e.target.value }))}
-            placeholder="Anzahl"
-            style={styles.input}
-          />
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-            {seriesEditId ? (
-              <>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-                  <input
-                    type="checkbox"
-                    checked={seriesForm.updateFuture}
-                    onChange={(e) => setSeriesForm((f) => ({ ...f, updateFuture: e.target.checked }))}
-                  />
-                  zukünftige Instanzen aktualisieren
-                </label>
-                <button style={styles.btnPrimary} onClick={saveSeries}>
-                  Serie speichern
-                </button>
-                <button style={styles.btn} onClick={cancelEditSeries}>
-                  Abbrechen
-                </button>
-              </>
-            ) : (
-              <button style={styles.btnPrimary} onClick={createSeries}>
-                Serie anlegen
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div style={{ marginTop: 12 }}>
-          <div style={styles.h4}>Unteraufgaben-Vorlagen</div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              value={seriesSubDraft.title}
-              onChange={(e) => setSeriesSubDraft((d) => ({ ...d, title: e.target.value }))}
-              placeholder="Unteraufgabe"
-              style={{ ...styles.input, minWidth: 260 }}
-            />
-            <select
-              value={seriesSubDraft.guide_id}
-              onChange={(e) => setSeriesSubDraft((d) => ({ ...d, guide_id: e.target.value }))}
-              style={{ ...styles.input, minWidth: 220 }}
-            >
-              <option value="">– Anleitung –</option>
-              {guides.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.title}
-                </option>
-              ))}
-            </select>
-            <input
-              type="color"
-              value={seriesSubDraft.color || "#6b7280"}
-              onChange={(e) => setSeriesSubDraft((d) => ({ ...d, color: e.target.value }))}
-              style={styles.colorInput}
-            />
-            <button style={styles.btnSmallPrimary} onClick={addSeriesSubtask}>
-              +
-            </button>
-          </div>
-          {seriesSubtasks.length > 0 ? (
-            <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-              {seriesSubtasks.map((s) => (
-                <div key={s.id} style={styles.subRow}>
-                  <span>{s.title}</span>
-                  <span style={{ color: "#666", fontSize: 13 }}>
-                    {(guides || []).find((g) => g.id === s.guide_id)?.title || "—"}
-                  </span>
-                  <span style={{ width: 60 }} />
-                  <span style={{ ...styles.areaDot, background: s.color || "#6b7280" }} />
-                  <button style={styles.btnSmall} onClick={() => removeSeriesSubtask(s.id)}>
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{ color: "#666", fontSize: 13, marginTop: 6 }}>Noch keine Vorlagen.</div>
-          )}
-        </div>
-      </div>
-
-      <div style={styles.panel}>
-        <div style={styles.h3}>Serienübersicht</div>
-        {seriesLoading ? <div style={{ color: "#666" }}>Lade…</div> : null}
-        <div style={{ display: "grid", gap: 10 }}>
-          {(series || []).map((s) => (
-            <div key={s.id} style={styles.card}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={styles.h4}>{s.title}</div>
-                <span style={styles.pill}>{s.series_rule || "—"}</span>
-                <span style={{ color: "#666", fontSize: 13 }}>
-                  ab {s.due_at ? fmtDateTime(s.due_at) : "–"} · jede {s.series_interval || 1} · {s.repeat_count || 0} Instanzen
-                </span>
-                <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => startEditSeries(s)}>
-                  Bearbeiten
-                </button>
-              </div>
-            </div>
-          ))}
-          {series.length === 0 && !seriesLoading ? <div style={{ color: "#666" }}>Noch keine Serien.</div> : null}
-        </div>
-      </div>
-
-      {guideModal.open ? (
-        <div style={styles.modalBackdrop} onMouseDown={closeGuide}>
-          <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <div style={styles.h4}>
-                {guideModal.loading ? "Lade…" : guideModal.guide?.title || "Anleitung"}
-              </div>
-              <button type="button" style={styles.btnSmall} onClick={closeGuide}>
-                Schließen
-              </button>
-            </div>
-
-            {guideModal.error ? (
-              <div style={styles.error}>Fehler: {guideModal.error}</div>
-            ) : null}
-
-            {guideModal.loading ? (
-              <div style={{ color: "#666" }}>Lade…</div>
-            ) : guideModal.guide ? (
-              <div style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>
-                {guideModal.guide.content || "—"}
-              </div>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
-    </div>
-	  </div>
-	</div>
-  );
-}
-
-function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite, getSubDraft, setSubDraft, onSubAdd, onSubUpdate, onSubDelete, onGuideOpen, members, onAssigneeChange }) {
-  return (
-    <div style={styles.col}>
-      <div style={styles.colHeader}>
-        <div style={styles.h3}>{title}</div>
-        <div style={styles.badge}>{count}</div>
-      </div>
-
-      <div style={{ display: "grid", gap: 12 }}>
-        {tasks.map((t) => {
-          const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
-          return (
-            <div key={t.id} style={styles.card}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <div style={styles.h4}>{t.title}</div>
-              {t.area_color ? (
-                <span title={t.area || t.area_label || ""} style={{...styles.areaDot, background: t.area_color}} />
-              ) : null}
-                <span style={styles.pill}>{t.status === "done" ? "done" : "todo"}</span>
-
-                <select
-                  value={t.assignee_id || ""}
-                  onChange={(e) => onAssigneeChange(t.id, e.target.value || null)}
-                  style={{ ...styles.input, minWidth: 180 }}
-                  title="Zuständig"
-                >
-                  <option value="">– Zuständig –</option>
-                  {(members || []).map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {(m.name || m.email || m.id)}
-                    </option>
-                  ))}
-                </select>
-
-                <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => onToggle(t)}>
-                  Status
-                </button>
-              </div>
-
-              <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>
-                Bereich: {areaName} · Zuständig: {t.assignee?.name || t.assignee?.email || "–"} · Fällig: {t.due_at ? fmtDateTime(t.due_at) : "–"}
-              </div>
-
-              <div style={{ marginTop: 10 }}>
-              <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
-                {(() => {
-                  const subs = Array.isArray(t.subtasks) ? t.subtasks : [];
-                  const done = subs.filter((s) => s.is_done).length;
-                  return `Unteraufgaben ${done}/${subs.length}`;
-                })()}
-              </div>
-
-              {Array.isArray(t.subtasks) && t.subtasks.length > 0 ? (
-                <div style={{ display: "grid", gap: 8 }}>
-                  {t.subtasks.map((s) => (
-                    <div key={s.id} style={styles.subRow}>
-                      <input
-                        type="checkbox"
-                        checked={!!s.is_done}
-                        onChange={(e) => onSubUpdate(s.id, { is_done: e.target.checked })}
-                        disabled={!canWrite}
-                      />
-
-                      <input
-                        value={s.title ?? ""}
-                        onChange={(e) => onSubUpdate(s.id, { title: e.target.value })}
-                        style={{ ...styles.input, minWidth: 220 }}
-                        disabled={!canWrite}
-                      />
-
-                      <select
-                        value={s.guide_id ?? ""}
-                        onChange={(e) =>
-                          onSubUpdate(s.id, { guide_id: e.target.value || null })
-                        }
-                        style={{ ...styles.input, minWidth: 220 }}
-                        disabled={!canWrite}
-                        title="Anleitung verknüpfen"
-                      >
-                        <option value="">– Anleitung –</option>
-                        {(guides || []).map((g) => (
-                          <option key={g.id} value={g.id}>
-                            {g.title}
-                          </option>
-                        ))}
-                      </select>
-
-                      {s.guide_id ? (
-                        <button
-                          type="button"
-                          style={styles.btnSmall}
-                          onClick={() => onGuideOpen(s.guide_id)}
-                          title="Anleitung öffnen"
-                        >
-                          Anleitung
-                        </button>
-                      ) : (
-                        <span style={{ width: 78 }} />
-                      )}
-
-                      <input
-                        type="color"
-                        value={s.color || t.area_color || "#6b7280"}
-                        onChange={(e) => onSubUpdate(s.id, { color: e.target.value })}
-                        disabled={!canWrite}
-                        title="Farbe"
-                        style={styles.colorInput}
-                      />
-
-                      <button
-                        style={styles.btnSmall}
-                        onClick={() => onSubDelete(s.id)}
-                        disabled={!canWrite}
-                        title="Löschen"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              {canWrite ? (
-                <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  {(() => {
-                    const d = getSubDraft(t.id, t.area_color || "#6b7280");
-                    return (
-                      <>
-                        <input
-                          value={d.title}
-                          onChange={(e) => setSubDraft(t.id, { title: e.target.value }, t.area_color || "#6b7280")}
-                          placeholder="Neue Unteraufgabe…"
-                          style={{ ...styles.input, minWidth: 260 }}
-                        />
-                        <select
-                          value={d.guide_id || ""}
-                          onChange={(e) => setSubDraft(t.id, { guide_id: e.target.value }, t.area_color || "#6b7280")}
-                          style={{ ...styles.input, minWidth: 220 }}
-                          title="Anleitung verknüpfen"
-                        >
-                          <option value="">– Anleitung –</option>
-                          {(guides || []).map((g) => (
-                            <option key={g.id} value={g.id}>
-                              {g.title}
-                            </option>
-                          ))}
-                        </select>
-                        <input
-                          type="color"
-                          value={d.color || t.area_color || "#6b7280"}
-                          onChange={(e) => setSubDraft(t.id, { color: e.target.value }, t.area_color || "#6b7280")}
-                          title="Farbe"
-                          style={styles.colorInput}
-                        />
-                        <button
-                          style={styles.btnSmallPrimary}
-                          onClick={() => onSubAdd(t, t.area_color || "#6b7280")}
-                          title="Hinzufügen"
-                        >
-                          +
-                        </button>
-                      </>
-                    );
-                  })()}
-                </div>
-              ) : null}
-            </div>
-            </div>
-          );
-        })}
-
-        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
-      </div>
-    </div>
-    </div>
-  </div>
-  </div>
-  </div>
-	  </div>
-	</div>
-	</div>
-	</div>
-  );
-}
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
+const supabase =
+  SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 /* ---------------- Helpers ---------------- */
+
+const firstGuideId = (v) => (Array.isArray(v) ? (v[0] || null) : (v || null));
+
+
+function fmtDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString("de-DE");
+}
 function fmtDateTime(value) {
   if (!value) return "";
   const d = new Date(value);
@@ -1003,2142 +52,210 @@ function fmtDateTime(value) {
     minute: "2-digit",
   });
 }
-
-function fmtDate(value) {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleDateString("de-DE", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
+function safeLower(s) {
+  return String(s || "").toLowerCase();
 }
-
-function startOfDayISO(dateStr) {
-  const d = new Date(dateStr);
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
+function uuidv4() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  const rnd = () =>
+    Math.floor(Math.random() * 0xffffffff)
+      .toString(16)
+      .padStart(8, "0");
+  return `${rnd().slice(0, 8)}-${rnd().slice(0, 4)}-4${rnd().slice(
+    1,
+    4
+  )}-a${rnd().slice(1, 4)}-${rnd()}`;
 }
-
-function endOfDayISO(dateStr) {
-  const d = new Date(dateStr);
-  d.setHours(23, 59, 59, 999);
-  return d.toISOString();
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
 }
-
-function safeLower(v) {
-  return String(v ?? "").trim().toLowerCase();
+function addDays(d, days) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  return x;
 }
-
-/* ---------------- Auth context ---------------- */
-async function loadMyAuthContext() {
-  // Robust: Nur getSession() verwenden (enthält bereits den User).
-  // getUser() wirft in Supabase v2 in manchen Fällen "Auth session missing!".
-  const { data: sData, error: sErr } = await supabase.auth.getSession();
-  if (sErr) {
-    return { user: null, profile: null, role: null, isAdmin: false, inactive: false };
-  }
-  const user = sData?.session?.user || null;
-  if (!user) return { user: null, profile: null, role: null, isAdmin: false, inactive: false };
-
-  const { data: profile, error: pErr } = await supabase
-    .from("profiles")
-    .select("id, email, name, role, role_id, is_active")
-    .eq("id", user.id)
-    .maybeSingle();
-
-  if (pErr) throw pErr;
-
-  if (profile && profile.is_active === false) {
-    return { user, profile, role: null, isAdmin: false, inactive: true };
-  }
-
-  let role = null;
-  if (profile?.role_id) {
-    const { data: r, error: rErr } = await supabase
-      .from("roles")
-      .select("id, key, name")
-      .eq("id", profile.role_id)
-      .maybeSingle();
-    if (!rErr) role = r;
-  }
-
-  const roleKey = safeLower(role?.key || profile?.role);
-  const isAdmin = roleKey === "admin";
-
-  return { user, profile: profile || null, role, isAdmin, inactive: false };
+function addMonths(d, months) {
+  const x = new Date(d);
+  x.setMonth(x.getMonth() + months);
+  return x;
 }
-
-/* ---------------- Areas (A/B) ---------------- */
-async function loadAreas() {
-  const { data, error } = await supabase
-    .from("areas")
-    .select("id, name, color")
-    .order("name", { ascending: true });
-
-  if (error) {
-    console.warn("areas load failed:", error.message);
-    return [];
-  }
-
-  return (data || []).map((a) => ({
-    id: a.id,
-    name: a.name,
-    color: a.color || null,
-  }));
-}
-
-
-/* ---------------- User Settings ---------------- */
-async function loadUserSettings(userId) {
-  if (!userId) return null;
-  const { data, error } = await supabase
-    .from("user_settings")
-    .select("user_id, primary_color, background_color, background_image_url, notifications_enabled, updated_at")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (error) {
-    // Table might not exist yet – keep app usable
-    console.warn("user_settings load failed:", error.message);
-    return null;
-  }
-  return data || null;
-}
-
-async function upsertUserSettings(userId,  patch) {
-  if (!userId) throw new Error("userId fehlt");
-  const payload = {
-    user_id: userId,
-    primary_color: patch.primary_color ?? null,
-    background_color: patch.background_color ?? null,
-    background_image_url: patch.background_image_url ?? null,
-    notifications_enabled: typeof patch.notifications_enabled === "boolean" ? patch.notifications_enabled : null,
-    updated_at: new Date().toISOString(),
-  };
-
-  const { error } = await supabase.from("user_settings").upsert(payload, { onConflict: "user_id" });
-  if (error) throw error;
-  return true;
-}
-
-
-/* ---------------- Admin: Users Panel ---------------- */
-function UsersAdminPanel({ isAdmin }) {
-  const [users, setUsers] = useState([]);
-  const [roles, setRoles] = useState([]);
-  const [areas, setAreas] = useState([]);
-  const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [createLoading, setCreateLoading] = useState(false);
-  const [err, setErr] = useState(null);
-  const [passwordDrafts, setPasswordDrafts] = useState({});
-  const [newUser, setNewUser] = useState({
-    email: "",
-    password: "",
-    name: "",
-    roleId: "",
-    areaIds: [],
-  });
-
-  const rolesById = useMemo(() => new Map(roles.map((r) => [r.id, r])), [roles]);
-
-  async function load() {
-    setErr(null);
-    setLoading(true);
-
-    const [rolesRes, areasRes] = await Promise.all([
-      supabase.from("roles").select("id, key, name").order("name", { ascending: true }),
-      supabase.from("areas").select("id, name, color").order("name", { ascending: true }),
-    ]);
-
-    if (rolesRes.error) {
-      setLoading(false);
-      setErr(rolesRes.error.message);
-      return;
-    }
-
-    if (areasRes.error) {
-      setLoading(false);
-      setErr(areasRes.error.message);
-      return;
-    }
-
-    const { data: usersData, error: uErr } = await supabase
-      .from("profiles")
-      .select("id, email, name, role, role_id, is_active")
-      .order("name", { ascending: true });
-
-    if (uErr) {
-      setLoading(false);
-      setErr(uErr.message);
-      return;
-    }
-
-    const { data: areaLinks, error: linkErr } = await supabase
-      .from("profile_areas")
-      .select("profile_id, area_id");
-
-    if (linkErr) {
-      setLoading(false);
-      setErr(linkErr.message);
-      return;
-    }
-
-    const areasByProfile = (areaLinks || []).reduce((acc, link) => {
-      const pid = link.profile_id;
-      if (!pid) return acc;
-      if (!acc[pid]) acc[pid] = [];
-      acc[pid].push({ area_id: link.area_id });
-      return acc;
-    }, {});
-
-    setRoles(rolesRes.data || []);
-    setAreas(areasRes.data || []);
-    setUsers((usersData || []).map((u) => ({ ...u, profile_areas: areasByProfile[u.id] || [] })));
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    if (isAdmin) load();
-  }, [isAdmin]);
-
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return users;
-    return users.filter((u) => `${u.name ?? ""} ${u.email ?? ""}`.toLowerCase().includes(needle));
-  }, [users, q]);
-
-  async function updateUser(id, patch) {
-    setErr(null);
-    const { error } = await supabase.from("profiles").update(patch).eq("id", id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
-  }
-
-  async function updateUserRole(id, roleId) {
-    const role = roleId ? rolesById.get(roleId) : null;
-    await updateUser(id, {
-      role_id: roleId || null,
-      role: role?.key || null,
-    });
-  }
-
-  async function updateUserAreas(id, areaIds) {
-    setErr(null);
-    const { error: delErr } = await supabase.from("profile_areas").delete().eq("profile_id", id);
-    if (delErr) {
-      setErr(delErr.message);
-      return;
-    }
-
-    if (areaIds.length > 0) {
-      const rows = areaIds.map((areaId) => ({ profile_id: id, area_id: areaId }));
-      const { error: insErr } = await supabase.from("profile_areas").insert(rows);
-      if (insErr) {
-        setErr(insErr.message);
-        return;
-      }
-    }
-
-    setUsers((prev) =>
-      prev.map((u) => (u.id === id ? { ...u, profile_areas: areaIds.map((areaId) => ({ area_id: areaId })) } : u))
-    );
-  }
-
-  async function createUser() {
-    const email = newUser.email.trim();
-    const password = newUser.password.trim();
-    if (!email) {
-      setErr("E-Mail fehlt");
-      return;
-    }
-    if (!password || password.length < 8) {
-      setErr("Passwort fehlt/zu kurz (min. 8 Zeichen)");
-      return;
-    }
-
-    setErr(null);
-    setCreateLoading(true);
-
-    try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData?.session?.access_token;
-      if (!token) {
-        setErr("Nicht angemeldet");
-        return;
-      }
-
-      const role = newUser.roleId ? rolesById.get(newUser.roleId)?.key : "user";
-
-      const res = await fetch("/api/admin/users", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          action: "createUser",
-          payload: {
-            email,
-            password,
-            role,
-            name: newUser.name.trim() || null,
-          },
-        }),
-      });
-
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Nutzeranlage fehlgeschlagen");
-
-      const userId = json?.userId;
-      if (!userId) throw new Error("User-ID fehlt nach createUser");
-
-
-      // Ensure profile row exists (some setups do not have an auth->profiles trigger)
-      const roleKeyForInsert = newUser.roleId ? (rolesById.get(newUser.roleId)?.key || null) : (role || null);
-      const { error: upsertErr } = await supabase.from("profiles").upsert(
-        {
-          id: userId,
-          email,
-          name: newUser.name.trim() || null,
-          role: roleKeyForInsert,
-          role_id: newUser.roleId || null,
-          is_active: true,
-        },
-        { onConflict: "id" }
-      );
-      if (upsertErr) throw upsertErr;
-
-      if (newUser.roleId) {
-        const roleKey = rolesById.get(newUser.roleId)?.key || null;
-        const { error: roleErr } = await supabase
-          .from("profiles")
-          .update({ role_id: newUser.roleId, role: roleKey })
-          .eq("id", userId);
-        if (roleErr) throw roleErr;
-      }
-
-      if (newUser.areaIds.length > 0) {
-        await updateUserAreas(userId, newUser.areaIds);
-      }
-
-      setNewUser({ email: "", password: "", name: "", roleId: "", areaIds: [] });
-      await load();
-      setPendingFiles((prev) => ({ ...prev, [guideId]: [] }));
-    } catch (error) {
-      setErr(error?.message || String(error));
-    } finally {
-      setCreateLoading(false);
-    }
-  }
-
-  async function setPassword(userId) {
-    const password = String(passwordDrafts[userId] || "").trim();
-    if (!password || password.length < 8) {
-      setErr("Passwort fehlt/zu kurz (min. 8 Zeichen)");
-      return;
-    }
-
-    setErr(null);
-
-    try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData?.session?.access_token;
-      if (!token) {
-        setErr("Nicht angemeldet");
-        return;
-      }
-
-      const res = await fetch("/api/admin/users", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          action: "setPassword",
-          payload: { userId, password },
-        }),
-      });
-
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Passwort setzen fehlgeschlagen");
-
-      setPasswordDrafts((prev) => ({ ...prev, [userId]: "" }));
-    } catch (error) {
-      setErr(error?.message || String(error));
-    }
-  }
-
-  if (!isAdmin) {
-    return (
-      <div style={styles.panel}>
-        <div style={styles.h3}>Nutzer</div>
-        <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
-      </div>
-    );
-  }
-
+function isSameDay(a, b) {
+  if (!a || !b) return false;
+  const da = new Date(a);
+  const db = new Date(b);
   return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Nutzerverwaltung</div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Suchen…" style={styles.input} />
-          <button style={styles.btn} onClick={load} disabled={loading}>
-            {loading ? "Lade…" : "Neu laden"}
-          </button>
-        </div>
-      </div>
-
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
-      <div style={{ ...styles.card, marginBottom: 14 }}>
-        <div style={styles.h4}>Nutzer einladen</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
-          <input
-            value={newUser.email}
-            onChange={(e) => setNewUser((prev) => ({ ...prev, email: e.target.value }))}
-            placeholder="E-Mail"
-            style={styles.input}
-          />
-          <input
-            type="password"
-            value={newUser.password}
-            onChange={(e) => setNewUser((prev) => ({ ...prev, password: e.target.value }))}
-            placeholder="Startpasswort (min. 8 Zeichen)"
-            style={styles.input}
-          />
-          <input
-            value={newUser.name}
-            onChange={(e) => setNewUser((prev) => ({ ...prev, name: e.target.value }))}
-            placeholder="Name"
-            style={styles.input}
-          />
-          <select
-            value={newUser.roleId}
-            onChange={(e) => setNewUser((prev) => ({ ...prev, roleId: e.target.value }))}
-            style={styles.input}
-          >
-            <option value="">Rolle wählen</option>
-            {roles.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-          <select
-            multiple
-            value={newUser.areaIds}
-            onChange={(e) =>
-              setNewUser((prev) => ({
-                ...prev,
-                areaIds: Array.from(e.target.selectedOptions).map((o) => o.value),
-              }))
-            }
-            style={{ ...styles.input, height: 94 }}
-            title="Mehrfachauswahl: Strg/Cmd + Klick"
-          >
-            {areas.map((area) => (
-              <option key={area.id} value={area.id}>
-                {area.name}
-              </option>
-            ))}
-          </select>
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
-            <button style={styles.btnPrimary} onClick={createUser} disabled={createLoading}>
-              {createLoading ? "Erstelle…" : "Einladen"}
-            </button>
-          </div>
-        </div>
-        <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>
-          Hinweis: Das Passwort wird gesetzt, die E-Mail-Benachrichtigung musst du ggf. separat versenden.
-        </div>
-      </div>
-
-      <div style={{ overflowX: "auto" }}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Name</th>
-              <th style={styles.th}>E-Mail</th>
-              <th style={styles.th}>Rolle</th>
-              <th style={styles.th}>Bereiche</th>
-              <th style={styles.th}>Aktiv</th>
-              <th style={styles.th}>Passwort</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((u) => {
-              const assignedAreaIds = (u.profile_areas || []).map((pa) => pa.area_id);
-              return (
-                <tr key={u.id}>
-                  <td style={styles.td}>
-                    <input
-                      value={u.name ?? ""}
-                      onChange={(e) => updateUser(u.id, { name: e.target.value })}
-                      style={styles.input}
-                    />
-                  </td>
-                  <td style={styles.td}>{u.email ?? ""}</td>
-                  <td style={styles.td}>
-                    <select
-                      value={u.role_id ?? ""}
-                      onChange={(e) => updateUserRole(u.id, e.target.value || null)}
-                      style={styles.input}
-                    >
-                      <option value="">–</option>
-                      {roles.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td style={styles.td}>
-                    <select
-                      multiple
-                      value={assignedAreaIds}
-                      onChange={(e) =>
-                        updateUserAreas(
-                          u.id,
-                          Array.from(e.target.selectedOptions).map((o) => o.value)
-                        )
-                      }
-                      style={{ ...styles.input, height: 94 }}
-                      title="Mehrfachauswahl: Strg/Cmd + Klick"
-                    >
-                      {areas.map((area) => (
-                        <option key={area.id} value={area.id}>
-                          {area.name}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td style={styles.td}>
-                    <input
-                      type="checkbox"
-                      checked={u.is_active !== false}
-                      onChange={(e) => updateUser(u.id, { is_active: e.target.checked })}
-                    />
-                  </td>
-                  <td style={styles.td}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input
-                        type="password"
-                        value={passwordDrafts[u.id] ?? ""}
-                        onChange={(e) =>
-                          setPasswordDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))
-                        }
-                        placeholder="Neues Passwort"
-                        style={styles.input}
-                      />
-                      <button style={styles.btnSmall} onClick={() => setPassword(u.id)}>
-                        Setzen
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-
-            {filtered.length === 0 ? (
-              <tr>
-                <td style={styles.td} colSpan={6}>
-                  Keine Nutzer gefunden.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
   );
 }
 
-/* ---------------- Guides (Anleitungen) ---------------- */
-function GuidesPanel({ isAdmin }) {
-  const [guides, setGuides] = useState([]);
-  const [files, setFiles] = useState([]); // rows from guide_files
-  const [signedUrls, setSignedUrls] = useState({}); // path -> signedUrl (cached)
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-
-  const [uploadingGuideId, setUploadingGuideId] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [pendingFiles, setPendingFiles] = useState({}); // guideId -> File[]
-
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
-  async function load() {
-    setErr(null);
-    setLoading(true);
-
-    const { data: gData, error: gErr } = await supabase
-      .from("guides")
-      .select("id, title, content, created_at, updated_at")
-      .order("created_at", { ascending: false });
-
-    if (gErr) {
-      setErr(gErr.message);
-      setLoading(false);
-      return;
-    }
-
-    // Dateien sind optional (wenn Tabelle noch nicht existiert, nur Warnung)
-    const { data: fData, error: fErr } = await supabase
-      .from("guide_files")
-      .select("id, guide_id, bucket, path, filename, mime, size, created_at, created_by")
-      .order("created_at", { ascending: false });
-
-    if (fErr) {
-      console.warn("guide_files load failed:", fErr.message);
-    }
-
-    setGuides(gData ?? []);
-    setFiles(fData ?? []);
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function createGuide() {
-    if (!isAdmin) return;
-    if (!title.trim()) return;
-
-    setErr(null);
-    const { error } = await supabase.from("guides").insert({
-      title: title.trim(),
-      content: content.trim() || null,
-    });
-
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-
-    setTitle("");
-    setContent("");
-    load();
-  }
-
-  function filesForGuide(guideId) {
-    return (files || []).filter((f) => f.guide_id === guideId);
-  }
-
-  async function ensureSignedUrl(path) {
-    if (!path) return null;
-    if (signedUrls[path]) return signedUrls[path];
-
-    const { data, error } = await supabase.storage.from("guides").createSignedUrl(path, 60 * 60);
-    if (error) {
-      setErr(error.message);
-      return null;
-    }
-
-    const url = data?.signedUrl || null;
-    if (url) setSignedUrls((prev) => ({ ...prev, [path]: url }));
-    return url;
-  }
-
-  async function onDownload(path) {
-    const url = await ensureSignedUrl(path);
-    if (url) window.open(url, "_blank", "noopener,noreferrer");
-  }
-
-  async function uploadFiles(guideId, fileListOrArray) {
-    const arr = Array.isArray(fileListOrArray) ? fileListOrArray : Array.from(fileListOrArray || []);
-    if (!guideId || arr.length === 0) return;
-
-    setErr(null);
-    setUploading(true);
-    setUploadingGuideId(guideId);
-
-    try {
-      for (const file of arr) {
-        const safeName = String(file.name || "datei").replace(/[^\w.\-]+/g, "_");
-        const key = `${guideId}/${Date.now()}_${safeName}`;
-
-        const up = await supabase.storage.from("guides").upload(key, file, {
-          cacheControl: "3600",
-          upsert: false,
-          contentType: file.type || undefined,
-        });
-        if (up.error) throw up.error;
-
-        const ins = await supabase.from("guide_files").insert({
-          guide_id: guideId,
-          bucket: "guides",
-          path: key,
-          filename: file.name,
-          mime: file.type || null,
-          size: file.size ?? null,
-        });
-        if (ins.error) throw ins.error;
-      }
-
-      await load();
-    } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
-      setUploading(false);
-      setUploadingGuideId(null);
-    }
-  }
-
-  async function deleteFile(row) {
-    if (!isAdmin) return;
-    if (!row?.id || !row?.path) return;
-    if (!window.confirm(`Datei wirklich löschen?\n\n${row.filename}`)) return;
-
-    setErr(null);
-    const rm = await supabase.storage.from("guides").remove([row.path]);
-    if (rm.error) {
-      setErr(rm.error.message);
-      return;
-    }
-
-    const del = await supabase.from("guide_files").delete().eq("id", row.id);
-    if (del.error) {
-      setErr(del.error.message);
-      return;
-    }
-
-    setFiles((prev) => (prev || []).filter((f) => f.id !== row.id));
-  }
-
-  return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Anleitungen</div>
-        <button style={styles.btn} onClick={load} disabled={loading}>
-          {loading ? "Lade…" : "Neu laden"}
-        </button>
-      </div>
-
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
-      {isAdmin ? (
-        <div style={{ ...styles.card, marginBottom: 14 }}>
-          <div style={styles.h4}>Neue Anleitung</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titel" style={styles.input} />
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Inhalt / Schritte"
-              rows={5}
-              style={styles.textarea}
-            />
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <button style={styles.btnPrimary} onClick={createGuide}>
-                Anlegen
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-        {guides.map((g) => {
-          const gFiles = filesForGuide(g.id);
-
-          return (
-            <div key={g.id} style={styles.card}>
-              <div style={styles.h4}>{g.title}</div>
-              <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
-                Erstellt: {fmtDateTime(g.created_at)}
-                {g.updated_at ? ` · Update: ${fmtDateTime(g.updated_at)}` : ""}
-              </div>
-
-              {g.content ? <div style={{ whiteSpace: "pre-wrap" }}>{g.content}</div> : null}
-
-              <div style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 800, marginBottom: 8 }}>Dateien</div>
-
-                <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
-                  <label style={styles.fileBtn}>
-                    Dateien auswählen
-                    <input
-                      type="file"
-                      multiple
-                      onChange={(e) => {
-                        const picked = Array.from(e.target.files || []);
-                        setPendingFiles((prev) => ({ ...prev, [g.id]: picked }));
-                        // allow picking same file again later
-                        e.target.value = "";
-                      }}
-                      disabled={uploading}
-                      style={{ display: "none" }}
-                    />
-                  </label>
-
-                  <button
-                    type="button"
-                    style={styles.btn}
-                    onClick={() => uploadFiles(g.id, pendingFiles[g.id] || [])}
-                    disabled={uploading || (pendingFiles[g.id] || []).length === 0}
-                    title="Startet den Upload der ausgewählten Dateien"
-                  >
-                    Upload starten
-                  </button>
-
-                  {(pendingFiles[g.id] || []).length > 0 ? (
-                    <span style={{ color: "#666", fontSize: 13 }}>
-                      Ausgewählt: {(pendingFiles[g.id] || []).map((f) => f.name).join(", ")}
-                    </span>
-                  ) : (
-                    <span style={{ color: "#666", fontSize: 13 }}>Mehrere Dateien möglich</span>
-                  )}
-
-                  {uploading && uploadingGuideId === g.id ? (
-                    <span style={{ color: "#666", fontSize: 13 }}>Upload läuft…</span>
-                  ) : null}
-                </div>
-
-                {gFiles.length === 0 ? (
-                  <div style={{ color: "#666" }}>Keine Dateien.</div>
-                ) : (
-                  <div style={{ display: "grid", gap: 8 }}>
-                    {gFiles.map((f) => (
-                      <div key={f.id} style={styles.fileRow}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {f.filename}
-                          </div>
-                          <div style={{ color: "#666", fontSize: 12 }}>
-                            {f.size ? `${Math.round(f.size / 1024)} KB` : "—"} · {fmtDateTime(f.created_at)}
-                          </div>
-                        </div>
-
-                        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                          <button style={styles.btn} onClick={() => onDownload(f.path)}>
-                            Download
-                          </button>
-                          {isAdmin ? (
-                            <button style={styles.btnDanger} onClick={() => deleteFile(f)}>
-                              Löschen
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-
-        {guides.length === 0 ? <div style={{ color: "#666" }}>Noch keine Anleitungen vorhanden.</div> : null}
-      </div>
-    </div>
-  );
+/**
+ * Subtask done-field fallback:
+ * supports: is_done | done | completed | status ("done")
+ */
+function getSubDone(sub) {
+  if (!sub) return false;
+  if (typeof sub.is_done === "boolean") return sub.is_done;
+  if (typeof sub.done === "boolean") return sub.done;
+  if (typeof sub.completed === "boolean") return sub.completed;
+  if (typeof sub.status === "string") return safeLower(sub.status) === "done";
+  return false;
 }
-
-
-/* ---------------- Areas (Bereiche) ---------------- */
-function AreasPanel({ isAdmin }) {
-  const [areas, setAreas] = useState([]);
-  const [name, setName] = useState("");
-  const [color, setColor] = useState("#0b6b2a");
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
-  async function load() {
-    setErr(null);
-    setLoading(true);
-    const list = await loadAreas();
-    setAreas(list);
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function createArea() {
-    if (!isAdmin) return;
-    const n = name.trim();
-    if (!n) return;
-    setErr(null);
-
-    const { error } = await supabase.from("areas").insert({ name: n, color: (color || null) });
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setName("");
-    setColor("#0b6b2a");
-    load();
-  }
-
-  async function updateArea(id, patch) {
-    if (!isAdmin) return;
-    setErr(null);
-    const { error } = await supabase.from("areas").update(patch).eq("id", id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
-  }
-
-  return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Bereiche</div>
-        <button style={styles.btn} onClick={load} disabled={loading}>
-          {loading ? "Lade…" : "Neu laden"}
-        </button>
-      </div>
-
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-
-      {isAdmin ? (
-        <div style={{ ...styles.card, marginBottom: 14 }}>
-          <div style={styles.h4}>Neuen Bereich anlegen</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 220px auto", gap: 10, alignItems: "center" }}>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Name (z.B. LVP, PPK, Containerdienst)"
-              style={styles.input}
-            />
-            <input type="color" value={color} onChange={(e) => setColor(e.target.value)} style={styles.input} />
-            <button style={styles.btnPrimary} onClick={createArea}>
-              Anlegen
-            </button>
-          </div>
-          <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
-            Hinweis: Aufgaben-Bereich ist frei eintippbar. Wenn der Text genau zu einem Bereich passt, wird automatisch die Farbe gezogen.
-          </div>
-        </div>
-      ) : (
-        <div style={{ marginBottom: 12, color: "#666", fontSize: 13 }}>
-          Du kannst bei Aufgaben den Bereich frei eintippen. Bereiche/Farben pflegt nur die Administration.
-        </div>
-      )}
-
-      <div style={{ overflowX: "auto" }}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Name</th>
-              <th style={styles.th}>Farbe</th>
-            </tr>
-          </thead>
-          <tbody>
-            {areas.map((a) => (
-              <tr key={a.id}>
-                <td style={styles.td}>
-                  {isAdmin ? (
-                    <input value={a.name || ""} onChange={(e) => updateArea(a.id, { name: e.target.value })} style={styles.input} />
-                  ) : (
-                    a.name
-                  )}
-                </td>
-                <td style={styles.td}>
-                  {isAdmin ? (
-                    <input type="color" value={a.color || "#0b6b2a"} onChange={(e) => updateArea(a.id, { color: e.target.value })} style={styles.input} />
-                  ) : (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ width: 14, height: 14, borderRadius: 999, background: a.color || "#d8e0ef", border: "1px solid #d8e0ef" }} />
-                      {a.color || "–"}
-                    </span>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {areas.length === 0 ? (
-              <tr>
-                <td style={styles.td} colSpan={2}>
-                  Keine Bereiche vorhanden.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- Calendar ---------------- */
-function CalendarPanel() {
-  const [view, setView] = useState("month"); // "month" | "week"
-  const [monthCursor, setMonthCursor] = useState(() => {
-    const d = new Date();
-    d.setDate(1);
-    d.setHours(0, 0, 0, 0);
-    return d;
-  });
-  const [selectedDate, setSelectedDate] = useState(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d;
-  });
-
-  // filters
-  const [filterAreaId, setFilterAreaId] = useState("all");
-  const [filterUserId, setFilterUserId] = useState("all");
-
-  // tasks data
-  const [tasks, setTasks] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [quickTitle, setQuickTitle] = useState("");
-  const [savingId, setSavingId] = useState(null);
-  const [editingId, setEditingId] = useState(null);
-
-  const isoDateKey = (d) => {
-    const x = new Date(d);
-    x.setHours(0, 0, 0, 0);
-    return x.toISOString().slice(0, 10);
-  };
-
-  const formatDayLabel = (d) =>
-    new Date(d).toLocaleDateString("de-DE", {
-      weekday: "short",
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    });
-
-  const toLocalInputValue = (iso) => {
-    if (!iso) return "";
-    const d = new Date(iso);
-    const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
-
-  const mergeDateKeepTime = (iso, targetDate) => {
-    // keep time from iso, change date to targetDate
-    const t = iso ? new Date(iso) : new Date();
-    const nd = new Date(targetDate);
-    nd.setHours(t.getHours(), t.getMinutes(), 0, 0);
-    return nd.toISOString();
-  };
-
-  const canSeeUser = (u) => {
-    if (!u) return false;
-    if (isAdmin) return true;
-    return u.id === currentUser?.id;
-  };
-
-  async function loadTasks(rangeStart, rangeEnd) {
-    setLoading(true);
-    try {
-      let q = supabase
-        .from("tasks")
-        .select(
-          "id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at"
-        )
-        .gte("due_at", rangeStart.toISOString())
-        .lte("due_at", rangeEnd.toISOString())
-        .order("due_at", { ascending: true });
-
-      // RLS already limits. Extra filters below are client side.
-      const { data, error } = await q;
-      if (error) throw error;
-      setTasks(Array.isArray(data) ? data : []);
-    } catch (e) {
-      showError(e?.message || String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // month range: from first visible cell to last visible cell
-  const getMonthGridRange = () => {
-    const first = new Date(monthCursor);
-    first.setDate(1);
-    const start = new Date(first);
-    const day = (start.getDay() + 6) % 7; // monday=0
-    start.setDate(start.getDate() - day);
-    start.setHours(0, 0, 0, 0);
-
-    const last = new Date(first);
-    last.setMonth(last.getMonth() + 1);
-    last.setDate(0);
-    last.setHours(23, 59, 59, 999);
-
-    const end = new Date(last);
-    const lastDay = (end.getDay() + 6) % 7;
-    end.setDate(end.getDate() + (6 - lastDay));
-    end.setHours(23, 59, 59, 999);
-
-    return { start, end };
-  };
-
-  const getWeekRange = () => {
-    const d = new Date(selectedDate);
-    d.setHours(0, 0, 0, 0);
-    const day = (d.getDay() + 6) % 7;
-    const start = new Date(d);
-    start.setDate(start.getDate() - day);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 6);
-    end.setHours(23, 59, 59, 999);
-    return { start, end };
-  };
-
-  useEffect(() => {
-    const { start, end } = view === "month" ? getMonthGridRange() : getWeekRange();
-    loadTasks(start, end);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, monthCursor, selectedDate]);
-
-  const filteredTasks = useMemo(() => {
-    return tasks.filter((t) => {
-      if (!t?.due_at) return false;
-      if (filterAreaId !== "all" && t.area_id !== filterAreaId) return false;
-      if (filterUserId !== "all" && t.assigned_to !== filterUserId) return false;
-      return true;
-    });
-  }, [tasks, filterAreaId, filterUserId]);
-
-  const tasksByDay = useMemo(() => {
-    const map = new Map();
-    for (const t of filteredTasks) {
-      const k = isoDateKey(t.due_at);
-      if (!map.has(k)) map.set(k, []);
-      map.get(k).push(t);
-    }
-    return map;
-  }, [filteredTasks]);
-
-  const selectedKey = isoDateKey(selectedDate);
-  const selectedTasks = tasksByDay.get(selectedKey) || [];
-
-  async function updateTask(taskId, patch) {
-    setSavingId(taskId);
-    try {
-      const { error } = await supabase.from("tasks").update(patch).eq("id", taskId);
-      if (error) throw error;
-      // refresh local state
-      setTasks((prev) =>
-        prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t))
-      );
-    } catch (e) {
-      showError(e?.message || String(e));
-    } finally {
-      setSavingId(null);
-    }
-  }
-
-  async function deleteTask(taskId) {
-    if (!confirm("Aufgabe wirklich löschen?")) return;
-    setSavingId(taskId);
-    try {
-      const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-      if (error) throw error;
-      setTasks((prev) => prev.filter((t) => t.id !== taskId));
-    } catch (e) {
-      showError(e?.message || String(e));
-    } finally {
-      setSavingId(null);
-    }
-  }
-
-  async function createTask() {
-    const title = quickTitle.trim();
-    if (!title) return;
-    setSavingId("new");
-    try {
-      const dueIso = mergeDateKeepTime(null, selectedDate);
-      const insert = {
-        title,
-        description: "",
-        status: "open",
-        area_id: filterAreaId !== "all" ? filterAreaId : null,
-        assigned_to:
-          filterUserId !== "all" ? filterUserId : currentUser?.id || null,
-        due_at: dueIso,
-      };
-      const { data, error } = await supabase
-        .from("tasks")
-        .insert(insert)
-        .select("id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at")
-        .single();
-      if (error) throw error;
-      setTasks((prev) => [...prev, data].sort((a, b) => new Date(a.due_at) - new Date(b.due_at)));
-      setQuickTitle("");
-      setEditingId(data.id);
-    } catch (e) {
-      showError(e?.message || String(e));
-    } finally {
-      setSavingId(null);
-    }
-  }
-
-  // Drag & Drop
-  const onDragStartTask = (ev, task) => {
-    ev.dataTransfer.setData("text/task_id", task.id);
-    ev.dataTransfer.setData("text/task_due", task.due_at || "");
-    ev.dataTransfer.effectAllowed = "move";
-  };
-
-  const onDropDay = async (ev, dayDate) => {
-    ev.preventDefault();
-    const taskId = ev.dataTransfer.getData("text/task_id");
-    const due = ev.dataTransfer.getData("text/task_due");
-    if (!taskId) return;
-    const nextDue = mergeDateKeepTime(due, dayDate);
-    await updateTask(taskId, { due_at: nextDue });
-  };
-
-  const renderTaskPill = (t) => {
-    const area = areas?.find((a) => a.id === t.area_id);
-    const assignee = users?.find((u) => u.id === t.assigned_to);
-    const label = `${t.title}${assignee ? ` · ${assignee.name}` : ""}`;
-    return (
-      <div
-        key={t.id}
-        draggable
-        onDragStart={(e) => onDragStartTask(e, t)}
-        title={label}
-        style={{
-          fontSize: 11,
-          padding: "2px 6px",
-          borderRadius: 999,
-          background: area?.color || "rgba(0,0,0,0.06)",
-          color: "#111",
-          cursor: "grab",
-          overflow: "hidden",
-          whiteSpace: "nowrap",
-          textOverflow: "ellipsis",
-          border: "1px solid rgba(0,0,0,0.10)",
-        }}
-        onClick={() => {
-          setSelectedDate(new Date(t.due_at));
-          setEditingId(t.id);
-        }}
-      >
-        {t.title}
-      </div>
-    );
-  };
-
-  const renderMonthGrid = () => {
-    const { start, end } = getMonthGridRange();
-    const days = [];
-    const d = new Date(start);
-    while (d <= end) {
-      days.push(new Date(d));
-      d.setDate(d.getDate() + 1);
-    }
-
-    const weekDays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
-    const isSameMonth = (x) => x.getMonth() === monthCursor.getMonth();
-    const isToday = (x) => isoDateKey(x) === isoDateKey(new Date());
-    const isSelected = (x) => isoDateKey(x) === selectedKey;
-
-    return (
-      <div style={{ display: "grid", gap: 6 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
-          {weekDays.map((w) => (
-            <div key={w} style={{ fontWeight: 700, fontSize: 12, opacity: 0.8 }}>
-              {w}
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
-          {days.map((day) => {
-            const k = isoDateKey(day);
-            const items = tasksByDay.get(k) || [];
-            return (
-              <div
-                key={k}
-                onClick={() => setSelectedDate(day)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => onDropDay(e, day)}
-                style={{
-                  minHeight: 92,
-                  background: isSelected(day)
-                    ? "rgba(34,197,94,0.12)"
-                    : "rgba(255,255,255,0.92)",
-                  border: isToday(day)
-                    ? "2px solid rgba(34,197,94,0.8)"
-                    : "1px solid rgba(0,0,0,0.08)",
-                  borderRadius: 12,
-                  padding: 8,
-                  cursor: "pointer",
-                  opacity: isSameMonth(day) ? 1 : 0.55,
-                  boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
-                  overflow: "hidden",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                  <div style={{ fontWeight: 700, fontSize: 12 }}>{day.getDate()}</div>
-                  {items.length > 0 ? (
-                    <div style={{ fontSize: 11, opacity: 0.7 }}>{items.length}</div>
-                  ) : null}
-                </div>
-
-                <div style={{ display: "grid", gap: 4, marginTop: 6 }}>
-                  {items.slice(0, 4).map(renderTaskPill)}
-                  {items.length > 4 ? (
-                    <div style={{ fontSize: 11, opacity: 0.7 }}>+{items.length - 4} mehr</div>
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  };
-
-  const renderWeekGrid = () => {
-    const { start, end } = getWeekRange();
-    const days = [];
-    const d = new Date(start);
-    while (d <= end) {
-      days.push(new Date(d));
-      d.setDate(d.getDate() + 1);
-    }
-
-    return (
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
-        {days.map((day) => {
-          const k = isoDateKey(day);
-          const items = tasksByDay.get(k) || [];
-          const selected = isoDateKey(day) === selectedKey;
-          return (
-            <div
-              key={k}
-              onClick={() => setSelectedDate(day)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => onDropDay(e, day)}
-              style={{
-                minHeight: 260,
-                background: selected ? "rgba(34,197,94,0.12)" : "rgba(255,255,255,0.92)",
-                border: "1px solid rgba(0,0,0,0.08)",
-                borderRadius: 12,
-                padding: 10,
-                boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
-                overflow: "hidden",
-                cursor: "pointer",
-              }}
-            >
-              <div style={{ fontWeight: 800, fontSize: 12, marginBottom: 8 }}>
-                {day.toLocaleDateString("de-DE", { weekday: "short" })} {day.getDate()}
-              </div>
-              <div style={{ display: "grid", gap: 6 }}>
-                {items.length === 0 ? (
-                  <div style={{ fontSize: 12, opacity: 0.6 }}>—</div>
-                ) : (
-                  items.map(renderTaskPill)
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
-  const EditRow = ({ task }) => {
-    const isEditing = editingId === task.id;
-    const area = areas?.find((a) => a.id === task.area_id);
-    const assignee = users?.find((u) => u.id === task.assigned_to);
-    const disabled = savingId === task.id;
-
-    return (
-      <div
-        style={{
-          border: "1px solid rgba(0,0,0,0.08)",
-          borderRadius: 12,
-          padding: 10,
-          background: "rgba(255,255,255,0.92)",
-          boxShadow: "0 6px 18px rgba(0,0,0,0.05)",
-          display: "grid",
-          gap: 8,
-        }}
-      >
-        <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <div
-              style={{
-                width: 10,
-                height: 10,
-                borderRadius: 999,
-                background: area?.color || "rgba(0,0,0,0.2)",
-              }}
-            />
-            <div style={{ fontWeight: 800, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis" }}>
-              {task.title}
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button
-              onClick={() => setEditingId(isEditing ? null : task.id)}
-              style={styles.smallBtn}
-              disabled={disabled}
-              title={isEditing ? "Schließen" : "Bearbeiten"}
-            >
-              {isEditing ? "Fertig" : "Bearbeiten"}
-            </button>
-            <button
-              onClick={() => deleteTask(task.id)}
-              style={{ ...styles.smallBtn, borderColor: "rgba(239,68,68,0.35)" }}
-              disabled={disabled}
-              title="Löschen"
-            >
-              Löschen
-            </button>
-          </div>
-        </div>
-
-        <div style={{ fontSize: 12, opacity: 0.75 }}>
-          {assignee ? `Zuständig: ${assignee.name}` : "Zuständig: —"} · Status: {task.status || "—"}
-        </div>
-
-        {isEditing ? (
-          <div style={{ display: "grid", gap: 10 }}>
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={styles.label}>Titel</label>
-              <input
-                style={styles.input}
-                defaultValue={task.title || ""}
-                onBlur={(e) => {
-                  const v = e.target.value.trim();
-                  if (v && v !== task.title) updateTask(task.id, { title: v });
-                }}
-                disabled={disabled}
-              />
-            </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={styles.label}>Termin</label>
-              <input
-                type="datetime-local"
-                style={styles.input}
-                defaultValue={toLocalInputValue(task.due_at)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (!v) return;
-                  const iso = new Date(v).toISOString();
-                  updateTask(task.id, { due_at: iso });
-                }}
-                disabled={disabled}
-              />
-            </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={styles.label}>Status</label>
-              <select
-                style={styles.select}
-                value={task.status || "open"}
-                onChange={(e) => updateTask(task.id, { status: e.target.value })}
-                disabled={disabled}
-              >
-                <option value="open">offen</option>
-                <option value="in_progress">in Bearbeitung</option>
-                <option value="done">erledigt</option>
-                <option value="blocked">blockiert</option>
-              </select>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <div style={{ display: "grid", gap: 6 }}>
-                <label style={styles.label}>Bereich</label>
-                <select
-                  style={styles.select}
-                  value={task.area_id || ""}
-                  onChange={(e) => updateTask(task.id, { area_id: e.target.value || null })}
-                  disabled={disabled}
-                >
-                  <option value="">—</option>
-                  {(areas || []).map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ display: "grid", gap: 6 }}>
-                <label style={styles.label}>Nutzer</label>
-                <select
-                  style={styles.select}
-                  value={task.assigned_to || ""}
-                  onChange={(e) => updateTask(task.id, { assigned_to: e.target.value || null })}
-                  disabled={disabled}
-                >
-                  <option value="">—</option>
-                  {(users || []).filter(canSeeUser).map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={styles.label}>Beschreibung</label>
-              <textarea
-                style={styles.textarea}
-                defaultValue={task.description || ""}
-                rows={3}
-                onBlur={(e) => updateTask(task.id, { description: e.target.value })}
-                disabled={disabled}
-              />
-            </div>
-          </div>
-        ) : null}
-      </div>
-    );
-  };
-
-  const monthLabel = monthCursor.toLocaleDateString("de-DE", { month: "long", year: "numeric" });
-
-  const navPrev = () => {
-    if (view === "month") {
-      const d = new Date(monthCursor);
-      d.setMonth(d.getMonth() - 1);
-      setMonthCursor(d);
-    } else {
-      const d = new Date(selectedDate);
-      d.setDate(d.getDate() - 7);
-      setSelectedDate(d);
-    }
-  };
-
-  const navNext = () => {
-    if (view === "month") {
-      const d = new Date(monthCursor);
-      d.setMonth(d.getMonth() + 1);
-      setMonthCursor(d);
-    } else {
-      const d = new Date(selectedDate);
-      d.setDate(d.getDate() + 7);
-      setSelectedDate(d);
-    }
-  };
-
-  const reload = () => {
-    const { start, end } = view === "month" ? getMonthGridRange() : getWeekRange();
-    loadTasks(start, end);
-  };
-
-  return (
-    <div style={styles.calendarOuter}>
-      <div style={styles.calendarPanelCard}>
-        <div style={{ display: "grid", gap: 14 }}>
-      <div style={styles.sectionHeader}>
-        <div>
-          <div style={styles.sectionTitle}>Kalender</div>
-          <div style={styles.sectionSub}>
-            {view === "month" ? `Monatsansicht · ${monthLabel}` : `Wochenansicht · ${formatDayLabel(selectedDate)}`}
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <button
-            style={view === "month" ? styles.tabBtnActive : styles.tabBtn}
-            onClick={() => setView("month")}
-          >
-            Monat
-          </button>
-          <button
-            style={view === "week" ? styles.tabBtnActive : styles.tabBtn}
-            onClick={() => setView("week")}
-          >
-            Woche
-          </button>
-          <button style={styles.tabBtn} onClick={navPrev} title="Zurück">
-            ◀
-          </button>
-          <button style={styles.tabBtn} onClick={navNext} title="Weiter">
-            ▶
-          </button>
-          <button style={styles.tabBtn} onClick={reload} disabled={loading}>
-            Neu laden
-          </button>
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, alignItems: "start" }}>
-        <div style={{ display: "grid", gap: 10 }}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <select
-              style={styles.select}
-              value={filterAreaId}
-              onChange={(e) => setFilterAreaId(e.target.value)}
-              title="Bereich-Filter"
-            >
-              <option value="all">Alle Bereiche</option>
-              {(areas || []).map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-
-            <select
-              style={styles.select}
-              value={filterUserId}
-              onChange={(e) => setFilterUserId(e.target.value)}
-              title="Nutzer-Filter"
-            >
-              <option value="all">Alle Nutzer</option>
-              {(users || []).filter(canSeeUser).map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-
-            <div style={{ fontSize: 12, opacity: 0.75 }}>
-              Tipp: Aufgaben per Drag & Drop auf ein anderes Datum ziehen.
-            </div>
-          </div>
-
-          {view === "month" ? renderMonthGrid() : renderWeekGrid()}
-        </div>
-
-        <div style={{ ...styles.card, padding: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <div>
-              <div style={{ fontWeight: 900, fontSize: 14 }}>Aufgaben am {formatDayLabel(selectedDate)}</div>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>{selectedTasks.length} Einträge</div>
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={styles.label}>Neue Aufgabe</label>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input
-                  style={styles.input}
-                  value={quickTitle}
-                  onChange={(e) => setQuickTitle(e.target.value)}
-                  placeholder="Titel…"
-                />
-                <button style={styles.primaryBtn} onClick={createTask} disabled={savingId === "new"}>
-                  Hinzufügen
-                </button>
-              </div>
-              <div style={{ fontSize: 12, opacity: 0.7 }}>
-                Die Aufgabe wird direkt mit dem gewählten Datum angelegt. Bereich/Nutzer übernimmt den aktuellen Filter (falls gesetzt).
-              </div>
-            </div>
-
-            {selectedTasks.length === 0 ? (
-              <div style={{ fontSize: 13, opacity: 0.7 }}>Keine Einträge.</div>
-            ) : (
-              <div style={{ display: "grid", gap: 10 }}>
-                {selectedTasks.map((t) => (
-                  <EditRow key={t.id} task={t} />
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- User Settings Panel ---------------- */
-function UserSettingsPanel({ userId, settings, onChange }) {
-  const [draft, setDraft] = useState(() => ({
-    primary_color: settings?.primary_color || "#0b6b2a",
-    background_color: settings?.background_color || "#f3f6fb",
-    background_image_url: settings?.background_image_url || "",
-    notifications_enabled: settings?.notifications_enabled !== false,
-  }));
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState(null);
-  const [info, setInfo] = useState(null);
-
-  useEffect(() => {
-    setDraft({
-      primary_color: settings?.primary_color || "#0b6b2a",
-      background_color: settings?.background_color || "#f3f6fb",
-      background_image_url: settings?.background_image_url || "",
-      notifications_enabled: settings?.notifications_enabled !== false,
-    });
-  }, [settings?.primary_color, settings?.background_color, settings?.background_image_url, settings?.notifications_enabled]);
-
-  async function save() {
-    setErr(null);
-    setInfo(null);
-    setSaving(true);
-    try {
-      await upsertUserSettings(userId, draft);
-      setInfo("Gespeichert.");
-      onChange?.(draft);
-    } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Einstellungen</div>
-        <button style={styles.btn} onClick={save} disabled={saving}>
-          {saving ? "Speichere…" : "Speichern"}
-        </button>
-      </div>
-
-      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
-      {info ? <div style={{ ...styles.card, borderColor: "#d8e0ef", background: "#f7f9ff" }}>{info}</div> : null}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 10 }}>
-        <div style={styles.card}>
-          <div style={styles.h4}>Farben</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10, alignItems: "center" }}>
-            <div style={{ color: "#666", fontSize: 13 }}>Primärfarbe (Buttons / aktiver Tab)</div>
-            <input
-              type="color"
-              value={draft.primary_color || "#0b6b2a"}
-              onChange={(e) => setDraft((d) => ({ ...d, primary_color: e.target.value }))}
-              style={styles.colorInput}
-            />
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10, alignItems: "center", marginTop: 10 }}>
-            <div style={{ color: "#666", fontSize: 13 }}>Hintergrundfarbe</div>
-            <input
-              type="color"
-              value={draft.background_color || "#f3f6fb"}
-              onChange={(e) => setDraft((d) => ({ ...d, background_color: e.target.value }))}
-              style={styles.colorInput}
-            />
-          </div>
-
-          <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
-            Tipp: Wir machen die finalen Styles (Layouts, Abstände, optische Feinheiten) sauber ganz zum Schluss.
-          </div>
-        </div>
-
-        <div style={styles.card}>
-          <div style={styles.h4}>Hintergrundbild (optional)</div>
-          <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
-            Wenn gesetzt, überschreibt das Bild die Hintergrundfarbe. (z.B. URL zu einem internen Bild oder CDN)
-          </div>
-          <input
-            value={draft.background_image_url}
-            onChange={(e) => setDraft((d) => ({ ...d, background_image_url: e.target.value }))}
-            placeholder="https://…"
-            style={{ ...styles.input, width: "100%" }}
-          />
-          <div style={{ marginTop: 12 }}>
-            <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <input
-                type="checkbox"
-                checked={!!draft.notifications_enabled}
-                onChange={(e) => setDraft((d) => ({ ...d, notifications_enabled: e.target.checked }))}
-              />
-              <span>Benachrichtigungen aktiv</span>
-            </label>
-          </div>
-
-          <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>
-            Hinweis: Die Benachrichtigung ist vorbereitet (Einstellung + Speicherung). Die echte Notification-Logik (E-Mail/Push) bauen wir als eigenes Paket.
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-/* ---------------- Main Component ---------------- */
-export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState("board");
-  const [auth, setAuth] = useState({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
-  const [authLoading, setAuthLoading] = useState(true);
-  const [authError, setAuthError] = useState(null);
-
-  const [userSettings, setUserSettings] = useState(null);
-  const [settingsLoading, setSettingsLoading] = useState(false);
-
-
-  async function refreshAuth() {
-    setAuthLoading(true);
-    setAuthError(null);
-
-    try {
-      const ctx = await loadMyAuthContext();
-      setAuth(ctx);
-      if (ctx?.profile?.id) {
-        setSettingsLoading(true);
-        const s = await loadUserSettings(ctx.profile.id);
-        setUserSettings(s);
-        setSettingsLoading(false);
-      } else {
-        setUserSettings(null);
-      }
-    } catch (e) {
-      console.error("Auth init failed:", e);
-      setAuth({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
-      setAuthError(e?.message || String(e));
-    } finally {
-      setAuthLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    refreshAuth();
-
-    const { data: sub } = supabase.auth.onAuthStateChange(() => {
-      refreshAuth();
-    });
-
-    return () => {
-      sub?.subscription?.unsubscribe?.();
-    };
-  }, []);
-
-  async function signOut() {
-    await supabase.auth.signOut();
-  }
-
-  const primary = userSettings?.primary_color || "#0b6b2a";
-  const pageBg = userSettings?.background_color || "#f3f6fb";
-  const bgImg = (userSettings?.background_image_url || "").trim();
-  const pageStyle = {
-    ...styles.page,
-    "--primary": primary,
-    "--page-bg": pageBg,
-    ...(bgImg
-      ? {
-          backgroundImage: `url(${bgImg})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          backgroundAttachment: "fixed",
-        }
-      : {}),
-  };
-
-  
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    return (
-      <div style={pageStyle}>
-        <div style={styles.panel}>
-          <div style={styles.h3}>Konfiguration fehlt</div>
-          <div>Bitte setze NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY.</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (authLoading) {
-    return (
-      <div style={pageStyle}>
-        <div style={styles.panel}>Lade…</div>
-      </div>
-    );
-  }
-
-  if (auth.inactive) {
-    return (
-      <div style={pageStyle}>
-        <div style={styles.panel}>
-          <div style={styles.h3}>Zugang deaktiviert</div>
-          <div>Dein Zugang ist aktuell deaktiviert. Bitte melde dich bei der Administration.</div>
-          <div style={{ marginTop: 12 }}>
-            <button style={styles.btn} onClick={signOut}>
-              Abmelden
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!auth.user) {
-    return (
-      <div style={pageStyle}>
-        <div style={styles.panel}>
-          <div style={styles.h3}>Bitte anmelden</div>
-          <div style={{ color: "#666" }}>
-            Du bist nicht eingeloggt. Bitte melde dich über die Login-Seite an.
-          </div>
-
-          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button
-              style={styles.btnPrimary}
-              onClick={() => (window.location.href = "/login")}
-            >
-              Zur Login-Seite
-            </button>
-            <button style={styles.btn} onClick={refreshAuth}>
-              Neu laden
-            </button>
-          </div>
-
-          {authError ? <div style={styles.error}>Fehler: {authError}</div> : null}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={pageStyle}>
-      <div style={styles.topbar}>
-        <div style={styles.brand}>Armaturenbrett</div>
-
-        <div style={styles.tabs}>
-          <TabBtn active={activeTab === "board"} onClick={() => setActiveTab("board")}>
-            Planke
-          </TabBtn>
-<TabBtn active={activeTab === "kanboard"} onClick={() => setActiveTab("kanboard")}>
-  Kanboard
-</TabBtn>
-          <TabBtn active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>
-            Kalender
-          </TabBtn>
-
-          <TabBtn active={activeTab === "guides"} onClick={() => setActiveTab("guides")}>
-            Anleitungen
-          </TabBtn>
-
-          <TabBtn active={activeTab === "areas"} onClick={() => setActiveTab("areas")}>
-            Bereiche
-          </TabBtn>
-
-          <TabBtn active={activeTab === "settings"} onClick={() => setActiveTab("settings")}>
-            Einstellungen
-          </TabBtn>
-
-          {auth.isAdmin ? (
-            <TabBtn active={activeTab === "users"} onClick={() => setActiveTab("users")}>
-              Nutzer
-            </TabBtn>
-          ) : null}
-
-          <button style={styles.btn} onClick={refreshAuth}>
-            Neu laden
-          </button>
-        </div>
-
-        <div style={styles.right}>
-          <div style={{ color: "#555", fontSize: 14 }}>{auth.profile?.email || auth.user.email}</div>
-          <button style={styles.btn} onClick={signOut}>
-            Abmelden
-          </button>
-        </div>
-      </div>
-
-      {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
-
-      {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
-{activeTab === "kanboard" ? <KanboardPanel /> : null}
-      {activeTab === "calendar" ? <CalendarPanel /> : null}
-      {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "settings" ? (
-        <UserSettingsPanel userId={auth.profile?.id} settings={userSettings} onChange={(s) => setUserSettings((prev) => ({ ...(prev || {}), ...(s || {}) }))} />
-      ) : null}
-      {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
-
-      <div style={{ height: 24 }} />
-    </div>
-      </div>
-    </div>
-  );
-}
-
-function TabBtn({ active, onClick, children }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        ...styles.tab,
-        ...(active ? styles.tabActive : {}),
-      }}
-    >
-      {children}
-    </button>
-  );
+function setSubDonePatch(sub, next) {
+  if (!sub) return { field: "is_done", value: !!next };
+  if ("is_done" in sub) return { field: "is_done", value: !!next };
+  if ("done" in sub) return { field: "done", value: !!next };
+  if ("completed" in sub) return { field: "completed", value: !!next };
+  if ("status" in sub) return { field: "status", value: next ? "done" : "todo" };
+  return { field: "is_done", value: !!next };
 }
 
 /* ---------------- Styles ---------------- */
+
 const styles = {
-  page: {
-    minHeight: "100vh",
-    background: "var(--page-bg, #f3f6fb)",
-    padding: 18,
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-  },
-  topbar: {
+  page: { minHeight: "100vh", background: "#f4f7fb" },
+  wrap: { maxWidth: 1180, margin: "0 auto", padding: "18px 14px 80px" },
+  topBar: {
     display: "flex",
-    gap: 14,
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 14,
-  },
-  brand: {
-    fontSize: 30,
-    fontWeight: 800,
-    letterSpacing: -0.5,
-  },
-  tabs: {
-    display: "flex",
-    gap: 10,
-    alignItems: "center",
-    flexWrap: "wrap",
-  },
-  tab: {
-    border: "1px solid #d8e0ef",
     background: "#fff",
-    padding: "10px 14px",
-    borderRadius: 999,
+    border: "1px solid #e6e9f0",
+    borderRadius: 12,
+    padding: "12px 14px",
+  },
+  brand: { fontSize: 20, fontWeight: 700 },
+  small: { fontSize: 12, color: "#666" },
+  tabs: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 },
+  tab: (active) => ({
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #111",
+    background: active ? "#0b6b2a" : "#fff",
+    color: active ? "#fff" : "#111",
     cursor: "pointer",
-    fontWeight: 600,
+    fontSize: 13,
+  }),
+  btn: {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #d0d7e2",
+    background: "#fff",
+    cursor: "pointer",
   },
-  tabActive: {
-    background: "var(--primary, #0b6b2a)",
-    borderColor: "var(--primary, #0b6b2a)",
+  btnPrimary: {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #0b6b2a",
+    background: "#0b6b2a",
     color: "#fff",
+    cursor: "pointer",
   },
-  right: {
-    display: "flex",
-    gap: 12,
-    alignItems: "center",
+  btnSmall: {
+    padding: "6px 9px",
+    borderRadius: 10,
+    border: "1px solid #d0d7e2",
+    background: "#fff",
+    cursor: "pointer",
+    fontSize: 12,
+  },
+  btnSmallPrimary: {
+    padding: "6px 9px",
+    borderRadius: 10,
+    border: "1px solid #0b6b2a",
+    background: "#0b6b2a",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: 12,
   },
   panel: {
     background: "#fff",
-    border: "1px solid #d8e0ef",
-    borderRadius: 18,
-    padding: 16,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
-    marginBottom: 14,
-  },
-
-  calendarOuter: {
-    maxWidth: 1280,
-    margin: '0 auto',
-  },
-  calendarPanelCard: {
-    background: 'rgba(255,255,255,0.92)',
-    border: '1px solid rgba(216,224,239,0.9)',
-    borderRadius: 18,
-    padding: 16,
-    boxShadow: '0 18px 50px rgba(0,0,0,0.10)',
-    backdropFilter: 'blur(10px)',
-    WebkitBackdropFilter: 'blur(10px)',
-    marginBottom: 14,
-  },
-  calendarHint: {
-    fontSize: 12,
-    color: '#5b6b86',
-    marginTop: 8,
-  },
-  h3: {
-    fontSize: 18,
-    fontWeight: 800,
-    marginBottom: 10,
-  },
-  h4: {
-    fontSize: 16,
-    fontWeight: 800,
-    marginBottom: 4,
-  },
-  rowBetween: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  columns: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 14,
-  },
-  col: {
-    background: "transparent",
-  },
-  colHeader: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 10,
-  },
-  badge: {
-    minWidth: 28,
-    height: 28,
-    borderRadius: 999,
-    background: "#eef2fb",
-    border: "1px solid #d8e0ef",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontWeight: 700,
-    color: "#333",
-  },
-  pill: {
-    fontSize: 12,
-    padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px solid #d8e0ef",
-    background: "#f7f9ff",
-    fontWeight: 700,
-  },
-  card: {
-    background: "#fff",
-    border: "1px solid #d8e0ef",
-    borderRadius: 18,
+    border: "1px solid #e6e9f0",
+    borderRadius: 14,
     padding: 14,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
+    marginTop: 12,
   },
+  h2: { fontSize: 16, fontWeight: 700, marginBottom: 10 },
+  h3: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
+  h4: { fontSize: 13, fontWeight: 700 },
   input: {
-    padding: 10,
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
+    width: "100%",
+    padding: "10px 10px",
+    borderRadius: 10,
+    border: "1px solid #d0d7e2",
     outline: "none",
+    fontSize: 13,
     background: "#fff",
-    minWidth: 160,
   },
   textarea: {
+    width: "100%",
+    padding: "10px 10px",
+    borderRadius: 10,
+    border: "1px solid #d0d7e2",
+    outline: "none",
+    fontSize: 13,
+    background: "#fff",
+    minHeight: 90,
+  },
+  select: {
+    width: "100%",
+    padding: "10px 10px",
+    borderRadius: 10,
+    border: "1px solid #d0d7e2",
+    outline: "none",
+    fontSize: 13,
+    background: "#fff",
+  },
+  grid3: { display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr", gap: 10 },
+  cols: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+  hr: { height: 1, background: "#e6e9f0", margin: "14px 0" },
+  error: {
+    background: "#fef2f2",
+    border: "1px solid #fecaca",
+    color: "#991b1b",
     padding: 10,
     borderRadius: 12,
-    border: "1px solid #d8e0ef",
-    outline: "none",
-    background: "#fff",
-    width: "100%",
-    resize: "vertical",
+    fontSize: 13,
+    whiteSpace: "pre-wrap",
   },
-  btn: {
-    padding: "10px 14px",
+  ok: {
+    background: "#ecfdf5",
+    border: "1px solid #a7f3d0",
+    color: "#065f46",
+    padding: 10,
     borderRadius: 12,
-    border: "1px solid #d8e0ef",
-    background: "#fff",
-    cursor: "pointer",
-    fontWeight: 700,
+    fontSize: 13,
+    whiteSpace: "pre-wrap",
   },
-  btnPrimary: {
-    padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid var(--primary, #0b6b2a)",
-    background: "var(--primary, #0b6b2a)",
-    color: "#fff",
-    cursor: "pointer",
-    fontWeight: 800,
-  },
-  btnSmall: {
-    padding: "8px 10px",
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
+  pill: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "2px 8px",
+    borderRadius: 999,
+    border: "1px solid #e6e9f0",
+    fontSize: 12,
+    color: "#111",
     background: "#fff",
-    cursor: "pointer",
-    fontWeight: 800,
+  },
+  dot: (c) => ({
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    background: c || "#94a3b8",
+    display: "inline-block",
+  }),
+  card: { border: "1px solid #e6e9f0", borderRadius: 12, padding: 12, background: "#fff" },
+  subRow: {
+    display: "grid",
+    gridTemplateColumns: "22px 1fr auto auto",
+    gap: 8,
+    alignItems: "center",
+    padding: "6px 0",
+    borderBottom: "1px dashed #eef2f7",
   },
   modalBackdrop: {
     position: "fixed",
@@ -3148,108 +265,2101 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     padding: 16,
-    zIndex: 9999,
+    zIndex: 50,
   },
   modal: {
     width: "min(900px, 96vw)",
-    maxHeight: "80vh",
+    maxHeight: "86vh",
     overflow: "auto",
     background: "#fff",
-    border: "1px solid #d8e0ef",
-    borderRadius: 18,
-    padding: 16,
-    boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+    borderRadius: 14,
+    border: "1px solid #e6e9f0",
+    padding: 14,
   },
   modalHeader: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
-  },
-  error: {
-    background: "#fff3f3",
-    border: "1px solid #ffd2d2",
-    color: "#a40000",
-    padding: 12,
-    borderRadius: 12,
-    marginTop: 10,
+    gap: 10,
+    borderBottom: "1px solid #eef2f7",
+    paddingBottom: 10,
     marginBottom: 10,
   },
-  taskFormGrid: {
-    display: "grid",
-    gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr 1fr auto",
-    gap: 10,
-    alignItems: "start",
-  },
-  subRow: {
-    display: "grid",
-    gridTemplateColumns: "24px 1fr 1fr 78px 56px 44px",
-    gap: 10,
-    alignItems: "center",
-  },
-  areaDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 999,
-    border: "1px solid #d8e0ef",
-    display: "inline-block",
-  },
-  btnSmallPrimary: {
-    padding: "8px 12px",
-    borderRadius: 12,
-    border: "1px solid var(--primary, #0b6b2a)",
-    background: "var(--primary, #0b6b2a)",
-    color: "#fff",
-    cursor: "pointer",
-    fontWeight: 900,
-  },
-  colorInput: {
-    width: 56,
-    height: 38,
-    padding: 0,
-    border: "1px solid #d8e0ef",
-    borderRadius: 12,
-    background: "#fff",
-    cursor: "pointer",
-  },
 
-  fileBtn: {
-    padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
-    background: "#fff",
-    cursor: "pointer",
-    fontWeight: 800,
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-  },
-  fileRow: {
-    display: "flex",
-    gap: 10,
-    alignItems: "center",
-    justifyContent: "space-between",
-    border: "1px solid #d8e0ef",
-    borderRadius: 12,
-    padding: "10px 12px",
-    background: "#fff",
-  },
-
-
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-  },
-  th: {
-    textAlign: "left",
-    padding: 10,
-    borderBottom: "1px solid #d8e0ef",
-    fontSize: 13,
-    color: "#555",
-  },
-  td: {
-    padding: 10,
-    borderBottom: "1px solid #eef2fb",
-    verticalAlign: "top",
-  },
+modalOverlay: {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(0,0,0,0.35)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 16,
+  zIndex: 50,
+},
+modalCard: {
+  width: "min(720px, 100%)",
+  background: "white",
+  borderRadius: 12,
+  border: "1px solid #e6e6e6",
+  padding: 16,
+  boxShadow: "0 20px 60px rgba(0,0,0,0.18)",
+},
 };
+
+/* ---------------- Main Page ---------------- */
+
+export default function DashboardPage() {
+  const [tab, setTab] = useState("plan"); // plan|kanboard|calendar|guides|users|settings
+  const [authUser, setAuthUser] = useState(null);
+  const [now, setNow] = useState(() => new Date());
+
+  const [loadingMeta, setLoadingMeta] = useState(false);
+  const [loadingTasks, setLoadingTasks] = useState(false);
+
+  const [areas, setAreas] = useState([]);
+  const [profiles, setProfiles] = useState([]);
+  const [guides, setGuides] = useState([]);
+
+  // Guides: Edit-Modal (Edit-Button kommt aus GuidesPanel)
+  const [editGuide, setEditGuide] = useState(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [editAreaId, setEditAreaId] = useState("");
+
+  const [tasks, setTasks] = useState([]);
+  const [subtasksByTaskId, setSubtasksByTaskId] = useState({});
+
+  const [metaError, setMetaError] = useState("");
+  const [taskError, setTaskError] = useState("");
+  const [info, setInfo] = useState("");
+
+  const ensureSupabase = useCallback(() => {
+    if (!supabase) {
+      throw new Error(
+        "Supabase ist nicht konfiguriert. Bitte NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY setzen."
+      );
+    }
+  }, []);
+
+  const loadAuth = useCallback(async () => {
+    try {
+      ensureSupabase();
+      const { data } = await supabase.auth.getSession();
+      setAuthUser(data?.session?.user || null);
+
+      supabase.auth.onAuthStateChange((_event, newSession) => {
+        setAuthUser(newSession?.user || null);
+      });
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase]);
+
+  useEffect(() => {
+    loadAuth();
+  }, [loadAuth]);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const loadMeta = useCallback(async () => {
+    setLoadingMeta(true);
+    setMetaError("");
+    try {
+      ensureSupabase();
+      const [areasRes, profilesRes, guidesRes] = await Promise.all([
+        supabase.from("areas").select("*").order("name", { ascending: true }),
+        supabase.from("profiles").select("*").order("name", { ascending: true }),
+        supabase.from("guides").select("*").order("title", { ascending: true }),
+      ]);
+
+      if (areasRes.error) throw areasRes.error;
+      if (profilesRes.error) throw profilesRes.error;
+
+      setAreas(areasRes.data || []);
+      setProfiles(profilesRes.data || []);
+      setGuides(guidesRes.error ? [] : guidesRes.data || []);
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    } finally {
+      setLoadingMeta(false);
+    }
+  }, [ensureSupabase]);
+
+  const loadTasksAndSubtasks = useCallback(async () => {
+    setLoadingTasks(true);
+    setTaskError("");
+    try {
+      ensureSupabase();
+      const tRes = await supabase
+        .from("tasks")
+        .select("*")
+        .order("due_at", { ascending: true, nullsFirst: true });
+      if (tRes.error) throw tRes.error;
+      setTasks(tRes.data || []);
+
+      const stRes = await supabase
+        .from("subtasks")
+        .select("*")
+        .order("created_at", { ascending: true });
+      if (stRes.error) {
+        setSubtasksByTaskId({});
+      } else {
+        const map = {};
+        (stRes.data || []).forEach((s) => {
+          const tid = s.task_id || s.parent_task_id;
+          if (!tid) return;
+          if (!map[tid]) map[tid] = [];
+          map[tid].push(s);
+        });
+        setSubtasksByTaskId(map);
+      }
+    } catch (e) {
+      setTaskError(String(e?.message || e));
+    } finally {
+      setLoadingTasks(false);
+    }
+  }, [ensureSupabase]);
+
+  const reloadAll = useCallback(async () => {
+    setInfo("");
+    await loadMeta();
+    await loadTasksAndSubtasks();
+  }, [loadMeta, loadTasksAndSubtasks]);
+
+  useEffect(() => {
+    if (authUser?.id) reloadAll();
+  }, [authUser?.id, reloadAll]);
+
+  const logout = useCallback(async () => {
+    try {
+      ensureSupabase();
+      await supabase.auth.signOut();
+      setInfo("Abgemeldet.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase]);
+
+  const profileById = useMemo(() => {
+    const m = {};
+    (profiles || []).forEach((p) => (m[p.id] = p));
+    return m;
+  }, [profiles]);
+
+  const areaById = useMemo(() => {
+    const m = {};
+    (areas || []).forEach((a) => (m[a.id] = a));
+    return m;
+  }, [areas]);
+
+  const currentProfile = useMemo(() => {
+    if (!authUser) return null;
+    return profiles.find((p) => p.id === authUser.id) || null;
+  }, [authUser, profiles]);
+
+  const isAdmin = useMemo(
+    () => safeLower(currentProfile?.role) === "admin",
+    [currentProfile]
+  );
+
+  const taskWithResolved = useMemo(() => {
+    return (tasks || []).map((t) => {
+      const areaObj = t.area_id ? areaById[t.area_id] : null;
+      const assignee = t.assignee_id ? profileById[t.assignee_id] : null;
+      const subs = subtasksByTaskId[t.id] || [];
+      const doneCount = subs.filter(getSubDone).length;
+      return { ...t, _areaObj: areaObj, _assignee: assignee, _subtasks: subs, _subDoneCount: doneCount };
+    });
+  }, [tasks, areaById, profileById, subtasksByTaskId]);
+
+  /* ---------------- CRUD ---------------- */
+
+  const createTask = useCallback(
+    async (payload) => {
+      setTaskError("");
+      setInfo("");
+      try {
+        ensureSupabase();
+        const ins = await supabase.from("tasks").insert(payload).select("*").single();
+        if (ins.error) throw ins.error;
+        setTasks((prev) => [ins.data, ...prev]);
+        setInfo("Aufgabe angelegt.");
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
+
+  const updateTask = useCallback(
+    async (taskId, patch) => {
+      setTaskError("");
+      setInfo("");
+      try {
+        ensureSupabase();
+        const res = await supabase.from("tasks").update(patch).eq("id", taskId).select("*").single();
+        if (res.error) throw res.error;
+        setTasks((prev) => prev.map((t) => (t.id === taskId ? res.data : t)));
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
+
+  const deleteTask = useCallback(
+    async (taskId) => {
+      setTaskError("");
+      setInfo("");
+      try {
+        ensureSupabase();
+        await supabase.from("subtasks").delete().eq("task_id", taskId);
+        const res = await supabase.from("tasks").delete().eq("id", taskId);
+        if (res.error) throw res.error;
+        setTasks((prev) => prev.filter((t) => t.id !== taskId));
+        setSubtasksByTaskId((prev) => {
+          const n = { ...prev };
+          delete n[taskId];
+          return n;
+        });
+        setInfo("Aufgabe gelöscht.");
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
+
+  const addSubtask = useCallback(
+    async (taskId, title) => {
+      setTaskError("");
+      try {
+        ensureSupabase();
+        const payload = { task_id: taskId, title: (title || "").trim() };
+        const res = await supabase.from("subtasks").insert(payload).select("*").single();
+        if (res.error) throw res.error;
+        setSubtasksByTaskId((prev) => {
+          const next = { ...prev };
+          next[taskId] = [...(next[taskId] || []), res.data];
+          return next;
+        });
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
+
+  const toggleSubtaskDone = useCallback(
+    async (sub) => {
+      setTaskError("");
+      try {
+        ensureSupabase();
+        const nextVal = !getSubDone(sub);
+        const { field, value } = setSubDonePatch(sub, nextVal);
+        const res = await supabase.from("subtasks").update({ [field]: value }).eq("id", sub.id).select("*").single();
+        if (res.error) throw res.error;
+        const tid = res.data.task_id || res.data.parent_task_id;
+        setSubtasksByTaskId((prev) => {
+          const next = { ...prev };
+          next[tid] = (next[tid] || []).map((s) => (s.id === sub.id ? res.data : s));
+          return next;
+        });
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
+
+  const deleteSubtask = useCallback(
+    async (sub) => {
+      setTaskError("");
+      try {
+        ensureSupabase();
+        const tid = sub.task_id || sub.parent_task_id;
+        const res = await supabase.from("subtasks").delete().eq("id", sub.id);
+        if (res.error) throw res.error;
+        setSubtasksByTaskId((prev) => {
+          const next = { ...prev };
+          next[tid] = (next[tid] || []).filter((s) => s.id !== sub.id);
+          return next;
+        });
+      } catch (e) {
+        setTaskError(String(e?.message || e));
+      }
+    },
+    [ensureSupabase]
+  );
+
+  /* ---------- Guides ---------- */
+
+  const [guideModal, setGuideModal] = useState({ open: false, guide: null, loading: false, error: "" });
+
+  const openGuide = useCallback(async (guideId) => {
+    setGuideModal({ open: true, guide: null, loading: true, error: "" });
+    try {
+      ensureSupabase();
+      const res = await supabase.from("guides").select("*").eq("id", guideId).single();
+      if (res.error) throw res.error;
+      setGuideModal({ open: true, guide: res.data, loading: false, error: "" });
+    } catch (e) {
+      setGuideModal({ open: true, guide: null, loading: false, error: String(e?.message || e) });
+    }
+  }, [ensureSupabase]);
+
+  const closeGuide = useCallback(() => setGuideModal({ open: false, guide: null, loading: false, error: "" }), []);
+
+  const uploadGuideFile = useCallback(async ({ file, title, description, area_id }) => {
+    setMetaError("");
+    setInfo("");
+    try {
+      ensureSupabase();
+      if (!file) throw new Error("Bitte Datei auswählen.");
+      const guideId = (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}_${Math.random()}`.replace(/\W+/g, ""));
+      const safeName = String(file.name || "upload").replace(/\s+/g, "_");
+      const objectPath = `${guideId}/${Date.now()}__${safeName}`;
+      const bucket = "guides";
+      const up = await supabase.storage.from(bucket).upload(objectPath, file, { upsert: false });
+      if (up.error) throw up.error;
+
+      const ins = await supabase.from("guides").insert({
+        id: guideId,
+        title: title?.trim() || file.name,
+        description: description || null,
+        area_id: area_id || null,
+        file_path: objectPath,
+        file_name: file.name || null,
+        file_mime: file.type || null,
+        file_size: typeof file.size === "number" ? file.size : null,
+        visibility: "team",
+        created_at: new Date().toISOString(),
+      }).select("*").single();
+      if (ins.error) throw ins.error;
+      setGuides((prev) => [ins.data, ...prev]);
+      setInfo("Anleitung hochgeladen.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase]);
+
+  
+const updateGuide = useCallback(
+  async (guideId, patch) => {
+    try {
+      const { error } = await supabase.from("guides").update(patch).eq("id", guideId);
+      if (error) throw error;
+      await loadMeta();
+      return true;
+    } catch (e) {
+      console.error(e);
+      setError(e?.message || "Fehler beim Speichern der Anleitung.");
+      return false;
+    }
+  },
+  [supabase, loadMeta]
+);
+
+const deleteGuide = useCallback(
+  async (g) => {
+    try {
+      // remove file (if any)
+      if (g?.file_path) {
+        const raw = String(g.file_path);
+        const pathInBucket = raw.startsWith("guides/") ? raw.slice("guides/".length) : raw;
+        await supabase.storage.from("guides").remove([pathInBucket]);
+      }
+      const { error } = await supabase.from("guides").delete().eq("id", g.id);
+      if (error) throw error;
+      await loadMeta();
+      return true;
+    } catch (e) {
+      console.error(e);
+      setError(e?.message || "Fehler beim Löschen der Anleitung.");
+      return false;
+    }
+  },
+  [supabase, loadMeta]
+);
+
+  const openEditGuide = useCallback((g) => {
+    setEditGuide(g);
+    setEditTitle(g?.title || "");
+    setEditDesc(g?.description || "");
+    setEditAreaId(g?.area_id || "");
+  }, []);
+
+const getGuideDownloadUrl = useCallback(async (g) => {
+    ensureSupabase();
+    const bucket = "guides";
+    const path = g.file_path;
+    if (!path) return null;
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60);
+    if (!error) return data?.signedUrl || null;
+    const pub = supabase.storage.from(bucket).getPublicUrl(path);
+    return pub?.data?.publicUrl || null;
+  }, [ensureSupabase]);
+
+  /* ---------- Profiles / Areas ---------- */
+
+  const upsertProfile = useCallback(async (profile) => {
+    setMetaError("");
+    setInfo("");
+    try {
+      ensureSupabase();
+      const res = await supabase.from("profiles").upsert(profile).select("*").single();
+      if (res.error) throw res.error;
+      await loadMeta();
+      setInfo("Profil gespeichert.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase, loadMeta]);
+
+  const upsertArea = useCallback(async (area) => {
+    setMetaError("");
+    setInfo("");
+    try {
+      ensureSupabase();
+      const res = await supabase.from("areas").upsert(area).select("*").single();
+      if (res.error) throw res.error;
+      await loadMeta();
+      setInfo("Bereich gespeichert.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase, loadMeta]);
+
+  /* ---------- Settings ---------- */
+
+  const [userSettings, setUserSettings] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!authUser?.id) return;
+        const sRes = await supabase.from("user_settings").select("*").eq("user_id", authUser.id).maybeSingle();
+        if (!sRes.error) setUserSettings(sRes.data || null);
+      } catch (_) {}
+    })();
+  }, [authUser?.id]);
+
+  useEffect(() => {
+    if (!userSettings) return;
+    try {
+      const root = document.documentElement;
+      if (userSettings.primary_color) root.style.setProperty("--stenau-primary", userSettings.primary_color);
+      if (userSettings.background_color) root.style.setProperty("--stenau-bg", userSettings.background_color);
+      if (userSettings.background_image_url) {
+        document.body.style.backgroundImage = `url(${userSettings.background_image_url})`;
+        document.body.style.backgroundSize = "cover";
+        document.body.style.backgroundAttachment = "fixed";
+      } else {
+        document.body.style.backgroundImage = "";
+      }
+    } catch (_) {}
+  }, [userSettings]);
+
+  const saveUserSettings = useCallback(async (patch) => {
+    setMetaError("");
+    setInfo("");
+    try {
+      ensureSupabase();
+      if (!authUser?.id) throw new Error("Nicht angemeldet.");
+      const res = await supabase.from("user_settings").upsert({ user_id: authUser.id, ...patch }).select("*").single();
+      if (res.error) throw res.error;
+      setUserSettings(res.data);
+      setInfo("Einstellungen gespeichert.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase, authUser?.id]);
+
+  /* ---------------- Render guards ---------------- */
+
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.wrap}>
+          <div style={styles.panel}>
+            <div style={styles.h2}>Supabase fehlt</div>
+            <div style={styles.error}>
+              Bitte setze NEXT_PUBLIC_SUPABASE_URL und NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel / .env.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authUser) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.wrap}>
+          <div style={styles.panel}>
+            <div style={styles.h2}>Nicht angemeldet</div>
+            <div style={{ color: "#666", fontSize: 13 }}>
+              Bitte zuerst einloggen (Supabase Auth).
+            </div>
+            {metaError ? <div style={{ ...styles.error, marginTop: 12 }}>{metaError}</div> : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.wrap}>
+        <div style={styles.topBar}>
+          <div>
+            <div style={styles.brand}>Stenau Dashboard</div>
+            <div style={styles.small}>
+              Angemeldet als {currentProfile?.name || authUser.email || authUser.id} · {isAdmin ? "Admin" : "User"}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button style={styles.btn} onClick={loadMeta} disabled={loadingMeta}>
+              {loadingMeta ? "Lade…" : "Meta neu laden"}
+            </button>
+            <button style={styles.btn} onClick={loadTasksAndSubtasks} disabled={loadingTasks}>
+              {loadingTasks ? "Lade…" : "Aufgaben neu laden"}
+            </button>
+            <button style={styles.btn} onClick={logout}>Logout</button>
+          </div>
+        </div>
+
+        <div style={styles.tabs}>
+          <button style={styles.tab(tab === "plan")} onClick={() => setTab("plan")}>Plan</button>
+          <button style={styles.tab(tab === "kanboard")} onClick={() => setTab("kanboard")}>Kanboard</button>
+          <button style={styles.tab(tab === "calendar")} onClick={() => setTab("calendar")}>Kalender</button>
+          <button style={styles.tab(tab === "guides")} onClick={() => setTab("guides")}>Anleitungen</button>
+          <button style={styles.tab(tab === "users")} onClick={() => setTab("users")}>Nutzer</button>
+          <button style={styles.tab(tab === "settings")} onClick={() => setTab("settings")}>Einstellungen</button>
+        </div>
+
+        {metaError ? <div style={{ ...styles.error, marginTop: 12 }}>{metaError}</div> : null}
+        {taskError ? <div style={{ ...styles.error, marginTop: 12 }}>{taskError}</div> : null}
+        {info ? <div style={{ ...styles.ok, marginTop: 12 }}>{info}</div> : null}
+
+        {tab === "plan" ? (
+          <PlanPanel
+            areas={areas}
+            profiles={profiles}
+            guides={guides}
+            tasks={taskWithResolved}
+            onCreateTask={createTask}
+            onUpdateTask={updateTask}
+            onDeleteTask={deleteTask}
+            onAddSubtask={addSubtask}
+            onToggleSubtask={toggleSubtaskDone}
+            onDeleteSubtask={deleteSubtask}
+            onGuideOpen={openGuide}
+          />
+        ) : null}
+
+        {tab === "kanboard" ? (
+          <KanboardPanel areas={areas} profiles={profiles} tasks={taskWithResolved} onUpdateTask={updateTask} onDeleteTask={deleteTask} />
+        ) : null}
+
+        {tab === "calendar" ? (
+          <CalendarPanel areas={areas} profiles={profiles} tasks={taskWithResolved} onUpdateTask={updateTask} />
+        ) : null}
+
+        {tab === "guides" ? (
+          <GuidesPanel areas={areas} guides={guides} isAdmin={isAdmin} onUpload={uploadGuideFile} onReload={loadMeta} onOpen={openGuide} getDownloadUrl={getGuideDownloadUrl} onUpdateGuide={updateGuide} onDeleteGuide={deleteGuide} />
+        ) : null}
+
+        {tab === "users" ? (
+          <UsersPanel areas={areas} profiles={profiles} currentUserId={authUser.id} isAdmin={isAdmin} onUpsertProfile={upsertProfile} onUpsertArea={upsertArea} />
+        ) : null}
+
+        {tab === "settings" ? (
+          <SettingsPanel settings={userSettings} onSave={saveUserSettings} />
+        ) : null}
+
+        {guideModal.open ? (
+          <div style={styles.modalBackdrop} onMouseDown={closeGuide}>
+            <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+              <div style={styles.modalHeader}>
+                <div style={styles.h3}>{guideModal.loading ? "Lade…" : guideModal.guide?.title || "Anleitung"}</div>
+                <button style={styles.btnSmall} onClick={closeGuide}>Schließen</button>
+              </div>
+              {guideModal.error ? <div style={styles.error}>{guideModal.error}</div> : null}
+              {!guideModal.loading && guideModal.guide ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {guideModal.guide.description ? <div style={{ color: "#666", fontSize: 13 }}>{guideModal.guide.description}</div> : null}
+                  {guideModal.guide.content ? (
+                    <div style={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.5 }}>{guideModal.guide.content}</div>
+                  ) : (
+                    <div style={{ color: "#666", fontSize: 13 }}>Kein Textinhalt.</div>
+                  )}
+                  {(guideModal.guide.path || guideModal.guide.file_path) ? (
+                    <GuideDownloadButton guide={guideModal.guide} getUrl={getGuideDownloadUrl} />
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+{editGuide && (
+  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
+    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
+      </div>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+        <div>
+          <div style={styles.label}>Titel</div>
+          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+        </div>
+
+        <div>
+          <div style={styles.label}>Beschreibung</div>
+          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.label}>Bereich</div>
+            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
+              <option value="">Ohne Bereich</option>
+              {(areas || []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={styles.label}>Sichtbarkeit</div>
+            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
+              <option value="team">Team</option>
+              <option value="private">Privat</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
+          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Components ---------------- */
+
+function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
+  const [form, setForm] = useState({ title: "", due_at: "", status: "todo", area_id: "", assignee_id: "", notes: "", guide_id: [] });
+  const [seriesForm, setSeriesForm] = useState({ title: "", area_id: "", assignee_id: "", start_at: "", recurrence: "weekly", interval: 1, count: 4, notes: "", guide_id: [] });
+  const [seriesMsg, setSeriesMsg] = useState("");
+
+  const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
+  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
+
+  const areaNameById = useMemo(() => {
+    const m = {};
+    for (const a of areas || []) m[a.id] = a.name;
+    return m;
+  }, [areas]);
+
+  const onGuideSelect = (e, setter) => {
+    const values = Array.from(e.target.selectedOptions).map((o) => o.value);
+    setter((f) => ({ ...f, guide_id: values }));
+  };
+
+  const createSeries = async () => {
+    setSeriesMsg("");
+    const title = (seriesForm.title || "").trim();
+    if (!title) return setSeriesMsg("Serienaufgabe: Titel fehlt.");
+    const start = seriesForm.start_at ? new Date(seriesForm.start_at) : null;
+    if (!start || Number.isNaN(start.getTime())) return setSeriesMsg("Serienaufgabe: Startdatum fehlt/ungültig.");
+    const count = Math.max(1, parseInt(seriesForm.count || 1, 10));
+    const interval = Math.max(1, parseInt(seriesForm.interval || 1, 10));
+    const rule = seriesForm.recurrence;
+    const seriesId = uuidv4();
+
+    const dates = [];
+    for (let i = 0; i < count; i++) {
+      if (rule === "daily") dates.push(addDays(start, i * interval));
+      else if (rule === "weekly") dates.push(addDays(start, i * 7 * interval));
+      else dates.push(addMonths(start, i * interval));
+    }
+
+    for (let i = 0; i < dates.length; i++) {
+      await onCreateTask({
+        title,
+        due_at: dates[i].toISOString(),
+        status: "todo",
+        area_id: seriesForm.area_id || null,
+        assignee_id: seriesForm.assignee_id || null,
+        notes: seriesForm.notes || null,
+        guide_id: firstGuideId(seriesForm.guide_id),
+        series_id: seriesId,
+        series_rule: rule,
+        series_interval: interval,
+        repeat_count: count,
+      });
+    }
+    setSeriesMsg("Serie angelegt.");
+  };
+
+  const groupedSeries = useMemo(() => {
+    const m = {};
+    (tasks || []).forEach((t) => {
+      if (!t.series_id) return;
+      if (!m[t.series_id]) m[t.series_id] = [];
+      m[t.series_id].push(t);
+    });
+    const items = Object.entries(m).map(([sid, list]) => {
+      list.sort((a, b) => new Date(a.due_at || 0) - new Date(b.due_at || 0));
+      const head = list[0];
+      return { series_id: sid, head, count: list.length };
+    });
+    items.sort((a, b) => String(a.head?.title || "").localeCompare(String(b.head?.title || ""), "de"));
+    return items;
+  }, [tasks]);
+
+  const columns = useMemo(() => {
+    const todo = [];
+    const done = [];
+    (tasks || []).forEach((t) => (safeLower(t.status) === "done" ? done : todo).push(t));
+    return { todo, done };
+  }, [tasks]);
+
+  return (
+    <div>
+      <div style={styles.panel}>
+        <div style={styles.h2}>Aufgabe anlegen</div>
+
+        <div style={styles.grid3}>
+          <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Titel" style={styles.input} />
+          <input type="datetime-local" value={form.due_at} onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))} style={styles.input} />
+          <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} style={styles.select}>
+            <option value="todo">Zu erledigen</option>
+            <option value="done">Erledigt</option>
+          </select>
+
+          <select value={form.area_id} onChange={(e) => setForm((f) => ({ ...f, area_id: e.target.value }))} style={styles.select}>
+            <option value="">– Bereich –</option>
+            {areaOpts.map((a) => (
+              <option key={a.id} value={a.id}>{a.label}</option>
+            ))}
+          </select>
+
+          <select value={form.assignee_id} onChange={(e) => setForm((f) => ({ ...f, assignee_id: e.target.value }))} style={styles.select}>
+            <option value="">– Zuständig –</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
+            <button
+              style={styles.btnPrimary}
+              onClick={() =>
+                onCreateTask({
+                  title: form.title?.trim(),
+                  due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+                  status: form.status || "todo",
+                  area_id: form.area_id || null,
+                  assignee_id: form.assignee_id || null,
+                  notes: form.notes || null,
+                  guide_id: firstGuideId(form.guide_id),
+                })
+              }
+            >
+              Anlegen
+            </button>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Notizen (optional)" style={styles.textarea} />
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 13, color: "#111", marginBottom: 6 }}>Anleitungen (Mehrfachauswahl möglich)</div>
+          <select multiple value={form.guide_id} onChange={(e) => onGuideSelect(e, setForm)} style={{ ...styles.select, height: 110 }}>
+            {(guides || []).map((g) => (
+              <option key={g.id} value={g.id}>{g.title}</option>
+            ))}
+          </select>
+          <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>Tipp: Strg/Cmd + Klick</div>
+        </div>
+      </div>
+
+      <div style={styles.panel}>
+        <div style={styles.h2}>Aufgaben</div>
+        <div style={styles.cols}>
+          <TaskColumn title="Zu erledigen" tasks={columns.todo} guides={guides} onUpdateTask={onUpdateTask} onDeleteTask={onDeleteTask} onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onGuideOpen={onGuideOpen} />
+          <TaskColumn title="Erledigt" tasks={columns.done} guides={guides} onUpdateTask={onUpdateTask} onDeleteTask={onDeleteTask} onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onGuideOpen={onGuideOpen} />
+        </div>
+      </div>
+
+      <div style={styles.panel}>
+        <div style={styles.h2}>Serienaufgabe</div>
+        <div style={styles.grid3}>
+          <input value={seriesForm.title} onChange={(e) => setSeriesForm((f) => ({ ...f, title: e.target.value }))} placeholder="Serientitel" style={styles.input} />
+          <input type="datetime-local" value={seriesForm.start_at} onChange={(e) => setSeriesForm((f) => ({ ...f, start_at: e.target.value }))} style={styles.input} />
+          <select value={seriesForm.recurrence} onChange={(e) => setSeriesForm((f) => ({ ...f, recurrence: e.target.value }))} style={styles.select}>
+            <option value="daily">Täglich</option>
+            <option value="weekly">Wöchentlich</option>
+            <option value="monthly">Monatlich</option>
+          </select>
+
+          <select value={seriesForm.area_id} onChange={(e) => setSeriesForm((f) => ({ ...f, area_id: e.target.value }))} style={styles.select}>
+            <option value="">– Bereich –</option>
+            {areaOpts.map((a) => (
+              <option key={a.id} value={a.id}>{a.label}</option>
+            ))}
+          </select>
+
+          <select value={seriesForm.assignee_id} onChange={(e) => setSeriesForm((f) => ({ ...f, assignee_id: e.target.value }))} style={styles.select}>
+            <option value="">– Zuständig –</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input type="number" min="1" value={seriesForm.interval} onChange={(e) => setSeriesForm((f) => ({ ...f, interval: e.target.value }))} style={{ ...styles.input, width: 140 }} placeholder="Intervall" />
+            <input type="number" min="1" value={seriesForm.count} onChange={(e) => setSeriesForm((f) => ({ ...f, count: e.target.value }))} style={{ ...styles.input, width: 140 }} placeholder="Anzahl" />
+            <button style={styles.btnPrimary} onClick={createSeries}>Serie anlegen</button>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <textarea value={seriesForm.notes} onChange={(e) => setSeriesForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Notizen (optional)" style={styles.textarea} />
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 13, color: "#111", marginBottom: 6 }}>Anleitungen (Mehrfachauswahl möglich)</div>
+          <select multiple value={seriesForm.guide_id} onChange={(e) => onGuideSelect(e, setSeriesForm)} style={{ ...styles.select, height: 110 }}>
+            {(guides || []).map((g) => (
+              <option key={g.id} value={g.id}>{g.title}</option>
+            ))}
+          </select>
+        </div>
+
+        {seriesMsg ? <div style={{ ...styles.ok, marginTop: 10 }}>{seriesMsg}</div> : null}
+
+        <div style={styles.hr} />
+        <div style={styles.h3}>Serienübersicht</div>
+        {(groupedSeries || []).length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Noch keine Serien.</div> : null}
+        <div style={{ display: "grid", gap: 10 }}>
+          {groupedSeries.map((s) => (
+            <div key={s.series_id} style={styles.card}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={styles.h4}>{s.head?.title || "Serie"}</div>
+                <span style={styles.pill}>Instanzen: {s.count}</span>
+                <span style={styles.pill}>Regel: {s.head?.series_rule || "—"}</span>
+                <span style={styles.pill}>Intervall: {s.head?.series_interval || 1}</span>
+                <span style={styles.pill}>Start: {s.head?.due_at ? fmtDateTime(s.head.due_at) : "—"}</span>
+                <button style={{ ...styles.btnSmall, marginLeft: "auto" }} onClick={() => {
+                  const list = (tasks || []).filter((t) => t.series_id === s.series_id);
+                  list.forEach((t) => onDeleteTask(t.id));
+                }}>Serie löschen</button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+{editGuide && (
+  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
+    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
+      </div>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+        <div>
+          <div style={styles.label}>Titel</div>
+          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+        </div>
+
+        <div>
+          <div style={styles.label}>Beschreibung</div>
+          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.label}>Bereich</div>
+            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
+              <option value="">Ohne Bereich</option>
+              {(areas || []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={styles.label}>Sichtbarkeit</div>
+            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
+              <option value="team">Team</option>
+              <option value="private">Privat</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
+          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+      </div>
+    </div>
+  );
+}
+
+function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
+  const [subDraft, setSubDraft] = useState({});
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h3}>{title} ({(tasks || []).length})</div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {(tasks || []).map((t) => {
+          const color = t._areaObj?.color || t.color || "#94a3b8";
+          const assigneeName =
+            t._assignee?.name ||
+            t._assignee?.full_name ||
+            t._assignee?.email ||
+            (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
+          const subs = t._subtasks || [];
+          const doneCount = t._subDoneCount || 0;
+          // guides can be stored as single uuid (guide_id) or as an array (guide_ids/guide_id)
+          const gidsSingle = Array.isArray(t.guide_id) ? t.guide_id : (t.guide_id ? [t.guide_id] : []);
+          const gidsArray = Array.isArray(t.guide_ids) ? t.guide_ids : [];
+          const gids = Array.from(new Set([...(gidsSingle || []), ...(gidsArray || [])]));
+
+          return (
+            <div key={t.id} style={styles.card}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={styles.dot(color)} />
+                <div style={{ fontWeight: 700 }}>{t.title}</div>
+                {t._areaObj?.name ? <span style={styles.pill}>{t._areaObj.name}</span> : null}
+                <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
+              </div>
+
+              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                Zuständig: {assigneeName} · Unteraufgaben: {doneCount}/{subs.length}
+              </div>
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                <button style={styles.btnSmall} onClick={() => onUpdateTask(t.id, { status: safeLower(t.status) === "done" ? "todo" : "done" })}>
+                  Status wechseln
+                </button>
+                <button style={styles.btnSmall} onClick={() => onDeleteTask(t.id)}>
+                  Aufgabe löschen
+                </button>
+                {gids.map((gid) => {
+                  const g = (guides || []).find((x) => x.id === gid);
+                  return (
+                    <button key={gid} style={styles.btnSmall} onClick={() => onGuideOpen(gid)}>
+                      Anleitung: {g?.title || gid}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input value={subDraft[t.id] || ""} onChange={(e) => setSubDraft((p) => ({ ...p, [t.id]: e.target.value }))} placeholder="Unteraufgabe hinzufügen…" style={styles.input} />
+                  <button
+                    style={styles.btnSmallPrimary}
+                    onClick={() => {
+                      const txt = (subDraft[t.id] || "").trim();
+                      if (!txt) return;
+                      onAddSubtask(t.id, txt);
+                      setSubDraft((p) => ({ ...p, [t.id]: "" }));
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 10 }}>
+                  {subs.length === 0 ? <div style={{ fontSize: 13, color: "#666" }}>Keine Unteraufgaben</div> : null}
+                  {subs.map((s) => (
+                    <div key={s.id} style={styles.subRow}>
+                      <input type="checkbox" checked={getSubDone(s)} onChange={() => onToggleSubtask(s)} />
+                      <div style={{ fontSize: 13 }}>{s.title}</div>
+                      <span style={styles.dot(s.color || "#94a3b8")} />
+                      <button style={styles.btnSmall} onClick={() => onDeleteSubtask(s)}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+{editGuide && (
+  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
+    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
+      </div>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+        <div>
+          <div style={styles.label}>Titel</div>
+          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+        </div>
+
+        <div>
+          <div style={styles.label}>Beschreibung</div>
+          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.label}>Bereich</div>
+            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
+              <option value="">Ohne Bereich</option>
+              {(areas || []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={styles.label}>Sichtbarkeit</div>
+            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
+              <option value="team">Team</option>
+              <option value="private">Privat</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
+          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+      </div>
+    </div>
+  );
+}
+
+function KanboardPanel({ areas, profiles, tasks, onUpdateTask, onDeleteTask }) {
+  const [view, setView] = useState("status");
+  const [areaFilter, setAreaFilter] = useState("");
+  const [userFilter, setUserFilter] = useState("");
+
+  const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
+  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
+
+  const areaNameById = useMemo(() => {
+    const m = {};
+    for (const a of areas || []) m[a.id] = a.name;
+    return m;
+  }, [areas]);
+
+  const filtered = useMemo(() => {
+    return (tasks || []).filter((t) => {
+      if (areaFilter && t.area_id !== areaFilter) return false;
+      if (userFilter && (t.assignee_id || "") !== userFilter) return false;
+      return true;
+    });
+  }, [tasks, areaFilter, userFilter]);
+
+  const byStatus = useMemo(() => {
+    const todo = [];
+    const done = [];
+    filtered.forEach((t) => (safeLower(t.status) === "done" ? done : todo).push(t));
+    return { todo, done };
+  }, [filtered]);
+
+  const byPerson = useMemo(() => {
+    const map = {};
+    filtered.forEach((t) => {
+      const key = t.assignee_id || "unassigned";
+      if (!map[key]) map[key] = [];
+      map[key].push(t);
+    });
+    return map;
+  }, [filtered]);
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h2}>Kanboard</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+        <button style={styles.btnSmallPrimary} onClick={() => setView("status")} disabled={view === "status"}>Status</button>
+        <button style={styles.btnSmallPrimary} onClick={() => setView("people")} disabled={view === "people"}>Personen</button>
+
+        <select value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} style={{ ...styles.select, width: 220 }}>
+          <option value="">Alle Bereiche</option>
+          {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+        </select>
+
+        <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={{ ...styles.select, width: 220 }}>
+          <option value="">Alle Nutzer</option>
+          {members.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+        </select>
+
+        <button style={styles.btnSmall} onClick={() => { setAreaFilter(""); setUserFilter(""); }}>Filter löschen</button>
+      </div>
+
+      <div style={styles.hr} />
+
+      {view === "status" ? (
+        <div style={styles.cols}>
+          <KanColumn title="Zu erledigen" tasks={byStatus.todo} onUpdateTask={onUpdateTask} onDeleteTask={onDeleteTask} />
+          <KanColumn title="Erledigt" tasks={byStatus.done} onUpdateTask={onUpdateTask} onDeleteTask={onDeleteTask} />
+        </div>
+      ) : (
+        <PeopleBoard tasksByPerson={byPerson} members={members} onUpdateTask={onUpdateTask} />
+      )}
+    </div>
+  );
+}
+
+function KanColumn({ title, tasks, onUpdateTask, onDeleteTask }) {
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h3}>{title} ({tasks.length})</div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {tasks.map((t) => (
+          <div key={t.id} style={styles.card}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ fontWeight: 700 }}>{t.title}</div>
+              <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDate(t.due_at) : ""}</div>
+            </div>
+            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <select value={safeLower(t.status) === "done" ? "done" : "todo"} onChange={(e) => onUpdateTask(t.id, { status: e.target.value })} style={{ ...styles.select, width: 160, padding: "8px 10px" }}>
+                <option value="todo">Zu erledigen</option>
+                <option value="done">Erledigt</option>
+              </select>
+              <button style={styles.btnSmall} onClick={() => onDeleteTask(t.id)}>Löschen</button>
+            </div>
+          </div>
+        ))}
+
+{editGuide && (
+  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
+    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
+      </div>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+        <div>
+          <div style={styles.label}>Titel</div>
+          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+        </div>
+
+        <div>
+          <div style={styles.label}>Beschreibung</div>
+          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.label}>Bereich</div>
+            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
+              <option value="">Ohne Bereich</option>
+              {(areas || []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={styles.label}>Sichtbarkeit</div>
+            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
+              <option value="team">Team</option>
+              <option value="private">Privat</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
+          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+      </div>
+    </div>
+  );
+}
+
+function PeopleBoard({ tasksByPerson, members, onUpdateTask }) {
+  const cols = useMemo(() => {
+    const keys = Object.keys(tasksByPerson || {});
+    keys.sort((a, b) => {
+      if (a === "unassigned") return -1;
+      if (b === "unassigned") return 1;
+      const la = members.find((m) => m.id === a)?.label || a;
+      const lb = members.find((m) => m.id === b)?.label || b;
+      return la.localeCompare(lb, "de");
+    });
+    return keys;
+  }, [tasksByPerson, members]);
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <div style={{ display: "flex", gap: 12, minWidth: 900 }}>
+        {cols.map((key) => {
+          const label = key === "unassigned" ? "Nicht zugeordnet" : members.find((m) => m.id === key)?.label || key;
+          const list = tasksByPerson[key] || [];
+          return (
+            <div key={key} style={{ minWidth: 260, maxWidth: 260 }}>
+              <div style={styles.card}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={styles.h4}>{label}</div>
+                  <span style={styles.pill}>{list.length}</span>
+                </div>
+                <div style={{ height: 10 }} />
+                {list.map((t) => (
+                  <div key={t.id} style={{ border: "1px solid #eef2f7", borderRadius: 10, padding: 10, marginBottom: 8 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{t.title}</div>
+                    <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>{t.due_at ? fmtDate(t.due_at) : ""}</div>
+                    <div style={{ marginTop: 8 }}>
+                      <button style={styles.btnSmall} onClick={() => onUpdateTask(t.id, { status: safeLower(t.status) === "done" ? "todo" : "done" })}>Status wechseln</button>
+                    </div>
+                  </div>
+                ))}
+                {list.length === 0 ? <div style={{ fontSize: 13, color: "#666" }}>—</div> : null}
+              </div>
+            </div>
+          );
+        })}
+
+{editGuide && (
+  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
+    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
+      </div>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+        <div>
+          <div style={styles.label}>Titel</div>
+          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+        </div>
+
+        <div>
+          <div style={styles.label}>Beschreibung</div>
+          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.label}>Bereich</div>
+            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
+              <option value="">Ohne Bereich</option>
+              {(areas || []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={styles.label}>Sichtbarkeit</div>
+            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
+              <option value="team">Team</option>
+              <option value="private">Privat</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
+          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+      </div>
+    </div>
+  );
+}
+
+function CalendarPanel({ areas, profiles, tasks, onUpdateTask }) {
+  const [view, setView] = useState("month");
+  const [cursor, setCursor] = useState(() => startOfDay(new Date()));
+  const [areaFilter, setAreaFilter] = useState("");
+  const [userFilter, setUserFilter] = useState("");
+
+  const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
+  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
+
+  const areaNameById = useMemo(() => {
+    const m = {};
+    for (const a of areas || []) m[a.id] = a.name;
+    return m;
+  }, [areas]);
+
+  const filtered = useMemo(() => {
+    return (tasks || []).filter((t) => {
+      if (!t.due_at) return false;
+      if (areaFilter && t.area_id !== areaFilter) return false;
+      if (userFilter && (t.assignee_id || "") !== userFilter) return false;
+      return true;
+    });
+  }, [tasks, areaFilter, userFilter]);
+
+  const monthLabel = useMemo(() => cursor.toLocaleDateString("de-DE", { month: "long", year: "numeric" }), [cursor]);
+
+  const weekStart = useMemo(() => {
+    const d = new Date(cursor);
+    const day = d.getDay();
+    const diff = (day + 6) % 7;
+    return startOfDay(addDays(d, -diff));
+  }, [cursor]);
+
+  const daysMonthGrid = useMemo(() => {
+    const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+    const firstDay = (first.getDay() + 6) % 7;
+    const start = addDays(first, -firstDay);
+    const days = [];
+    for (let i = 0; i < 42; i++) days.push(addDays(start, i));
+    return days;
+  }, [cursor]);
+
+  const tasksByDay = useMemo(() => {
+    const map = {};
+    filtered.forEach((t) => {
+      const d = startOfDay(new Date(t.due_at));
+      const key = d.toISOString().slice(0, 10);
+      if (!map[key]) map[key] = [];
+      map[key].push(t);
+    });
+    return map;
+  }, [filtered]);
+
+  const [selectedDay, setSelectedDay] = useState(() => startOfDay(new Date()));
+
+  const dayKey = (d) => startOfDay(d).toISOString().slice(0, 10);
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h2}>Kalender</div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button style={styles.btnSmallPrimary} onClick={() => setView("month")} disabled={view === "month"}>Monat</button>
+        <button style={styles.btnSmallPrimary} onClick={() => setView("week")} disabled={view === "week"}>Woche</button>
+
+        <button style={styles.btnSmall} onClick={() => setCursor((c) => (view === "month" ? new Date(c.getFullYear(), c.getMonth() - 1, 1) : addDays(c, -7)))}>←</button>
+        <div style={{ fontWeight: 700 }}>{view === "month" ? monthLabel : `Woche ab ${fmtDate(weekStart)}`}</div>
+        <button style={styles.btnSmall} onClick={() => setCursor((c) => (view === "month" ? new Date(c.getFullYear(), c.getMonth() + 1, 1) : addDays(c, 7)))}>→</button>
+
+        <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <select value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} style={{ ...styles.select, width: 220 }}>
+            <option value="">Alle Bereiche</option>
+            {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+          </select>
+
+          <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={{ ...styles.select, width: 220 }}>
+            <option value="">Alle Nutzer</option>
+            {members.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div style={styles.hr} />
+
+      {view === "month" ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
+          {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((d) => <div key={d} style={{ fontSize: 12, color: "#666", paddingLeft: 6 }}>{d}</div>)}
+          {daysMonthGrid.map((d, idx) => {
+            const k = dayKey(d);
+            const list = tasksByDay[k] || [];
+            const inMonth = d.getMonth() === cursor.getMonth();
+            const isSel = isSameDay(d, selectedDay);
+            return (
+              <div
+                key={idx}
+                onClick={() => setSelectedDay(startOfDay(d))}
+                style={{
+                  border: "1px solid #e6e9f0",
+                  borderRadius: 12,
+                  padding: 8,
+                  minHeight: 88,
+                  cursor: "pointer",
+                  background: isSel ? "#ecfdf5" : "#fff",
+                  opacity: inMonth ? 1 : 0.55,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700 }}>{d.getDate()}</div>
+                  {list.length ? <span style={styles.pill}>{list.length}</span> : null}
+                </div>
+                <div style={{ height: 6 }} />
+                {list.slice(0, 2).map((t) => (
+                  <div key={t.id} style={{ fontSize: 12, color: "#111", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>• {t.title}</div>
+                ))}
+                {list.length > 2 ? <div style={{ fontSize: 12, color: "#666" }}>+{list.length - 2} …</div> : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
+          {Array.from({ length: 7 }).map((_, i) => {
+            const d = addDays(weekStart, i);
+            const k = dayKey(d);
+            const list = tasksByDay[k] || [];
+            const isSel = isSameDay(d, selectedDay);
+            return (
+              <div
+                key={i}
+                onClick={() => setSelectedDay(startOfDay(d))}
+                style={{
+                  border: "1px solid #e6e9f0",
+                  borderRadius: 12,
+                  padding: 10,
+                  minHeight: 130,
+                  cursor: "pointer",
+                  background: isSel ? "#ecfdf5" : "#fff",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700 }}>{fmtDate(d)}</div>
+                  {list.length ? <span style={styles.pill}>{list.length}</span> : null}
+                </div>
+                <div style={{ height: 8 }} />
+                {list.slice(0, 4).map((t) => (
+                  <div key={t.id} style={{ fontSize: 12, color: "#111", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>• {t.title}</div>
+                ))}
+                {list.length > 4 ? <div style={{ fontSize: 12, color: "#666" }}>+{list.length - 4} …</div> : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ height: 12 }} />
+      <DayDetail day={selectedDay} tasks={(tasksByDay[dayKey(selectedDay)] || []).slice()} onUpdateTask={onUpdateTask} />
+    </div>
+  );
+}
+
+function DayDetail({ day, tasks, onUpdateTask }) {
+  return (
+    <div style={styles.card}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div style={styles.h3}>Aufgaben am {fmtDate(day)}</div>
+        <div style={styles.pill}>{tasks.length} Einträge</div>
+      </div>
+      <div style={{ height: 10 }} />
+      {tasks.length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Keine Einträge.</div> : null}
+      <div style={{ display: "grid", gap: 8 }}>
+        {tasks.map((t) => (
+          <div key={t.id} style={{ border: "1px solid #eef2f7", borderRadius: 10, padding: 10 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ fontWeight: 700 }}>{t.title}</div>
+              <div style={{ marginLeft: "auto", color: "#666", fontSize: 12 }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
+              <span style={styles.pill}>{safeLower(t.status) === "done" ? "Erledigt" : "Offen"}</span>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <button style={styles.btnSmall} onClick={() => onUpdateTask(t.id, { status: safeLower(t.status) === "done" ? "todo" : "done" })}>Status wechseln</button>
+            </div>
+          </div>
+        ))}
+
+{editGuide && (
+  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
+    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
+      </div>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+        <div>
+          <div style={styles.label}>Titel</div>
+          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+        </div>
+
+        <div>
+          <div style={styles.label}>Beschreibung</div>
+          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.label}>Bereich</div>
+            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
+              <option value="">Ohne Bereich</option>
+              {(areas || []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={styles.label}>Sichtbarkeit</div>
+            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
+              <option value="team">Team</option>
+              <option value="private">Privat</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
+          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+      </div>
+    </div>
+  );
+}
+
+function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDownloadUrl, onUpdateGuide, onDeleteGuide }) {
+  // Edit/Delete modal state
+  const [editGuide, setEditGuide] = useState(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editAreaId, setEditAreaId] = useState("");
+  const [editVisibility, setEditVisibility] = useState("private");
+
+  const [filterArea, setFilterArea] = useState("");
+  const [upload, setUpload] = useState({ file: null, title: "", description: "", area_id: "" });
+  const [urlMap, setUrlMap] = useState({});
+  const [loadingUrls, setLoadingUrls] = useState(false);
+
+  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
+
+  const areaNameById = useMemo(() => {
+    const m = {};
+    for (const a of areas || []) m[a.id] = a.name;
+    return m;
+  }, [areas]);
+
+  const filtered = useMemo(() => {
+    const list = guides || [];
+    if (!filterArea) return list;
+    return list.filter((g) => (g.area_id || "") === filterArea);
+  }, [guides, filterArea]);
+
+  const resolveUrls = async () => {
+    setLoadingUrls(true);
+    const next = {};
+    for (const g of filtered.slice(0, 40)) {
+      const url = await getDownloadUrl(g);
+      if (url) next[g.id] = url;
+    }
+    setUrlMap(next);
+    setLoadingUrls(false);
+  };
+
+
+const startEdit = (g) => {
+  setEditGuide(g);
+  setEditTitle(g.title || "");
+  setEditDescription(g.description || "");
+  setEditAreaId(g.area_id || "");
+  setEditVisibility(g.visibility || "team");
+};
+
+const saveEdit = async () => {
+  if (!editGuide) return;
+  const patch = {
+    title: editTitle?.trim() || null,
+    description: editDescription?.trim() || null,
+    area_id: editAreaId || null,
+    visibility: editVisibility || "team",
+    updated_at: new Date().toISOString(),
+  };
+  const ok = await onUpdateGuide?.(editGuide.id, patch);
+  if (ok !== false) {
+    setEditGuide(null);
+  }
+};
+
+const deleteGuide = async (g) => {
+  if (!g) return;
+  if (!confirm(`Anleitung wirklich löschen?\n\n${g.title || ""}`)) return;
+  await onDeleteGuide?.(g);
+};
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h2}>Anleitungen</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={{ ...styles.select, width: 260 }}>
+          <option value="">Alle Bereiche</option>
+          {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+        </select>
+
+        <button style={styles.btnSmall} onClick={onReload}>Neu laden</button>
+        <button style={styles.btnSmall} onClick={resolveUrls} disabled={loadingUrls}>{loadingUrls ? "Lade Links…" : "Datei-Links anzeigen"}</button>
+      </div>
+
+      <div style={styles.hr} />
+
+      {isAdmin ? (
+        <div style={styles.card}>
+          <div style={styles.h3}>Upload</div>
+          <div style={styles.grid3}>
+            <input value={upload.title} onChange={(e) => setUpload((u) => ({ ...u, title: e.target.value }))} placeholder="Titel (optional)" style={styles.input} />
+            <select value={upload.area_id} onChange={(e) => setUpload((u) => ({ ...u, area_id: e.target.value }))} style={styles.select}>
+              <option value="">– Bereich –</option>
+              {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            </select>
+            <input type="file" onChange={(e) => setUpload((u) => ({ ...u, file: e.target.files?.[0] || null }))} style={styles.input} />
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <input value={upload.description} onChange={(e) => setUpload((u) => ({ ...u, description: e.target.value }))} placeholder="Beschreibung (optional)" style={styles.input} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+            <button
+              style={styles.btnPrimary}
+              onClick={() =>
+                onUpload({ file: upload.file, title: upload.title, description: upload.description, area_id: upload.area_id || null }).then(() =>
+                  setUpload({ file: null, title: "", description: "", area_id: "" })
+                )
+              }
+            >
+              Hochladen
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ color: "#666", fontSize: 13 }}>Upload ist nur für Admin sichtbar.</div>
+      )}
+
+      <div style={{ height: 12 }} />
+
+      <div style={{ display: "grid", gap: 10 }}>
+        {filtered.map((g) => (
+          <div key={g.id} style={styles.card}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 700 }}>{g.title || "—"}</div>
+              {g.area_id ? <span style={styles.pill}>Bereich: {g.area_id ? (areaNameById[g.area_id] || g.area_id) : "Ohne Bereich"}</span> : <span style={styles.pill}>Ohne Bereich</span>}
+              <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button style={styles.btnSmall} onClick={() => onOpen(g.id)}>Öffnen</button>
+                {isAdmin && (
+                  <>
+                    <button style={styles.btnSmall} onClick={() => startEdit(g)}>Bearbeiten</button>
+                    <button style={{ ...styles.btnSmall, borderColor: "#d33", color: "#d33" }} onClick={() => deleteGuide(g)}>Löschen</button>
+                  </>
+                )}
+                {urlMap[g.id] ? (
+                  <a href={urlMap[g.id]} target="_blank" rel="noreferrer" style={{ ...styles.btnSmall, display: "inline-block", textDecoration: "none", color: "#111" }}>
+                    Datei öffnen
+                  </a>
+                ) : null}
+              </div>
+            </div>
+            {g.description ? <div style={{ marginTop: 6, color: "#666", fontSize: 13 }}>{g.description}</div> : null}
+            {(g.file_path) ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Datei: {(g.file_path)}</div> : null}
+          </div>
+        ))}
+        {filtered.length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Keine Anleitungen gefunden.</div> : null}
+
+{editGuide && (
+  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
+    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
+      </div>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+        <div>
+          <div style={styles.label}>Titel</div>
+          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+        </div>
+
+        <div>
+          <div style={styles.label}>Beschreibung</div>
+          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.label}>Bereich</div>
+            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
+              <option value="">Ohne Bereich</option>
+              {(areas || []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={styles.label}>Sichtbarkeit</div>
+            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
+              <option value="team">Team</option>
+              <option value="private">Privat</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
+          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+      </div>
+    </div>
+  );
+}
+
+function UsersPanel({ areas, profiles, currentUserId, isAdmin, onUpsertProfile, onUpsertArea }) {
+  const [draftNew, setDraftNew] = useState({ id: "", email: "", name: "", role: "user", area_id: "" });
+  const [editId, setEditId] = useState("");
+  const [edit, setEdit] = useState({ id: "", email: "", name: "", role: "user", area_id: "" });
+
+  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name, color: a.color || "#94a3b8" })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
+
+  const startEdit = (p) => {
+    setEditId(p.id);
+    setEdit({
+      id: p.id,
+      email: p.email || "",
+      name: p.name || p.full_name || "",
+      role: p.role || "user",
+      area_id: p.area_id || "",
+    });
+  };
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h2}>Nutzer</div>
+      <div style={{ color: "#666", fontSize: 13 }}>Quelle: profiles · Angemeldete ID: {currentUserId}</div>
+
+      <div style={styles.hr} />
+
+      {isAdmin ? (
+        <div style={styles.card}>
+          <div style={styles.h3}>Profil anlegen (für bestehenden Auth-User)</div>
+          <div style={styles.grid3}>
+            <input value={draftNew.id} onChange={(e) => setDraftNew((d) => ({ ...d, id: e.target.value }))} placeholder="User-ID (uuid)" style={styles.input} />
+            <input value={draftNew.email} onChange={(e) => setDraftNew((d) => ({ ...d, email: e.target.value }))} placeholder="E-Mail" style={styles.input} />
+            <input value={draftNew.name} onChange={(e) => setDraftNew((d) => ({ ...d, name: e.target.value }))} placeholder="Name" style={styles.input} />
+
+            <select value={draftNew.role} onChange={(e) => setDraftNew((d) => ({ ...d, role: e.target.value }))} style={styles.select}>
+              <option value="user">user</option>
+              <option value="admin">admin</option>
+            </select>
+
+            <select value={draftNew.area_id} onChange={(e) => setDraftNew((d) => ({ ...d, area_id: e.target.value }))} style={styles.select}>
+              <option value="">– Standard-Bereich –</option>
+              {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            </select>
+
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                style={styles.btnPrimary}
+                onClick={() => {
+                  onUpsertProfile({
+                    id: draftNew.id.trim(),
+                    email: draftNew.email.trim() || null,
+                    name: draftNew.name.trim() || null,
+                    role: draftNew.role || "user",
+                    area_id: draftNew.area_id || null,
+                  });
+                  setDraftNew({ id: "", email: "", name: "", role: "user", area_id: "" });
+                }}
+              >
+                Anlegen
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isAdmin ? (
+        <div style={{ ...styles.card, marginTop: 12 }}>
+          <div style={styles.h3}>Bereiche verwalten</div>
+          <AreaManager areas={areas} onUpsertArea={onUpsertArea} />
+        </div>
+      ) : null}
+
+      <div style={{ ...styles.card, marginTop: 12 }}>
+        <div style={styles.h3}>Liste</div>
+        <div style={{ display: "grid", gap: 10 }}>
+          {(profiles || []).map((p) => (
+            <div key={p.id} style={{ border: "1px solid #eef2f7", borderRadius: 12, padding: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 700 }}>{p.name || p.full_name || "—"}</div>
+                  <div style={{ fontSize: 12, color: "#666" }}>{p.email || ""}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={styles.pill}>{p.role || "user"}</span>
+                  {isAdmin ? <button style={styles.btnSmall} onClick={() => startEdit(p)}>Bearbeiten</button> : null}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {isAdmin && editId ? (
+        <div style={{ ...styles.modalBackdrop, zIndex: 60 }} onMouseDown={() => setEditId("")}>
+          <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div style={styles.h3}>Profil bearbeiten</div>
+              <button style={styles.btnSmall} onClick={() => setEditId("")}>Schließen</button>
+            </div>
+
+            <div style={styles.grid3}>
+              <input value={edit.id} readOnly style={{ ...styles.input, background: "#f8fafc" }} />
+              <input value={edit.email} onChange={(e) => setEdit((d) => ({ ...d, email: e.target.value }))} placeholder="E-Mail" style={styles.input} />
+              <input value={edit.name} onChange={(e) => setEdit((d) => ({ ...d, name: e.target.value }))} placeholder="Name" style={styles.input} />
+
+              <select value={edit.role} onChange={(e) => setEdit((d) => ({ ...d, role: e.target.value }))} style={styles.select}>
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </select>
+
+              <select value={edit.area_id} onChange={(e) => setEdit((d) => ({ ...d, area_id: e.target.value }))} style={styles.select}>
+                <option value="">– Standard-Bereich –</option>
+                {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+              </select>
+
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  style={styles.btnPrimary}
+                  onClick={() => {
+                    onUpsertProfile({
+                      id: edit.id,
+                      email: edit.email.trim() || null,
+                      name: edit.name.trim() || null,
+                      role: edit.role || "user",
+                      area_id: edit.area_id || null,
+                    });
+                    setEditId("");
+                  }}
+                >
+                  Speichern
+                </button>
+              </div>
+            </div>
+
+            <div style={{ fontSize: 12, color: "#666", marginTop: 8 }}>
+              Einladungen/Passwort-Reset brauchen Admin-Server-Keys – bauen wir separat.
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AreaManager({ areas, onUpsertArea }) {
+  const [draft, setDraft] = useState({ id: "", name: "", color: "#94a3b8" });
+
+  return (
+    <div>
+      <div style={styles.grid3}>
+        <input value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Bereichsname" style={styles.input} />
+        <input type="color" value={draft.color} onChange={(e) => setDraft((d) => ({ ...d, color: e.target.value }))} style={{ ...styles.input, padding: 6, height: 42 }} />
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button style={styles.btnSmallPrimary} onClick={() => {
+            onUpsertArea({ id: draft.id || undefined, name: draft.name.trim(), color: draft.color });
+            setDraft({ id: "", name: "", color: "#94a3b8" });
+          }}>Bereich speichern</button>
+        </div>
+      </div>
+
+      <div style={{ height: 10 }} />
+
+      <div style={{ display: "grid", gap: 8 }}>
+        {(areas || []).map((a) => (
+          <div key={a.id} style={{ display: "flex", gap: 10, alignItems: "center", border: "1px solid #eef2f7", borderRadius: 12, padding: 10 }}>
+            <span style={styles.dot(a.color || "#94a3b8")} />
+            <div style={{ fontWeight: 700 }}>{a.name}</div>
+            <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{a.id}</div>
+          </div>
+        ))}
+
+{editGuide && (
+  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
+    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
+      </div>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+        <div>
+          <div style={styles.label}>Titel</div>
+          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+        </div>
+
+        <div>
+          <div style={styles.label}>Beschreibung</div>
+          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.label}>Bereich</div>
+            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
+              <option value="">Ohne Bereich</option>
+              {(areas || []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={styles.label}>Sichtbarkeit</div>
+            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
+              <option value="team">Team</option>
+              <option value="private">Privat</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
+          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+      </div>
+    </div>
+  );
+}
+
+function SettingsPanel({ settings, onSave }) {
+  const [draft, setDraft] = useState(() => ({
+    primary_color: settings?.primary_color || "#0b6b2a",
+    background_color: settings?.background_color || "#f4f7fb",
+    background_image_url: settings?.background_image_url || "",
+  }));
+
+  useEffect(() => {
+    setDraft({
+      primary_color: settings?.primary_color || "#0b6b2a",
+      background_color: settings?.background_color || "#f4f7fb",
+      background_image_url: settings?.background_image_url || "",
+    });
+  }, [settings]);
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.h2}>Einstellungen</div>
+      <div style={{ color: "#666", fontSize: 13 }}>
+        Optional: Tabelle „user_settings“ (user_id, primary_color, background_color, background_image_url).
+      </div>
+
+      <div style={styles.hr} />
+
+      <div style={styles.grid3}>
+        <div>
+          <div style={{ fontSize: 13, marginBottom: 6 }}>Primärfarbe</div>
+          <input type="color" value={draft.primary_color} onChange={(e) => setDraft((d) => ({ ...d, primary_color: e.target.value }))} style={{ ...styles.input, padding: 6, height: 42 }} />
+        </div>
+
+        <div>
+          <div style={{ fontSize: 13, marginBottom: 6 }}>Hintergrundfarbe</div>
+          <input type="color" value={draft.background_color} onChange={(e) => setDraft((d) => ({ ...d, background_color: e.target.value }))} style={{ ...styles.input, padding: 6, height: 42 }} />
+        </div>
+
+        <div>
+          <div style={{ fontSize: 13, marginBottom: 6 }}>Hintergrundbild URL</div>
+          <input value={draft.background_image_url} onChange={(e) => setDraft((d) => ({ ...d, background_image_url: e.target.value }))} placeholder="https://…" style={styles.input} />
+        </div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button style={styles.btnPrimary} onClick={() => onSave(draft)}>Speichern</button>
+
+{editGuide && (
+  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
+    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
+      </div>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+        <div>
+          <div style={styles.label}>Titel</div>
+          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+        </div>
+
+        <div>
+          <div style={styles.label}>Beschreibung</div>
+          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.label}>Bereich</div>
+            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
+              <option value="">Ohne Bereich</option>
+              {(areas || []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={styles.label}>Sichtbarkeit</div>
+            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
+              <option value="team">Team</option>
+              <option value="private">Privat</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
+          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+      </div>
+    </div>
+  );
+}
+
+function GuideDownloadButton({ guide, getUrl }) {
+  const [loading, setLoading] = useState(false);
+  const open = async () => {
+    setLoading(true);
+    const url = await getUrl(guide);
+    setLoading(false);
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+  };
+  return (
+    <button style={styles.btnSmall} onClick={open} disabled={loading}>
+      {loading ? "Lade…" : "Datei öffnen"}
+    </button>
+  );
+}
