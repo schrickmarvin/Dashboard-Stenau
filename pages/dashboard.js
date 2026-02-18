@@ -590,32 +590,44 @@ useEffect(() => {
     try {
       ensureSupabase();
       if (!file) throw new Error("Bitte Datei auswählen.");
-      const path = `guides/${Date.now()}_${file.name}`.replace(/\s+/g, "_");
+
+      // 1) Datei in Storage hochladen (Bucket ist privat, daher später Signed-URL)
       const bucket = "guides";
-      const up = await supabase.storage.from(bucket).upload(path, file, { upsert: false });
+      const filePath = (`guides/${Date.now()}_${file.name}`).replace(/\s+/g, "_");
+      const up = await supabase.storage
+        .from(bucket)
+        .upload(filePath, file, { upsert: true });
+
       if (up.error) throw up.error;
 
-      const ins = await supabase.from("guides").insert({
-        title: title?.trim() || file.name,
-        description: description || null,
-        area_id: area_id || null,
-        bucket,
-        path,
-        mime_type: file.type || null,
-        size: file.size || null,
-      }).select("*").single();
+      // 2) Guide-Datensatz anlegen inkl. file_path / file_name
+      const ins = await supabase
+        .from("guides")
+        .insert([
+          {
+            title: title?.trim() || file.name,
+            description: description?.trim() || null,
+            area_id: area_id || null,
+            file_path: filePath,
+            file_name: file.name,
+          },
+        ])
+        .select("*")
+        .single();
+
       if (ins.error) throw ins.error;
-      setGuides((prev) => [ins.data, ...prev]);
+
       setInfo("Anleitung hochgeladen.");
+      await reloadMeta();
     } catch (e) {
-      setMetaError(String(e?.message || e));
+      setMetaError(e?.message || String(e));
     }
-  }, [ensureSupabase]);
+  }, [ensureSupabase, reloadMeta]);
 
   const getGuideDownloadUrl = useCallback(async (g) => {
     ensureSupabase();
-    const bucket = g.bucket || "guides";
-    const path = g.path || g.storage_path;
+    const bucket = "guides";
+    const path = g.file_path || g.storage_path;
     if (!path) return null;
     const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60);
     if (!error) return data?.signedUrl || null;
@@ -836,7 +848,7 @@ const deleteGuide = useCallback(
         ) : null}
 
         {tab === "guides" ? (
-          <GuidesPanel areas={areas} guides={guides} isAdmin={isAdmin} onUpload={uploadGuideFile} onReload={loadMeta} onOpen={openGuide} getDownloadUrl={getGuideDownloadUrl} />
+          <GuidesPanel areas={areas} guides={guides} isAdmin={isAdmin} onUpload={uploadGuideFile} onReload={loadMeta} onOpen={openGuide} getDownloadUrl={getGuideDownloadUrl} onUpdateGuide={updateGuide} onDeleteGuide={deleteGuide} />
         ) : null}
 
         {tab === "users" ? (
@@ -1605,7 +1617,7 @@ function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDo
             </div>
             {g.description ? <div style={{ marginTop: 6, color: "#666", fontSize: 13 }}>{g.description}</div> : null}
             {g.created_at ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Erstellt: {fmtDateTime(g.created_at)}</div> : null}
-            {(g.path || g.file_path) ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Datei: {g.path || g.file_path}</div> : null}
+            {(g.file_path || g.file_path) ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Datei: {g.file_path || g.file_path}</div> : null}
           </div>
         ))}
         {filtered.length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Keine Anleitungen gefunden.</div> : null}
