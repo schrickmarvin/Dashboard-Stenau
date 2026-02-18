@@ -955,6 +955,12 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
   const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
   const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
 
+  const areaNameById = useMemo(() => {
+    const m = {};
+    for (const a of areas || []) m[a.id] = a.name;
+    return m;
+  }, [areas]);
+
   const onGuideSelect = (e, setter) => {
     const values = Array.from(e.target.selectedOptions).map((o) => o.value);
     setter((f) => ({ ...f, guide_id: values }));
@@ -1351,6 +1357,12 @@ function KanboardPanel({ areas, profiles, tasks, onUpdateTask, onDeleteTask }) {
   const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
   const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
 
+  const areaNameById = useMemo(() => {
+    const m = {};
+    for (const a of areas || []) m[a.id] = a.name;
+    return m;
+  }, [areas]);
+
   const filtered = useMemo(() => {
     return (tasks || []).filter((t) => {
       if (areaFilter && t.area_id !== areaFilter) return false;
@@ -1586,6 +1598,12 @@ function CalendarPanel({ areas, profiles, tasks, onUpdateTask }) {
   const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
   const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
 
+  const areaNameById = useMemo(() => {
+    const m = {};
+    for (const a of areas || []) m[a.id] = a.name;
+    return m;
+  }, [areas]);
+
   const filtered = useMemo(() => {
     return (tasks || []).filter((t) => {
       if (!t.due_at) return false;
@@ -1813,6 +1831,12 @@ function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDo
 
   const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
 
+  const areaNameById = useMemo(() => {
+    const m = {};
+    for (const a of areas || []) m[a.id] = a.name;
+    return m;
+  }, [areas]);
+
   const filtered = useMemo(() => {
     const list = guides || [];
     if (!filterArea) return list;
@@ -1913,7 +1937,7 @@ const deleteGuide = async (g) => {
           <div key={g.id} style={styles.card}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <div style={{ fontWeight: 700 }}>{g.title || "—"}</div>
-              {g.area_id ? <span style={styles.pill}>Bereich: {g.area_id}</span> : <span style={styles.pill}>Ohne Bereich</span>}
+              {g.area_id ? <span style={styles.pill}>Bereich: {g.area_id ? (areaNameById[g.area_id] || g.area_id) : "Ohne Bereich"}</span> : <span style={styles.pill}>Ohne Bereich</span>}
               <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button style={styles.btnSmall} onClick={() => onOpen(g.id)}>Öffnen</button>
                 {isAdmin && (
