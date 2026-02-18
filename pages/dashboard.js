@@ -19,20 +19,15 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// App version (shown in header)
-const APP_VERSION = "2026.02.17.1";
-
-
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
+const APP_VERSION = "v2026.02.18";
+
 /* ---------------- Helpers ---------------- */
-
-const firstGuideId = (v) => (Array.isArray(v) ? (v[0] || null) : (v || null));
-
 
 function fmtDate(value) {
   if (!value) return "";
@@ -285,25 +280,6 @@ const styles = {
     paddingBottom: 10,
     marginBottom: 10,
   },
-
-modalOverlay: {
-  position: "fixed",
-  inset: 0,
-  background: "rgba(0,0,0,0.35)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: 16,
-  zIndex: 50,
-},
-modalCard: {
-  width: "min(720px, 100%)",
-  background: "white",
-  borderRadius: 12,
-  border: "1px solid #e6e6e6",
-  padding: 16,
-  boxShadow: "0 20px 60px rgba(0,0,0,0.18)",
-},
 };
 
 /* ---------------- Main Page ---------------- */
@@ -320,12 +296,6 @@ export default function DashboardPage() {
   const [profiles, setProfiles] = useState([]);
   const [guides, setGuides] = useState([]);
 
-  // Guides: Edit-Modal (Edit-Button kommt aus GuidesPanel)
-  const [editGuide, setEditGuide] = useState(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editDesc, setEditDesc] = useState("");
-  const [editAreaId, setEditAreaId] = useState("");
-
   const [tasks, setTasks] = useState([]);
   const [subtasksByTaskId, setSubtasksByTaskId] = useState({});
 
@@ -340,6 +310,12 @@ export default function DashboardPage() {
       );
     }
   }, []);
+
+
+useEffect(() => {
+  const t = setInterval(() => setNow(new Date()), 30000);
+  return () => clearInterval(t);
+}, []);
 
   const loadAuth = useCallback(async () => {
     try {
@@ -358,11 +334,6 @@ export default function DashboardPage() {
   useEffect(() => {
     loadAuth();
   }, [loadAuth]);
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
 
   const loadMeta = useCallback(async () => {
     setLoadingMeta(true);
@@ -619,24 +590,19 @@ export default function DashboardPage() {
     try {
       ensureSupabase();
       if (!file) throw new Error("Bitte Datei auswählen.");
-      const guideId = (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}_${Math.random()}`.replace(/\W+/g, ""));
-      const safeName = String(file.name || "upload").replace(/\s+/g, "_");
-      const objectPath = `${guideId}/${Date.now()}__${safeName}`;
+      const path = `guides/${Date.now()}_${file.name}`.replace(/\s+/g, "_");
       const bucket = "guides";
-      const up = await supabase.storage.from(bucket).upload(objectPath, file, { upsert: false });
+      const up = await supabase.storage.from(bucket).upload(path, file, { upsert: false });
       if (up.error) throw up.error;
 
       const ins = await supabase.from("guides").insert({
-        id: guideId,
         title: title?.trim() || file.name,
         description: description || null,
         area_id: area_id || null,
-        file_path: objectPath,
-        file_name: file.name || null,
-        file_mime: file.type || null,
-        file_size: typeof file.size === "number" ? file.size : null,
-        visibility: "team",
-        created_at: new Date().toISOString(),
+        bucket,
+        path,
+        mime_type: file.type || null,
+        size: file.size || null,
       }).select("*").single();
       if (ins.error) throw ins.error;
       setGuides((prev) => [ins.data, ...prev]);
@@ -646,62 +612,62 @@ export default function DashboardPage() {
     }
   }, [ensureSupabase]);
 
-  
-const updateGuide = useCallback(
-  async (guideId, patch) => {
-    try {
-      const { error } = await supabase.from("guides").update(patch).eq("id", guideId);
-      if (error) throw error;
-      await loadMeta();
-      return true;
-    } catch (e) {
-      console.error(e);
-      setError(e?.message || "Fehler beim Speichern der Anleitung.");
-      return false;
-    }
-  },
-  [supabase, loadMeta]
-);
-
-const deleteGuide = useCallback(
-  async (g) => {
-    try {
-      // remove file (if any)
-      if (g?.file_path) {
-        const raw = String(g.file_path);
-        const pathInBucket = raw.startsWith("guides/") ? raw.slice("guides/".length) : raw;
-        await supabase.storage.from("guides").remove([pathInBucket]);
-      }
-      const { error } = await supabase.from("guides").delete().eq("id", g.id);
-      if (error) throw error;
-      await loadMeta();
-      return true;
-    } catch (e) {
-      console.error(e);
-      setError(e?.message || "Fehler beim Löschen der Anleitung.");
-      return false;
-    }
-  },
-  [supabase, loadMeta]
-);
-
-  const openEditGuide = useCallback((g) => {
-    setEditGuide(g);
-    setEditTitle(g?.title || "");
-    setEditDesc(g?.description || "");
-    setEditAreaId(g?.area_id || "");
-  }, []);
-
-const getGuideDownloadUrl = useCallback(async (g) => {
+  const getGuideDownloadUrl = useCallback(async (g) => {
     ensureSupabase();
-    const bucket = "guides";
-    const path = g.file_path;
+    const bucket = g.bucket || "guides";
+    const path = g.path || g.storage_path;
     if (!path) return null;
     const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60);
     if (!error) return data?.signedUrl || null;
     const pub = supabase.storage.from(bucket).getPublicUrl(path);
     return pub?.data?.publicUrl || null;
   }, [ensureSupabase]);
+
+
+const updateGuide = useCallback(
+  async (guideId, patch) => {
+    try {
+      ensureSupabase();
+      const { data, error } = await supabase.from("guides").update(patch).eq("id", guideId).select("*").single();
+      if (error) throw error;
+      setGuides((prev) => prev.map((g) => (g.id === guideId ? data : g)));
+      setInfoMsg("Anleitung aktualisiert.");
+    } catch (e) {
+      console.error(e);
+      setMetaError(e?.message || "Fehler beim Aktualisieren der Anleitung.");
+    }
+  },
+  [ensureSupabase]
+);
+
+const deleteGuide = useCallback(
+  async (g) => {
+    try {
+      if (!isAdmin) return;
+      if (!confirm(`Anleitung wirklich löschen?\n\n${g?.title || g?.id}`)) return;
+
+      ensureSupabase();
+
+      // erst Datei löschen (falls vorhanden)
+      const path = g?.path || g?.file_path || g?.storage_path || null;
+      if (path) {
+        const { error: storageErr } = await supabase.storage.from("guides").remove([path]);
+        // Storage-Delete kann fehlschlagen (z.B. bereits gelöscht) -> nicht hart abbrechen
+        if (storageErr) console.warn("Storage remove:", storageErr.message);
+      }
+
+      const { error } = await supabase.from("guides").delete().eq("id", g.id);
+      if (error) throw error;
+
+      setGuides((prev) => prev.filter((x) => x.id !== g.id));
+      setInfoMsg("Anleitung gelöscht.");
+    } catch (e) {
+      console.error(e);
+      setMetaError(e?.message || "Fehler beim Löschen der Anleitung.");
+    }
+  },
+  [ensureSupabase, isAdmin]
+);
 
   /* ---------- Profiles / Areas ---------- */
 
@@ -818,7 +784,7 @@ const getGuideDownloadUrl = useCallback(async (g) => {
           <div>
             <div style={styles.brand}>Stenau Dashboard</div>
             <div style={styles.small}>
-              Angemeldet als {currentProfile?.name || authUser.email || authUser.id} · {isAdmin ? "Admin" : "User"}
+              Angemeldet als {currentProfile?.name || authUser.email || authUser.id} · {isAdmin ? "Admin" : "User"} · {fmtDateTime(now)} · {APP_VERSION}
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
@@ -870,7 +836,7 @@ const getGuideDownloadUrl = useCallback(async (g) => {
         ) : null}
 
         {tab === "guides" ? (
-          <GuidesPanel areas={areas} guides={guides} isAdmin={isAdmin} onUpload={uploadGuideFile} onReload={loadMeta} onOpen={openGuide} getDownloadUrl={getGuideDownloadUrl} onUpdateGuide={updateGuide} onDeleteGuide={deleteGuide} />
+          <GuidesPanel areas={areas} guides={guides} isAdmin={isAdmin} onUpload={uploadGuideFile} onReload={loadMeta} onOpen={openGuide} getDownloadUrl={getGuideDownloadUrl} />
         ) : null}
 
         {tab === "users" ? (
@@ -897,7 +863,7 @@ const getGuideDownloadUrl = useCallback(async (g) => {
                   ) : (
                     <div style={{ color: "#666", fontSize: 13 }}>Kein Textinhalt.</div>
                   )}
-                  {(guideModal.guide.path || guideModal.guide.file_path) ? (
+                  {(guideModal.guide.path || guideModal.guide.storage_path) ? (
                     <GuideDownloadButton guide={guideModal.guide} getUrl={getGuideDownloadUrl} />
                   ) : null}
                 </div>
@@ -905,54 +871,6 @@ const getGuideDownloadUrl = useCallback(async (g) => {
             </div>
           </div>
         ) : null}
-
-{editGuide && (
-  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
-    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
-        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
-      </div>
-
-      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-        <div>
-          <div style={styles.label}>Titel</div>
-          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
-        </div>
-
-        <div>
-          <div style={styles.label}>Beschreibung</div>
-          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.label}>Bereich</div>
-            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
-              <option value="">Ohne Bereich</option>
-              {(areas || []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div style={styles.label}>Sichtbarkeit</div>
-            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
-              <option value="team">Team</option>
-              <option value="private">Privat</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
-          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
       </div>
     </div>
   );
@@ -961,22 +879,16 @@ const getGuideDownloadUrl = useCallback(async (g) => {
 /* ---------------- Components ---------------- */
 
 function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
-  const [form, setForm] = useState({ title: "", due_at: "", status: "todo", area_id: "", assignee_id: "", notes: "", guide_id: [] });
-  const [seriesForm, setSeriesForm] = useState({ title: "", area_id: "", assignee_id: "", start_at: "", recurrence: "weekly", interval: 1, count: 4, notes: "", guide_id: [] });
+  const [form, setForm] = useState({ title: "", due_at: "", status: "todo", area_id: "", assignee_id: "", notes: "", guide_ids: [] });
+  const [seriesForm, setSeriesForm] = useState({ title: "", area_id: "", assignee_id: "", start_at: "", recurrence: "weekly", interval: 1, count: 4, notes: "", guide_ids: [] });
   const [seriesMsg, setSeriesMsg] = useState("");
 
   const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
   const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
 
-  const areaNameById = useMemo(() => {
-    const m = {};
-    for (const a of areas || []) m[a.id] = a.name;
-    return m;
-  }, [areas]);
-
   const onGuideSelect = (e, setter) => {
     const values = Array.from(e.target.selectedOptions).map((o) => o.value);
-    setter((f) => ({ ...f, guide_id: values }));
+    setter((f) => ({ ...f, guide_ids: values }));
   };
 
   const createSeries = async () => {
@@ -1005,7 +917,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
         area_id: seriesForm.area_id || null,
         assignee_id: seriesForm.assignee_id || null,
         notes: seriesForm.notes || null,
-        guide_id: firstGuideId(seriesForm.guide_id),
+        guide_ids: seriesForm.guide_ids || [],
         series_id: seriesId,
         series_rule: rule,
         series_interval: interval,
@@ -1076,7 +988,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
                   area_id: form.area_id || null,
                   assignee_id: form.assignee_id || null,
                   notes: form.notes || null,
-                  guide_id: firstGuideId(form.guide_id),
+                  guide_ids: form.guide_ids || [],
                 })
               }
             >
@@ -1091,7 +1003,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
 
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 13, color: "#111", marginBottom: 6 }}>Anleitungen (Mehrfachauswahl möglich)</div>
-          <select multiple value={form.guide_id} onChange={(e) => onGuideSelect(e, setForm)} style={{ ...styles.select, height: 110 }}>
+          <select multiple value={form.guide_ids} onChange={(e) => onGuideSelect(e, setForm)} style={{ ...styles.select, height: 110 }}>
             {(guides || []).map((g) => (
               <option key={g.id} value={g.id}>{g.title}</option>
             ))}
@@ -1146,7 +1058,7 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
 
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 13, color: "#111", marginBottom: 6 }}>Anleitungen (Mehrfachauswahl möglich)</div>
-          <select multiple value={seriesForm.guide_id} onChange={(e) => onGuideSelect(e, setSeriesForm)} style={{ ...styles.select, height: 110 }}>
+          <select multiple value={seriesForm.guide_ids} onChange={(e) => onGuideSelect(e, setSeriesForm)} style={{ ...styles.select, height: 110 }}>
             {(guides || []).map((g) => (
               <option key={g.id} value={g.id}>{g.title}</option>
             ))}
@@ -1175,54 +1087,6 @@ function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask,
             </div>
           ))}
         </div>
-
-{editGuide && (
-  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
-    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
-        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
-      </div>
-
-      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-        <div>
-          <div style={styles.label}>Titel</div>
-          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
-        </div>
-
-        <div>
-          <div style={styles.label}>Beschreibung</div>
-          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.label}>Bereich</div>
-            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
-              <option value="">Ohne Bereich</option>
-              {(areas || []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div style={styles.label}>Sichtbarkeit</div>
-            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
-              <option value="team">Team</option>
-              <option value="private">Privat</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
-          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
       </div>
     </div>
   );
@@ -1243,10 +1107,6 @@ function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSub
             (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
           const subs = t._subtasks || [];
           const doneCount = t._subDoneCount || 0;
-          // guides can be stored as single uuid (guide_id) or as an array (guide_ids/guide_id)
-          const gidsSingle = Array.isArray(t.guide_id) ? t.guide_id : (t.guide_id ? [t.guide_id] : []);
-          const gidsArray = Array.isArray(t.guide_ids) ? t.guide_ids : [];
-          const gids = Array.from(new Set([...(gidsSingle || []), ...(gidsArray || [])]));
 
           return (
             <div key={t.id} style={styles.card}>
@@ -1268,7 +1128,7 @@ function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSub
                 <button style={styles.btnSmall} onClick={() => onDeleteTask(t.id)}>
                   Aufgabe löschen
                 </button>
-                {gids.map((gid) => {
+                {(t.guide_ids || []).map((gid) => {
                   const g = (guides || []).find((x) => x.id === gid);
                   return (
                     <button key={gid} style={styles.btnSmall} onClick={() => onGuideOpen(gid)}>
@@ -1309,54 +1169,6 @@ function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSub
             </div>
           );
         })}
-
-{editGuide && (
-  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
-    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
-        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
-      </div>
-
-      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-        <div>
-          <div style={styles.label}>Titel</div>
-          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
-        </div>
-
-        <div>
-          <div style={styles.label}>Beschreibung</div>
-          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.label}>Bereich</div>
-            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
-              <option value="">Ohne Bereich</option>
-              {(areas || []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div style={styles.label}>Sichtbarkeit</div>
-            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
-              <option value="team">Team</option>
-              <option value="private">Privat</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
-          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
       </div>
     </div>
   );
@@ -1369,12 +1181,6 @@ function KanboardPanel({ areas, profiles, tasks, onUpdateTask, onDeleteTask }) {
 
   const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
   const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
-
-  const areaNameById = useMemo(() => {
-    const m = {};
-    for (const a of areas || []) m[a.id] = a.name;
-    return m;
-  }, [areas]);
 
   const filtered = useMemo(() => {
     return (tasks || []).filter((t) => {
@@ -1455,54 +1261,6 @@ function KanColumn({ title, tasks, onUpdateTask, onDeleteTask }) {
             </div>
           </div>
         ))}
-
-{editGuide && (
-  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
-    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
-        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
-      </div>
-
-      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-        <div>
-          <div style={styles.label}>Titel</div>
-          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
-        </div>
-
-        <div>
-          <div style={styles.label}>Beschreibung</div>
-          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.label}>Bereich</div>
-            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
-              <option value="">Ohne Bereich</option>
-              {(areas || []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div style={styles.label}>Sichtbarkeit</div>
-            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
-              <option value="team">Team</option>
-              <option value="private">Privat</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
-          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
       </div>
     </div>
   );
@@ -1549,54 +1307,6 @@ function PeopleBoard({ tasksByPerson, members, onUpdateTask }) {
             </div>
           );
         })}
-
-{editGuide && (
-  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
-    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
-        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
-      </div>
-
-      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-        <div>
-          <div style={styles.label}>Titel</div>
-          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
-        </div>
-
-        <div>
-          <div style={styles.label}>Beschreibung</div>
-          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.label}>Bereich</div>
-            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
-              <option value="">Ohne Bereich</option>
-              {(areas || []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div style={styles.label}>Sichtbarkeit</div>
-            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
-              <option value="team">Team</option>
-              <option value="private">Privat</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
-          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
       </div>
     </div>
   );
@@ -1610,12 +1320,6 @@ function CalendarPanel({ areas, profiles, tasks, onUpdateTask }) {
 
   const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
   const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
-
-  const areaNameById = useMemo(() => {
-    const m = {};
-    for (const a of areas || []) m[a.id] = a.name;
-    return m;
-  }, [areas]);
 
   const filtered = useMemo(() => {
     return (tasks || []).filter((t) => {
@@ -1783,79 +1487,27 @@ function DayDetail({ day, tasks, onUpdateTask }) {
             </div>
           </div>
         ))}
-
-{editGuide && (
-  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
-    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
-        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
-      </div>
-
-      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-        <div>
-          <div style={styles.label}>Titel</div>
-          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
-        </div>
-
-        <div>
-          <div style={styles.label}>Beschreibung</div>
-          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.label}>Bereich</div>
-            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
-              <option value="">Ohne Bereich</option>
-              {(areas || []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div style={styles.label}>Sichtbarkeit</div>
-            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
-              <option value="team">Team</option>
-              <option value="private">Privat</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
-          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
       </div>
     </div>
   );
 }
 
 function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDownloadUrl, onUpdateGuide, onDeleteGuide }) {
-  // Edit/Delete modal state
-  const [editGuide, setEditGuide] = useState(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editAreaId, setEditAreaId] = useState("");
-  const [editVisibility, setEditVisibility] = useState("private");
-
   const [filterArea, setFilterArea] = useState("");
   const [upload, setUpload] = useState({ file: null, title: "", description: "", area_id: "" });
   const [urlMap, setUrlMap] = useState({});
   const [loadingUrls, setLoadingUrls] = useState(false);
+  const [editGuide, setEditGuide] = useState(null);
+  const [editDraft, setEditDraft] = useState({ title: "", description: "", area_id: "" });
+
 
   const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
-
   const areaNameById = useMemo(() => {
     const m = {};
-    for (const a of areas || []) m[a.id] = a.name;
+    for (const a of (areas || [])) m[a.id] = a.name;
     return m;
   }, [areas]);
+
 
   const filtered = useMemo(() => {
     const list = guides || [];
@@ -1873,36 +1525,6 @@ function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDo
     setUrlMap(next);
     setLoadingUrls(false);
   };
-
-
-const startEdit = (g) => {
-  setEditGuide(g);
-  setEditTitle(g.title || "");
-  setEditDescription(g.description || "");
-  setEditAreaId(g.area_id || "");
-  setEditVisibility(g.visibility || "team");
-};
-
-const saveEdit = async () => {
-  if (!editGuide) return;
-  const patch = {
-    title: editTitle?.trim() || null,
-    description: editDescription?.trim() || null,
-    area_id: editAreaId || null,
-    visibility: editVisibility || "team",
-    updated_at: new Date().toISOString(),
-  };
-  const ok = await onUpdateGuide?.(editGuide.id, patch);
-  if (ok !== false) {
-    setEditGuide(null);
-  }
-};
-
-const deleteGuide = async (g) => {
-  if (!g) return;
-  if (!confirm(`Anleitung wirklich löschen?\n\n${g.title || ""}`)) return;
-  await onDeleteGuide?.(g);
-};
 
   return (
     <div style={styles.panel}>
@@ -1957,15 +1579,23 @@ const deleteGuide = async (g) => {
           <div key={g.id} style={styles.card}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <div style={{ fontWeight: 700 }}>{g.title || "—"}</div>
-              {g.area_id ? <span style={styles.pill}>Bereich: {g.area_id ? (areaNameById[g.area_id] || g.area_id) : "Ohne Bereich"}</span> : <span style={styles.pill}>Ohne Bereich</span>}
+              {g.area_id ? <span style={styles.pill}>Bereich: {areaNameById[g.area_id] || g.area_id}</span> : <span style={styles.pill}>Ohne Bereich</span>}
               <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button style={styles.btnSmall} onClick={() => onOpen(g.id)}>Öffnen</button>
-                {isAdmin && (
-                  <>
-                    <button style={styles.btnSmall} onClick={() => startEdit(g)}>Bearbeiten</button>
-                    <button style={{ ...styles.btnSmall, borderColor: "#d33", color: "#d33" }} onClick={() => deleteGuide(g)}>Löschen</button>
-                  </>
-                )}
+                {isAdmin ? (
+                  <button
+                    style={styles.btnSmall}
+                    onClick={() => {
+                      setEditGuide(g);
+                      setEditDraft({ title: g.title || "", description: g.description || "", area_id: g.area_id || "" });
+                    }}
+                  >
+                    Bearbeiten
+                  </button>
+                ) : null}
+                {isAdmin ? (
+                  <button style={styles.btnDangerSmall} onClick={() => onDeleteGuide(g)}>Löschen</button>
+                ) : null}
                 {urlMap[g.id] ? (
                   <a href={urlMap[g.id]} target="_blank" rel="noreferrer" style={{ ...styles.btnSmall, display: "inline-block", textDecoration: "none", color: "#111" }}>
                     Datei öffnen
@@ -1974,59 +1604,52 @@ const deleteGuide = async (g) => {
               </div>
             </div>
             {g.description ? <div style={{ marginTop: 6, color: "#666", fontSize: 13 }}>{g.description}</div> : null}
-            {(g.file_path) ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Datei: {(g.file_path)}</div> : null}
+            {g.created_at ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Erstellt: {fmtDateTime(g.created_at)}</div> : null}
+            {(g.path || g.file_path) ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Datei: {g.path || g.file_path}</div> : null}
           </div>
         ))}
         {filtered.length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Keine Anleitungen gefunden.</div> : null}
-
-{editGuide && (
-  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
-    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
-        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
       </div>
 
-      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-        <div>
-          <div style={styles.label}>Titel</div>
-          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
-        </div>
-
-        <div>
-          <div style={styles.label}>Beschreibung</div>
-          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.label}>Bereich</div>
-            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
-              <option value="">Ohne Bereich</option>
-              {(areas || []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div style={styles.label}>Sichtbarkeit</div>
-            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
-              <option value="team">Team</option>
-              <option value="private">Privat</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
-          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
-        </div>
+{editGuide ? (
+  <div style={styles.modalOverlay} onClick={() => setEditGuide(null)}>
+    <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div style={styles.h3}>Anleitung bearbeiten</div>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
+      </div>
+      <div style={{ height: 10 }} />
+      <div style={styles.grid3}>
+        <input value={editDraft.title} onChange={(e) => setEditDraft((d) => ({ ...d, title: e.target.value }))} placeholder="Titel" style={styles.input} />
+        <select value={editDraft.area_id} onChange={(e) => setEditDraft((d) => ({ ...d, area_id: e.target.value }))} style={styles.select}>
+          <option value="">– Bereich –</option>
+          {areaOpts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+        </select>
+        <div />
+      </div>
+      <div style={{ marginTop: 10 }}>
+        <input value={editDraft.description} onChange={(e) => setEditDraft((d) => ({ ...d, description: e.target.value }))} placeholder="Beschreibung" style={styles.input} />
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
+        <button
+          style={styles.btnSmallPrimary}
+          onClick={async () => {
+            await onUpdateGuide(editGuide.id, {
+              title: editDraft.title.trim() || null,
+              description: editDraft.description.trim() || null,
+              area_id: editDraft.area_id || null,
+            });
+            setEditGuide(null);
+          }}
+        >
+          Speichern
+        </button>
       </div>
     </div>
   </div>
-)}
-      </div>
+) : null}
+
     </div>
   );
 }
@@ -2200,54 +1823,6 @@ function AreaManager({ areas, onUpsertArea }) {
             <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{a.id}</div>
           </div>
         ))}
-
-{editGuide && (
-  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
-    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
-        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
-      </div>
-
-      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-        <div>
-          <div style={styles.label}>Titel</div>
-          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
-        </div>
-
-        <div>
-          <div style={styles.label}>Beschreibung</div>
-          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.label}>Bereich</div>
-            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
-              <option value="">Ohne Bereich</option>
-              {(areas || []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div style={styles.label}>Sichtbarkeit</div>
-            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
-              <option value="team">Team</option>
-              <option value="private">Privat</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
-          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
       </div>
     </div>
   );
@@ -2296,54 +1871,6 @@ function SettingsPanel({ settings, onSave }) {
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
         <button style={styles.btnPrimary} onClick={() => onSave(draft)}>Speichern</button>
-
-{editGuide && (
-  <div style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditGuide(null); }}>
-    <div style={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-        <div style={{ fontWeight: 800, fontSize: 16 }}>Anleitung bearbeiten</div>
-        <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Schließen</button>
-      </div>
-
-      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-        <div>
-          <div style={styles.label}>Titel</div>
-          <input style={styles.input} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
-        </div>
-
-        <div>
-          <div style={styles.label}>Beschreibung</div>
-          <textarea style={{ ...styles.input, minHeight: 90 }} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.label}>Bereich</div>
-            <select style={styles.input} value={editAreaId} onChange={(e) => setEditAreaId(e.target.value)}>
-              <option value="">Ohne Bereich</option>
-              {(areas || []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div style={styles.label}>Sichtbarkeit</div>
-            <select style={styles.input} value={editVisibility} onChange={(e) => setEditVisibility(e.target.value)}>
-              <option value="team">Team</option>
-              <option value="private">Privat</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-          <button style={styles.btnSmall} onClick={() => setEditGuide(null)}>Abbrechen</button>
-          <button style={{ ...styles.btnSmall, background: "#0a6", color: "white", borderColor: "#0a6" }} onClick={saveEdit}>Speichern</button>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
       </div>
     </div>
   );
