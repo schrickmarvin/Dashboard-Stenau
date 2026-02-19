@@ -113,7 +113,9 @@ function setSubDonePatch(sub, next) {
 /* ---------------- Styles ---------------- */
 
 const styles = {
-  page: { minHeight: "100vh", background: "#f4f7fb" },
+  // Hintergrund kommt vom <body> (user_settings: background_color / background_image_url).
+  // -> Page transparent lassen, sonst überdeckt sie das Background-Image.
+  page: { minHeight: "100vh", background: "transparent" },
   wrap: { maxWidth: 1180, margin: "0 auto", padding: "18px 14px 80px" },
   topBar: {
     display: "flex",
@@ -131,7 +133,7 @@ const styles = {
     padding: "8px 12px",
     borderRadius: 10,
     border: "1px solid #111",
-    background: active ? "#0b6b2a" : "#fff",
+    background: active ? "var(--stenau-primary, #0b6b2a)" : "#fff",
     color: active ? "#fff" : "#111",
     cursor: "pointer",
     fontSize: 13,
@@ -147,7 +149,7 @@ const styles = {
     padding: "8px 12px",
     borderRadius: 10,
     border: "1px solid #0b6b2a",
-    background: "#0b6b2a",
+    background: "var(--stenau-primary, #0b6b2a)",
     color: "#fff",
     cursor: "pointer",
   },
@@ -163,7 +165,7 @@ const styles = {
     padding: "6px 9px",
     borderRadius: 10,
     border: "1px solid #0b6b2a",
-    background: "#0b6b2a",
+    background: "var(--stenau-primary, #0b6b2a)",
     color: "#fff",
     cursor: "pointer",
     fontSize: 12,
