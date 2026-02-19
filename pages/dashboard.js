@@ -17,6 +17,7 @@
  */
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -284,7 +285,7 @@ const styles = {
 
 /* ---------------- Main Page ---------------- */
 
-export default function DashboardPage() {
+function DashboardPage() {
   const [tab, setTab] = useState("plan"); // plan|kanboard|calendar|guides|users|settings
   const [authUser, setAuthUser] = useState(null);
   const [now, setNow] = useState(() => new Date());
@@ -358,6 +359,11 @@ useEffect(() => {
       setLoadingMeta(false);
     }
   }, [ensureSupabase]);
+  // Alias für alte Referenzen (SSR/Build-Fehler vermeiden)
+  const reloadMeta = useCallback(async () => {
+    await loadMeta();
+  }, [loadMeta]);
+
 
   const loadTasksAndSubtasks = useCallback(async () => {
     setLoadingTasks(true);
@@ -1902,3 +1908,5 @@ function GuideDownloadButton({ guide, getUrl }) {
     </button>
   );
 }
+
+export default dynamic(() => Promise.resolve(DashboardPage), { ssr: false });
