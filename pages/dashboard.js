@@ -806,22 +806,83 @@ function TasksBoard({ isAdmin }) {
   );
 }
 
-function TaskColumn({ title, count, tasks, onToggle, areaById, guides, canWrite, getSubDraft, setSubDraft, onSubAdd, onSubUpdate, onSubDelete, onGuideOpen, members, onAssigneeChange }) {
+function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
+  const [subDraft, setSubDraft] = useState({});
   return (
-    <div style={styles.col}>
-      <div style={styles.colHeader}>
-        <div style={styles.h3}>{title}</div>
-        <div style={styles.badge}>{count}</div>
-      </div>
+    <div style={styles.panel}>
+      <div style={styles.h3}>{title} ({(tasks || []).length})</div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {(tasks || []).map((t) => {
+          const color = t._areaObj?.color || t.color || "#94a3b8";
+          const assigneeName =
+            t._assignee?.name ||
+            t._assignee?.full_name ||
+            t._assignee?.email ||
+            (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
+          const subs = t._subtasks || [];
+          const doneCount = t._subDoneCount || 0;
 
-      <div style={{ display: "grid", gap: 12 }}>
-{tasks.map((t) => {
-          const areaName = t.area || (t.area_id ? areaById.get(t.area_id)?.name : "–");
           return (
             <div key={t.id} style={styles.card}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <div style={styles.h4}>{t.title}
-        {tasks.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : null}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={styles.dot(color)} />
+                <div style={{ fontWeight: 700 }}>{t.title}</div>
+                {t._areaObj?.name ? <span style={styles.pill}>{t._areaObj.name}</span> : null}
+                <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
+              </div>
+
+              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                Zuständig: {assigneeName} · Unteraufgaben: {doneCount}/{subs.length}
+              </div>
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                <button style={styles.btnSmall} onClick={() => onUpdateTask(t.id, { status: safeLower(t.status) === "done" ? "todo" : "done" })}>
+                  Status wechseln
+                </button>
+                <button style={styles.btnSmall} onClick={() => onDeleteTask(t.id)}>
+                  Aufgabe löschen
+                </button>
+                {(t.guide_ids || []).map((gid) => {
+                  const g = (guides || []).find((x) => x.id === gid);
+                  return (
+                    <button key={gid} style={styles.btnSmall} onClick={() => onGuideOpen(gid)}>
+                      Anleitung: {g?.title || gid}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input value={subDraft[t.id] || ""} onChange={(e) => setSubDraft((p) => ({ ...p, [t.id]: e.target.value }))} placeholder="Unteraufgabe hinzufügen…" style={styles.input} />
+                  <button
+                    style={styles.btnSmallPrimary}
+                    onClick={() => {
+                      const txt = (subDraft[t.id] || "").trim();
+                      if (!txt) return;
+                      onAddSubtask(t.id, txt);
+                      setSubDraft((p) => ({ ...p, [t.id]: "" }));
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 10 }}>
+                  {subs.length === 0 ? <div style={{ fontSize: 13, color: "#666" }}>Keine Unteraufgaben</div> : null}
+                  {subs.map((s) => (
+                    <div key={s.id} style={styles.subRow}>
+                      <input type="checkbox" checked={getSubDone(s)} onChange={() => onToggleSubtask(s)} />
+                      <div style={{ fontSize: 13 }}>{s.title}</div>
+                      <span style={styles.dot(s.color || "#94a3b8")} />
+                      <button style={styles.btnSmall} onClick={() => onDeleteSubtask(s)}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
