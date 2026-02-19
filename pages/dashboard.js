@@ -1572,6 +1572,15 @@ function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDo
     setLoadingUrls(false);
   };
 
+  const openFileLink = async (g) => {
+    if (!g?.file_path) return;
+    const url = await getDownloadUrl(g);
+    if (url) {
+      setUrlMap((m) => ({ ...m, [g.id]: url }));
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  };
+
   return (
     <div style={styles.panel}>
       <div style={styles.h2}>Anleitungen</div>
@@ -1642,6 +1651,11 @@ function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDo
                 {isAdmin ? (
                   <button style={styles.btnDangerSmall} onClick={() => onDeleteGuide(g)}>Löschen</button>
                 ) : null}
+                {g.file_path ? (
+                  <button style={styles.btnSmall} onClick={() => openFileLink(g)}>
+                    Datei-Link
+                  </button>
+                ) : null}
                 {urlMap[g.id] ? (
                   <a href={urlMap[g.id]} target="_blank" rel="noreferrer" style={{ ...styles.btnSmall, display: "inline-block", textDecoration: "none", color: "#111" }}>
                     Datei öffnen
@@ -1651,7 +1665,7 @@ function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDo
             </div>
             {g.description ? <div style={{ marginTop: 6, color: "#666", fontSize: 13 }}>{g.description}</div> : null}
             {g.created_at ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Erstellt: {fmtDateTime(g.created_at)}</div> : null}
-            {(g.file_path || g.file_path) ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Datei: {g.file_path || g.file_path}</div> : null}
+            {(g.file_name || g.file_path) ? <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>Datei: {g.file_name || g.file_path}</div> : null}
           </div>
         ))}
         {filtered.length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Keine Anleitungen gefunden.</div> : null}
@@ -1716,6 +1730,15 @@ function UsersPanel({ areas, profiles, currentUserId, isAdmin, onUpsertProfile, 
       role: p.role || "user",
       area_id: p.area_id || "",
     });
+  };
+
+  // Backward-compat: older handlers referenced setInfoMsg.
+  // In this panel we don't manage global alerts directly, so keep it as a safe no-op.
+  const setInfoMsg = (msg) => {
+    try {
+      // eslint-disable-next-line no-console
+      console.log(msg);
+    } catch {}
   };
 
   return (
