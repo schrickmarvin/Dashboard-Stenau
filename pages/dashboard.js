@@ -731,6 +731,20 @@ const deleteGuide = useCallback(
     }
   }, [ensureSupabase, loadMeta]);
 
+
+  const deleteArea = useCallback(async (areaId) => {
+    setMetaError("");
+    setInfo("");
+    try {
+      ensureSupabase();
+      const res = await supabase.from("areas").delete().eq("id", areaId);
+      if (res.error) throw res.error;
+      await loadMeta();
+      setInfo("Bereich gelöscht.");
+    } catch (e) {
+      setMetaError(String(e?.message || e));
+    }
+  }, [ensureSupabase, loadMeta]);
   /* ---------- Settings ---------- */
 
   const [userSettings, setUserSettings] = useState(null);
@@ -872,7 +886,7 @@ const deleteGuide = useCallback(
         ) : null}
 
         {tab === "users" ? (
-          <UsersPanel areas={areas} profiles={profiles} currentUserId={authUser.id} isAdmin={isAdmin} onUpsertProfile={upsertProfile} onUpsertArea={upsertArea} />
+          <UsersPanel areas={areas} profiles={profiles} currentUserId={authUser.id} isAdmin={isAdmin} onUpsertProfile={upsertProfile} onUpsertArea={upsertArea} onDeleteArea={deleteArea} />
         ) : null}
 
         {tab === "settings" ? (
@@ -1686,7 +1700,7 @@ function GuidesPanel({ areas, guides, isAdmin, onUpload, onReload, onOpen, getDo
   );
 }
 
-function UsersPanel({ areas, profiles, currentUserId, isAdmin, onUpsertProfile, onUpsertArea }) {
+function UsersPanel({ areas, profiles, currentUserId, isAdmin, onUpsertProfile, onUpsertArea, onDeleteArea }) {
   const [draftNew, setDraftNew] = useState({ id: "", email: "", name: "", role: "user", area_id: "" });
   const [editId, setEditId] = useState("");
   const [edit, setEdit] = useState({ id: "", email: "", name: "", role: "user", area_id: "" });
@@ -1753,7 +1767,7 @@ function UsersPanel({ areas, profiles, currentUserId, isAdmin, onUpsertProfile, 
       {isAdmin ? (
         <div style={{ ...styles.card, marginTop: 12 }}>
           <div style={styles.h3}>Bereiche verwalten</div>
-          <AreaManager areas={areas} onUpsertArea={onUpsertArea} />
+          <AreaManager areas={areas} onUpsertArea={onUpsertArea} onDeleteArea={onDeleteArea} />
         </div>
       ) : null}
 
@@ -1829,32 +1843,127 @@ function UsersPanel({ areas, profiles, currentUserId, isAdmin, onUpsertProfile, 
   );
 }
 
-function AreaManager({ areas, onUpsertArea }) {
-  const [draft, setDraft] = useState({ id: "", name: "", color: "#94a3b8" });
+function AreaManager({ areas, onUpsertArea, onDeleteArea }) {
+  const [draft, setDraft] = useState({ name: "", color: "#1f7a1f" });
+  const [editingId, setEditingId] = useState(null);
+  const [edit, setEdit] = useState({ name: "", color: "#1f7a1f" });
+
+  const startEdit = (a) => {
+    setEditingId(a.id);
+    setEdit({ name: a.name || "", color: a.color || "#1f7a1f" });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEdit({ name: "", color: "#1f7a1f" });
+  };
+
+  const saveEdit = async () => {
+    const name = (edit.name || "").trim();
+    if (!name) return;
+    await onUpsertArea({ id: editingId, name, color: edit.color || "#1f7a1f" });
+    cancelEdit();
+  };
+
+  const createArea = async () => {
+    const name = (draft.name || "").trim();
+    if (!name) return;
+    await onUpsertArea({ name, color: draft.color || "#1f7a1f" });
+    setDraft({ name: "", color: "#1f7a1f" });
+  };
+
+  const doDelete = async (a) => {
+    if (!onDeleteArea) return;
+    const ok = window.confirm(`Bereich "${a.name}" wirklich löschen?`);
+    if (!ok) return;
+    await onDeleteArea(a.id);
+    if (editingId === a.id) cancelEdit();
+  };
 
   return (
-    <div>
-      <div style={styles.grid3}>
-        <input value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Bereichsname" style={styles.input} />
-        <input type="color" value={draft.color} onChange={(e) => setDraft((d) => ({ ...d, color: e.target.value }))} style={{ ...styles.input, padding: 6, height: 42 }} />
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <button style={styles.btnSmallPrimary} onClick={() => {
-            onUpsertArea({ id: draft.id || undefined, name: draft.name.trim(), color: draft.color });
-            setDraft({ id: "", name: "", color: "#94a3b8" });
-          }}>Bereich speichern</button>
-        </div>
+    <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12, marginTop: 12 }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>Bereiche verwalten</div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+        <input
+          value={draft.name}
+          onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+          placeholder="Bereichsname"
+          style={{ flex: 1, padding: 10, borderRadius: 8, border: "1px solid #ddd" }}
+        />
+        <input
+          type="color"
+          value={draft.color || "#1f7a1f"}
+          onChange={(e) => setDraft((d) => ({ ...d, color: e.target.value }))}
+          style={{ width: 64, height: 38, borderRadius: 8, border: "1px solid #ddd" }}
+          title="Farbe"
+        />
+        <button className="primary" onClick={createArea} style={{ padding: "10px 14px", borderRadius: 10 }}>
+          Bereich speichern
+        </button>
       </div>
 
-      <div style={{ height: 10 }} />
+      <div style={{ borderTop: "1px solid #eee", marginTop: 8 }}>
+        {(areas || []).map((a) => {
+          const isEdit = editingId === a.id;
+          return (
+            <div
+              key={a.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "12px 1fr auto",
+                gap: 10,
+                padding: "10px 0",
+                borderBottom: "1px solid #f0f0f0",
+                alignItems: "center",
+              }}
+            >
+              <div style={{ width: 10, height: 10, borderRadius: 99, background: a.color || "#999" }} />
+              <div>
+                {isEdit ? (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <input
+                      value={edit.name}
+                      onChange={(e) => setEdit((x) => ({ ...x, name: e.target.value }))}
+                      style={{ minWidth: 240, padding: 8, borderRadius: 8, border: "1px solid #ddd" }}
+                    />
+                    <input
+                      type="color"
+                      value={edit.color || "#1f7a1f"}
+                      onChange={(e) => setEdit((x) => ({ ...x, color: e.target.value }))}
+                      style={{ width: 56, height: 34, borderRadius: 8, border: "1px solid #ddd" }}
+                    />
+                    <button onClick={saveEdit} style={{ padding: "8px 10px", borderRadius: 10 }}>
+                      Speichern
+                    </button>
+                    <button onClick={cancelEdit} style={{ padding: "8px 10px", borderRadius: 10 }}>
+                      Abbrechen
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 600 }}>{a.name}</div>
+                    <div style={{ color: "#888", fontSize: 12 }}>{a.id}</div>
+                  </div>
+                )}
+              </div>
 
-      <div style={{ display: "grid", gap: 8 }}>
-        {(areas || []).map((a) => (
-          <div key={a.id} style={{ display: "flex", gap: 10, alignItems: "center", border: "1px solid #eef2f7", borderRadius: 12, padding: 10 }}>
-            <span style={styles.dot(a.color || "#94a3b8")} />
-            <div style={{ fontWeight: 700 }}>{a.name}</div>
-            <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{a.id}</div>
-          </div>
-        ))}
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                {!isEdit ? (
+                  <>
+                    <button onClick={() => startEdit(a)} style={{ padding: "8px 10px", borderRadius: 10 }}>
+                      Umbenennen
+                    </button>
+                    <button onClick={() => doDelete(a)} style={{ padding: "8px 10px", borderRadius: 10 }}>
+                      Löschen
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+        {(areas || []).length === 0 ? <div style={{ padding: 10, color: "#777" }}>Keine Bereiche vorhanden.</div> : null}
       </div>
     </div>
   );
