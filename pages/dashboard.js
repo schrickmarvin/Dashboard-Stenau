@@ -17,6 +17,7 @@
  */
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
 import { createClient } from "@supabase/supabase-js";
 
@@ -288,7 +289,10 @@ const styles = {
 function DashboardPage() {
   const [tab, setTab] = useState("plan"); // plan|kanboard|calendar|guides|users|settings
   const [authUser, setAuthUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [now, setNow] = useState(() => new Date());
+
+  const router = useRouter();
 
   const [loadingMeta, setLoadingMeta] = useState(false);
   const [loadingTasks, setLoadingTasks] = useState(false);
@@ -323,18 +327,28 @@ useEffect(() => {
       ensureSupabase();
       const { data } = await supabase.auth.getSession();
       setAuthUser(data?.session?.user || null);
+      setAuthChecked(true);
 
       supabase.auth.onAuthStateChange((_event, newSession) => {
         setAuthUser(newSession?.user || null);
+        setAuthChecked(true);
       });
     } catch (e) {
       setMetaError(String(e?.message || e));
+      setAuthChecked(true);
     }
   }, [ensureSupabase]);
 
   useEffect(() => {
     loadAuth();
   }, [loadAuth]);
+
+  // Wenn nicht eingeloggt: automatisch zur Login-Seite weiterleiten
+  useEffect(() => {
+    if (!authChecked) return;
+    if (authUser) return;
+    router.replace("/login?next=/dashboard");
+  }, [authChecked, authUser, router]);
 
   const loadMeta = useCallback(async () => {
     setLoadingMeta(true);
@@ -786,7 +800,7 @@ const deleteGuide = useCallback(
           <div style={styles.panel}>
             <div style={styles.h2}>Nicht angemeldet</div>
             <div style={{ color: "#666", fontSize: 13 }}>
-              Bitte zuerst einloggen (Supabase Auth).
+              Weiterleitung zur Login-Seite …
             </div>
             {metaError ? <div style={{ ...styles.error, marginTop: 12 }}>{metaError}</div> : null}
           </div>
