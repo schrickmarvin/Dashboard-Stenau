@@ -29,6 +29,45 @@ const supabase =
 
 const APP_VERSION = "v2026.02.18";
 
+
+// --- Grid/Layout (Drag & Resize) ---
+// Requires: npm i react-grid-layout react-resizable
+const ReactGridLayout = dynamic(
+  async () => {
+    const rgl = await import("react-grid-layout");
+    const { Responsive, WidthProvider } = rgl;
+    return WidthProvider(Responsive);
+  },
+  { ssr: false }
+);
+
+const DEFAULT_PLAN_LAYOUTS = {
+  lg: [
+    { i: "create", x: 0, y: 0, w: 5, h: 14, minW: 4, minH: 10 },
+    { i: "tasks", x: 5, y: 0, w: 7, h: 18, minW: 6, minH: 12 },
+    { i: "series", x: 0, y: 14, w: 5, h: 10, minW: 4, minH: 8 },
+  ],
+  md: [
+    { i: "create", x: 0, y: 0, w: 5, h: 14, minW: 4, minH: 10 },
+    { i: "tasks", x: 5, y: 0, w: 5, h: 18, minW: 5, minH: 12 },
+    { i: "series", x: 0, y: 14, w: 5, h: 10, minW: 4, minH: 8 },
+  ],
+  sm: [
+    { i: "create", x: 0, y: 0, w: 6, h: 14, minH: 10 },
+    { i: "tasks", x: 0, y: 14, w: 6, h: 18, minH: 12 },
+    { i: "series", x: 0, y: 32, w: 6, h: 10, minH: 8 },
+  ],
+  xs: [
+    { i: "create", x: 0, y: 0, w: 4, h: 14, minH: 10 },
+    { i: "tasks", x: 0, y: 14, w: 4, h: 18, minH: 12 },
+    { i: "series", x: 0, y: 32, w: 4, h: 10, minH: 8 },
+  ],
+  xxs: [
+    { i: "create", x: 0, y: 0, w: 2, h: 14, minH: 10 },
+    { i: "tasks", x: 0, y: 14, w: 2, h: 18, minH: 12 },
+    { i: "series", x: 0, y: 32, w: 2, h: 10, minH: 8 },
+  ],
+};
 /* ---------------- Helpers ---------------- */
 
 function fmtDate(value) {
@@ -294,6 +333,24 @@ function DashboardPage() {
   const [authChecked, setAuthChecked] = useState(false);
   const [now, setNow] = useState(() => new Date());
 
+  // Layout-Edit (Drag & Resize) – pro User gespeichert (localStorage + optional user_settings.layout_json)
+  const [layoutEditMode, setLayoutEditMode] = useState(false);
+  const [planLayouts, setPlanLayouts] = useState(DEFAULT_PLAN_LAYOUTS);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("stenau_plan_layouts_v1");
+      if (raw) setPlanLayouts(JSON.parse(raw));
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("stenau_plan_layouts_v1", JSON.stringify(planLayouts));
+    } catch {}
+  }, [planLayouts]);
+
+
   const router = useRouter();
 
   const [loadingMeta, setLoadingMeta] = useState(false);
@@ -340,6 +397,33 @@ useEffect(() => {
       setAuthChecked(true);
     }
   }, [ensureSupabase]);
+
+  const persistLayoutToDb = useCallback(async () => {
+    if (!user) return;
+    const sb = ensureSupabase();
+    if (!sb) return;
+    try {
+      // Optional: Spalte layout_json in user_settings (wenn nicht vorhanden, ignorieren wir den Fehler)
+      await sb.from("user_settings").upsert({
+        user_id: user.id,
+        layout_json: JSON.stringify({ plan: planLayouts }),
+      });
+    } catch (e) {
+      // silently ignore
+    }
+  }, [ensureSupabase, user, planLayouts]);
+
+  const toggleLayoutEdit = useCallback(async () => {
+    setLayoutEditMode((prev) => !prev);
+  }, []);
+
+  useEffect(() => {
+    // wenn Layout-Modus beendet wird, Layout in DB speichern
+    if (!layoutEditMode) {
+      persistLayoutToDb();
+    }
+  }, [layoutEditMode, persistLayoutToDb]);
+
 
   useEffect(() => {
     loadAuth();
@@ -757,6 +841,15 @@ const deleteGuide = useCallback(
         if (!authUser?.id) return;
         const sRes = await supabase.from("user_settings").select("*").eq("user_id", authUser.id).maybeSingle();
         if (!sRes.error) setUserSettings(sRes.data || null);
+
+          // optional: Layout aus DB laden, wenn Spalte existiert
+          try {
+            const rawLayout = sRes.data && sRes.data.layout_json;
+            if (rawLayout) {
+              const parsed = typeof rawLayout === "string" ? JSON.parse(rawLayout) : rawLayout;
+              if (parsed && parsed.plan) setPlanLayouts(parsed.plan);
+            }
+          } catch {}
       } catch (_) {}
     })();
   }, [authUser?.id]);
@@ -842,6 +935,12 @@ const deleteGuide = useCallback(
             <button style={styles.btn} onClick={loadTasksAndSubtasks} disabled={loadingTasks}>
               {loadingTasks ? "Lade…" : "Aufgaben neu laden"}
             </button>
+
+            {tab === "plan" ? (
+              <button style={styles.btn} onClick={toggleLayoutEdit}>
+                {layoutEditMode ? "Layout speichern" : "Layout bearbeiten"}
+              </button>
+            ) : null}
             <button style={styles.btn} onClick={logout}>Logout</button>
           </div>
         </div>
@@ -865,13 +964,19 @@ const deleteGuide = useCallback(
             profiles={profiles}
             guides={guides}
             tasks={taskWithResolved}
+            subtasks={subtasks}
+            guideFiles={guideFiles}
             onCreateTask={createTask}
             onUpdateTask={updateTask}
             onDeleteTask={deleteTask}
             onAddSubtask={addSubtask}
             onToggleSubtask={toggleSubtaskDone}
             onDeleteSubtask={deleteSubtask}
+            onDeleteSeries={handleDeleteSeries}
             onGuideOpen={openGuide}
+            layoutEdit={layoutEditMode}
+            planLayouts={planLayouts}
+            setPlanLayouts={setPlanLayouts}
           />
         ) : null}
 
@@ -926,220 +1031,373 @@ const deleteGuide = useCallback(
 
 /* ---------------- Components ---------------- */
 
-function PlanPanel({ areas, profiles, guides, tasks, onCreateTask, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
-  const [form, setForm] = useState({ title: "", due_at: "", status: "todo", area_id: "", assignee_id: "", notes: "", guide_ids: [] });
-  const [seriesForm, setSeriesForm] = useState({ title: "", area_id: "", assignee_id: "", start_at: "", recurrence: "weekly", interval: 1, count: 4, notes: "", guide_ids: [] });
-  const [seriesMsg, setSeriesMsg] = useState("");
 
-  const members = useMemo(() => (profiles || []).map((p) => ({ id: p.id, label: p.name || p.email || p.id })).sort((a, b) => a.label.localeCompare(b.label, "de")), [profiles]);
-  const areaOpts = useMemo(() => (areas || []).map((a) => ({ id: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label, "de")), [areas]);
 
-  const onGuideSelect = (e, setter) => {
-    const values = Array.from(e.target.selectedOptions).map((o) => o.value);
-    setter((f) => ({ ...f, guide_ids: values }));
-  };
+function PlanPanel({
+  areas,
+  profiles,
+  tasks,
+  guides,
+  subtasks,
+  guideFiles,
+  onCreateTask,
+  onUpdateTask,
+  onDeleteTask,
+  onAddSubtask,
+  onToggleSubtask,
+  onDeleteSubtask,
+  onDeleteSeries,
+  onGuideOpen,
+  layoutEdit,
+  planLayouts,
+  setPlanLayouts,
+}) {
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [newTaskAreaId, setNewTaskAreaId] = useState("");
+  const [newTaskAssignee, setNewTaskAssignee] = useState("");
+  const [newTaskDue, setNewTaskDue] = useState("");
+  const [newTaskNotes, setNewTaskNotes] = useState("");
+  const [selectedGuideIds, setSelectedGuideIds] = useState([]);
 
-  const createSeries = async () => {
-    setSeriesMsg("");
-    const title = (seriesForm.title || "").trim();
-    if (!title) return setSeriesMsg("Serienaufgabe: Titel fehlt.");
-    const start = seriesForm.start_at ? new Date(seriesForm.start_at) : null;
-    if (!start || Number.isNaN(start.getTime())) return setSeriesMsg("Serienaufgabe: Startdatum fehlt/ungültig.");
-    const count = Math.max(1, parseInt(seriesForm.count || 1, 10));
-    const interval = Math.max(1, parseInt(seriesForm.interval || 1, 10));
-    const rule = seriesForm.recurrence;
-    const seriesId = uuidv4();
+  // Serien
+  const [newSeriesTitle, setNewSeriesTitle] = useState("");
+  const [newSeriesAreaId, setNewSeriesAreaId] = useState("");
+  const [newSeriesFrequency, setNewSeriesFrequency] = useState("monthly");
+  const [newSeriesDayOfWeek, setNewSeriesDayOfWeek] = useState(1);
+  const [newSeriesDayOfMonth, setNewSeriesDayOfMonth] = useState(1);
+  const [newSeriesAssignee, setNewSeriesAssignee] = useState("");
+  const [newSeriesNotes, setNewSeriesNotes] = useState("");
+  const [newSeriesGuideIds, setNewSeriesGuideIds] = useState([]);
 
-    const dates = [];
-    for (let i = 0; i < count; i++) {
-      if (rule === "daily") dates.push(addDays(start, i * interval));
-      else if (rule === "weekly") dates.push(addDays(start, i * 7 * interval));
-      else dates.push(addMonths(start, i * interval));
-    }
+  const todoTasks = (tasks || []).filter((t) => t.status !== "done" && !t.is_series);
+  const doneTasks = (tasks || []).filter((t) => t.status === "done" && !t.is_series);
+  const seriesTasks = (tasks || []).filter((t) => t.is_series);
 
-    for (let i = 0; i < dates.length; i++) {
-      await onCreateTask({
-        title,
-        due_at: dates[i].toISOString(),
-        status: "todo",
-        area_id: seriesForm.area_id || null,
-        assignee_id: seriesForm.assignee_id || null,
-        notes: seriesForm.notes || null,
-        guide_ids: seriesForm.guide_ids || [],
-        series_id: seriesId,
-        series_rule: rule,
-        series_interval: interval,
-        repeat_count: count,
-      });
-    }
-    setSeriesMsg("Serie angelegt.");
-  };
+  function handleGuideMultiSelect(e) {
+    const opts = Array.from(e.target.options);
+    const ids = opts.filter((o) => o.selected).map((o) => o.value);
+    setSelectedGuideIds(ids);
+  }
 
-  const groupedSeries = useMemo(() => {
-    const m = {};
-    (tasks || []).forEach((t) => {
-      if (!t.series_id) return;
-      if (!m[t.series_id]) m[t.series_id] = [];
-      m[t.series_id].push(t);
+  function handleSeriesGuideMultiSelect(e) {
+    const opts = Array.from(e.target.options);
+    const ids = opts.filter((o) => o.selected).map((o) => o.value);
+    setNewSeriesGuideIds(ids);
+  }
+
+  async function handleCreateTask() {
+    await onCreateTask({
+      title: newTaskTitle,
+      area_id: newTaskAreaId || null,
+      assignee_profile_id: newTaskAssignee || null,
+      due_at: newTaskDue ? new Date(newTaskDue).toISOString() : null,
+      notes: newTaskNotes || null,
+      guide_ids: selectedGuideIds || [],
     });
-    const items = Object.entries(m).map(([sid, list]) => {
-      list.sort((a, b) => new Date(a.due_at || 0) - new Date(b.due_at || 0));
-      const head = list[0];
-      return { series_id: sid, head, count: list.length };
-    });
-    items.sort((a, b) => String(a.head?.title || "").localeCompare(String(b.head?.title || ""), "de"));
-    return items;
-  }, [tasks]);
 
-  const columns = useMemo(() => {
-    const todo = [];
-    const done = [];
-    (tasks || []).forEach((t) => (safeLower(t.status) === "done" ? done : todo).push(t));
-    return { todo, done };
-  }, [tasks]);
+    setNewTaskTitle("");
+    setNewTaskAreaId("");
+    setNewTaskAssignee("");
+    setNewTaskDue("");
+    setNewTaskNotes("");
+    setSelectedGuideIds([]);
+  }
+
+  async function handleCreateSeries() {
+    await onCreateTask({
+      is_series: true,
+      title: newSeriesTitle,
+      area_id: newSeriesAreaId || null,
+      assignee_profile_id: newSeriesAssignee || null,
+      notes: newSeriesNotes || null,
+      guide_ids: newSeriesGuideIds || [],
+      frequency: newSeriesFrequency,
+      day_of_week: Number(newSeriesDayOfWeek),
+      day_of_month: Number(newSeriesDayOfMonth),
+    });
+
+    setNewSeriesTitle("");
+    setNewSeriesAreaId("");
+    setNewSeriesFrequency("monthly");
+    setNewSeriesDayOfWeek(1);
+    setNewSeriesDayOfMonth(1);
+    setNewSeriesAssignee("");
+    setNewSeriesNotes("");
+    setNewSeriesGuideIds([]);
+  }
+
+  const layoutsToUse = planLayouts && Object.keys(planLayouts).length ? planLayouts : DEFAULT_PLAN_LAYOUTS;
 
   return (
-    <div>
+    <div style={styles.wrap}>
       <div style={styles.panel}>
-        <div style={styles.h2}>Aufgabe anlegen</div>
+        <ReactGridLayout
+          className="stenau-grid"
+          layouts={layoutsToUse}
+          breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
+          cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+          rowHeight={28}
+          margin={[12, 12]}
+          containerPadding={[0, 0]}
+          isDraggable={!!layoutEdit}
+          isResizable={!!layoutEdit}
+          onLayoutChange={(current, all) => setPlanLayouts(all)}
+          compactType="vertical"
+          preventCollision={false}
+        >
+          <div key="create" className="gridCard">
+            <h2 style={styles.h2}>Aufgabe anlegen</h2>
+            <div style={styles.formRow}>
+              <input
+                style={styles.input}
+                value={newTaskTitle}
+                onChange={(e) => setNewTaskTitle(e.target.value)}
+                placeholder="Titel"
+              />
+              <input
+                style={styles.input}
+                value={newTaskDue}
+                onChange={(e) => setNewTaskDue(e.target.value)}
+                type="datetime-local"
+              />
+              <select style={styles.select} value={"todo"} disabled>
+                <option value="todo">Zu erledigen</option>
+              </select>
+              <button style={styles.primaryBtn} onClick={handleCreateTask} disabled={!newTaskTitle}>
+                Anlegen
+              </button>
+            </div>
 
-        <div style={styles.grid3}>
-          <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Titel" style={styles.input} />
-          <input type="datetime-local" value={form.due_at} onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))} style={styles.input} />
-          <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} style={styles.select}>
-            <option value="todo">Zu erledigen</option>
-            <option value="done">Erledigt</option>
-          </select>
+            <div style={styles.formRow}>
+              <select style={styles.select} value={newTaskAreaId} onChange={(e) => setNewTaskAreaId(e.target.value)}>
+                <option value="">– Bereich –</option>
+                {(areas || []).map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
 
-          <select value={form.area_id} onChange={(e) => setForm((f) => ({ ...f, area_id: e.target.value }))} style={styles.select}>
-            <option value="">– Bereich –</option>
-            {areaOpts.map((a) => (
-              <option key={a.id} value={a.id}>{a.label}</option>
-            ))}
-          </select>
+              <select
+                style={styles.select}
+                value={newTaskAssignee}
+                onChange={(e) => setNewTaskAssignee(e.target.value)}
+              >
+                <option value="">– Zuständig –</option>
+                {(profiles || []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || p.email || p.id}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <select value={form.assignee_id} onChange={(e) => setForm((f) => ({ ...f, assignee_id: e.target.value }))} style={styles.select}>
-            <option value="">– Zuständig –</option>
-            {members.map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
+            <textarea
+              style={styles.textarea}
+              value={newTaskNotes}
+              onChange={(e) => setNewTaskNotes(e.target.value)}
+              placeholder="Notizen (optional)"
+            />
 
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
-            <button
-              style={styles.btnPrimary}
-              onClick={() =>
-                onCreateTask({
-                  title: form.title?.trim(),
-                  due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
-                  status: form.status || "todo",
-                  area_id: form.area_id || null,
-                  assignee_id: form.assignee_id || null,
-                  notes: form.notes || null,
-                  guide_ids: form.guide_ids || [],
-                })
-              }
-            >
-              Anlegen
-            </button>
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>Anleitungen (Mehrfachauswahl möglich)</div>
+              <select
+                multiple
+                style={{ ...styles.select, height: 120 }}
+                value={selectedGuideIds}
+                onChange={handleGuideMultiSelect}
+              >
+                {(guides || []).map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.title}
+                  </option>
+                ))}
+              </select>
+              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Tipp: Strg/Cmd + Klick</div>
+            </div>
           </div>
-        </div>
 
-        <div style={{ marginTop: 10 }}>
-          <textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Notizen (optional)" style={styles.textarea} />
-        </div>
-
-        <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 13, color: "#111", marginBottom: 6 }}>Anleitungen (Mehrfachauswahl möglich)</div>
-          <select multiple value={form.guide_ids} onChange={(e) => onGuideSelect(e, setForm)} style={{ ...styles.select, height: 110 }}>
-            {(guides || []).map((g) => (
-              <option key={g.id} value={g.id}>{g.title}</option>
-            ))}
-          </select>
-          <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>Tipp: Strg/Cmd + Klick</div>
-        </div>
-      </div>
-
-      <div style={styles.panel}>
-        <div style={styles.h2}>Aufgaben</div>
-        <div style={styles.cols}>
-          <TaskColumn title="Zu erledigen" tasks={columns.todo} guides={guides} onUpdateTask={onUpdateTask} onDeleteTask={onDeleteTask} onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onGuideOpen={onGuideOpen} />
-          <TaskColumn title="Erledigt" tasks={columns.done} guides={guides} onUpdateTask={onUpdateTask} onDeleteTask={onDeleteTask} onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onGuideOpen={onGuideOpen} />
-        </div>
-      </div>
-
-      <div style={styles.panel}>
-        <div style={styles.h2}>Serienaufgabe</div>
-        <div style={styles.grid3}>
-          <input value={seriesForm.title} onChange={(e) => setSeriesForm((f) => ({ ...f, title: e.target.value }))} placeholder="Serientitel" style={styles.input} />
-          <input type="datetime-local" value={seriesForm.start_at} onChange={(e) => setSeriesForm((f) => ({ ...f, start_at: e.target.value }))} style={styles.input} />
-          <select value={seriesForm.recurrence} onChange={(e) => setSeriesForm((f) => ({ ...f, recurrence: e.target.value }))} style={styles.select}>
-            <option value="daily">Täglich</option>
-            <option value="weekly">Wöchentlich</option>
-            <option value="monthly">Monatlich</option>
-          </select>
-
-          <select value={seriesForm.area_id} onChange={(e) => setSeriesForm((f) => ({ ...f, area_id: e.target.value }))} style={styles.select}>
-            <option value="">– Bereich –</option>
-            {areaOpts.map((a) => (
-              <option key={a.id} value={a.id}>{a.label}</option>
-            ))}
-          </select>
-
-          <select value={seriesForm.assignee_id} onChange={(e) => setSeriesForm((f) => ({ ...f, assignee_id: e.target.value }))} style={styles.select}>
-            <option value="">– Zuständig –</option>
-            {members.map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
-
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <input type="number" min="1" value={seriesForm.interval} onChange={(e) => setSeriesForm((f) => ({ ...f, interval: e.target.value }))} style={{ ...styles.input, width: 140 }} placeholder="Intervall" />
-            <input type="number" min="1" value={seriesForm.count} onChange={(e) => setSeriesForm((f) => ({ ...f, count: e.target.value }))} style={{ ...styles.input, width: 140 }} placeholder="Anzahl" />
-            <button style={styles.btnPrimary} onClick={createSeries}>Serie anlegen</button>
+          <div key="tasks" className="gridCard">
+            <h2 style={styles.h2}>Aufgaben</h2>
+            <div style={styles.board}>
+              <TaskColumn
+                title={`Zu erledigen (${todoTasks.length})`}
+                tasks={todoTasks}
+                guides={guides}
+                onUpdateTask={onUpdateTask}
+                onDeleteTask={onDeleteTask}
+                onAddSubtask={onAddSubtask}
+                onToggleSubtask={onToggleSubtask}
+                onDeleteSubtask={onDeleteSubtask}
+                onGuideOpen={onGuideOpen}
+              />
+              <TaskColumn
+                title={`Erledigt (${doneTasks.length})`}
+                tasks={doneTasks}
+                guides={guides}
+                onUpdateTask={onUpdateTask}
+                onDeleteTask={onDeleteTask}
+                onAddSubtask={onAddSubtask}
+                onToggleSubtask={onToggleSubtask}
+                onDeleteSubtask={onDeleteSubtask}
+                onGuideOpen={onGuideOpen}
+              />
+            </div>
           </div>
-        </div>
 
-        <div style={{ marginTop: 10 }}>
-          <textarea value={seriesForm.notes} onChange={(e) => setSeriesForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Notizen (optional)" style={styles.textarea} />
-        </div>
+          <div key="series" className="gridCard">
+            <h2 style={styles.h2}>Serien</h2>
 
-        <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 13, color: "#111", marginBottom: 6 }}>Anleitungen (Mehrfachauswahl möglich)</div>
-          <select multiple value={seriesForm.guide_ids} onChange={(e) => onGuideSelect(e, setSeriesForm)} style={{ ...styles.select, height: 110 }}>
-            {(guides || []).map((g) => (
-              <option key={g.id} value={g.id}>{g.title}</option>
-            ))}
-          </select>
-        </div>
+            <div style={styles.formRow}>
+              <input
+                style={styles.input}
+                value={newSeriesTitle}
+                onChange={(e) => setNewSeriesTitle(e.target.value)}
+                placeholder="Serien-Titel"
+              />
+              <select style={styles.select} value={newSeriesAreaId} onChange={(e) => setNewSeriesAreaId(e.target.value)}>
+                <option value="">– Bereich –</option>
+                {(areas || []).map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                style={styles.select}
+                value={newSeriesAssignee}
+                onChange={(e) => setNewSeriesAssignee(e.target.value)}
+              >
+                <option value="">– Zuständig –</option>
+                {(profiles || []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || p.email || p.id}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-        {seriesMsg ? <div style={{ ...styles.ok, marginTop: 10 }}>{seriesMsg}</div> : null}
+            <div style={styles.formRow}>
+              <select
+                style={styles.select}
+                value={newSeriesFrequency}
+                onChange={(e) => setNewSeriesFrequency(e.target.value)}
+              >
+                <option value="weekly">Wöchentlich</option>
+                <option value="monthly">Monatlich</option>
+              </select>
 
-        <div style={styles.hr} />
-        <div style={styles.h3}>Serienübersicht</div>
-        {(groupedSeries || []).length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Noch keine Serien.</div> : null}
-        <div style={{ display: "grid", gap: 10 }}>
-          {groupedSeries.map((s) => (
-            <div key={s.series_id} style={styles.card}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <div style={styles.h4}>{s.head?.title || "Serie"}</div>
-                <span style={styles.pill}>Instanzen: {s.count}</span>
-                <span style={styles.pill}>Regel: {s.head?.series_rule || "—"}</span>
-                <span style={styles.pill}>Intervall: {s.head?.series_interval || 1}</span>
-                <span style={styles.pill}>Start: {s.head?.due_at ? fmtDateTime(s.head.due_at) : "—"}</span>
-                <button style={{ ...styles.btnSmall, marginLeft: "auto" }} onClick={() => {
-                  const list = (tasks || []).filter((t) => t.series_id === s.series_id);
-                  list.forEach((t) => onDeleteTask(t.id));
-                }}>Serie löschen</button>
+              {newSeriesFrequency === "weekly" ? (
+                <select
+                  style={styles.select}
+                  value={newSeriesDayOfWeek}
+                  onChange={(e) => setNewSeriesDayOfWeek(e.target.value)}
+                >
+                  <option value={1}>Montag</option>
+                  <option value={2}>Dienstag</option>
+                  <option value={3}>Mittwoch</option>
+                  <option value={4}>Donnerstag</option>
+                  <option value={5}>Freitag</option>
+                  <option value={6}>Samstag</option>
+                  <option value={0}>Sonntag</option>
+                </select>
+              ) : (
+                <select
+                  style={styles.select}
+                  value={newSeriesDayOfMonth}
+                  onChange={(e) => setNewSeriesDayOfMonth(e.target.value)}
+                >
+                  {Array.from({ length: 28 }).map((_, i) => (
+                    <option key={i + 1} value={i + 1}>
+                      Tag {i + 1}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              <button style={styles.primaryBtn} onClick={handleCreateSeries} disabled={!newSeriesTitle}>
+                Serie anlegen
+              </button>
+            </div>
+
+            <textarea
+              style={styles.textarea}
+              value={newSeriesNotes}
+              onChange={(e) => setNewSeriesNotes(e.target.value)}
+              placeholder="Serien-Notizen (optional)"
+            />
+
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>Anleitungen (Mehrfachauswahl möglich)</div>
+              <select
+                multiple
+                style={{ ...styles.select, height: 110 }}
+                value={newSeriesGuideIds}
+                onChange={handleSeriesGuideMultiSelect}
+              >
+                {(guides || []).map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.title}
+                  </option>
+                ))}
+              </select>
+              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Tipp: Strg/Cmd + Klick</div>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <h3 style={styles.h3}>Serienübersicht</h3>
+              <div style={styles.seriesList}>
+                {seriesTasks.map((s) => (
+                  <div key={s.id} style={styles.seriesRow}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700 }}>{s.title}</div>
+                      <div style={{ fontSize: 12, opacity: 0.8 }}>
+                        {s.frequency === "weekly"
+                          ? `Wöchentlich (Tag ${s.day_of_week})`
+                          : `Monatlich (Tag ${s.day_of_month})`}
+                      </div>
+                    </div>
+                    <button style={styles.dangerBtn} onClick={() => onDeleteSeries(s.id)}>
+                      Löschen
+                    </button>
+                  </div>
+                ))}
+                {seriesTasks.length === 0 && <div style={{ fontSize: 12, opacity: 0.7 }}>Keine Serien angelegt.</div>}
               </div>
             </div>
-          ))}
-        </div>
+
+            {layoutEdit ? (
+              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
+                Layout-Modus aktiv: Boxen können verschoben und skaliert werden.
+              </div>
+            ) : null}
+          </div>
+        </ReactGridLayout>
       </div>
+
+      <style jsx global>{`
+        .stenau-grid .gridCard {
+          background: rgba(255, 255, 255, 0.9);
+          border: 1px solid #dcdcdc;
+          border-radius: 12px;
+          padding: 14px;
+          overflow: auto;
+        }
+        .react-grid-item.react-grid-placeholder {
+          border-radius: 12px;
+        }
+        .react-resizable-handle {
+          width: 14px;
+          height: 14px;
+          bottom: 2px;
+          right: 2px;
+          background: rgba(0, 0, 0, 0.25);
+          border-radius: 3px;
+        }
+      `}</style>
     </div>
   );
 }
-
 function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
   const [subDraft, setSubDraft] = useState({});
   return (
