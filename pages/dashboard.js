@@ -2237,17 +2237,6 @@ const mineSorted = [...mine].sort((a, b) => {
               </div>
             );
 
-                        })}
-                      </div>
-
-                      <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
-                        Tipp: Aufgaben per Drag & Drop in eine andere Spalte ziehen.
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
           })}
         </div>
       )}
