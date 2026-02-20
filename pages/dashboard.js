@@ -806,76 +806,171 @@ function TasksBoard({ isAdmin }) {
   );
 }
 
-function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
-  const [subDraft, setSubDraft] = useState({});
+function TaskColumn({
+  title,
+  count,
+  tasks,
+  onToggle,
+  areaById,
+  guides,
+  canWrite,
+  getSubDraft,
+  setSubDraft,
+  onSubAdd,
+  onSubUpdate,
+  onSubDelete,
+  onGuideOpen,
+  members,
+  onAssigneeChange,
+}) {
   return (
     <div style={styles.panel}>
-      <div style={styles.h3}>{title} ({(tasks || []).length})</div>
+      <div style={styles.colHeader}>
+        <div style={styles.h3}>
+          {title} <span style={styles.badge}>{typeof count === "number" ? count : (tasks || []).length}</span>
+        </div>
+      </div>
+
       <div style={{ display: "grid", gap: 10 }}>
         {(tasks || []).map((t) => {
-          const color = t._areaObj?.color || t.color || "#94a3b8";
+          const areaObj = (t.area_id && areaById?.get?.(t.area_id)) || null;
+          const areaLabel = t.area_label || areaObj?.name || t.area || "";
+          const color = t.area_color || areaObj?.color || "#94a3b8";
+
           const assigneeName =
-            t._assignee?.name ||
-            t._assignee?.full_name ||
-            t._assignee?.email ||
+            t.assignee?.name ||
+            t.assignee?.email ||
             (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
-          const subs = t._subtasks || [];
-          const doneCount = t._subDoneCount || 0;
+
+          const subs = Array.isArray(t.subtasks) ? t.subtasks : [];
+          const doneCount = subs.filter((s) => !!s.is_done).length;
+
+          const draft = getSubDraft ? getSubDraft(t.id, color) : { title: "", guide_id: "", color };
 
           return (
             <div key={t.id} style={styles.card}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span style={styles.dot(color)} />
-                <div style={{ fontWeight: 700 }}>{t.title}</div>
-                {t._areaObj?.name ? <span style={styles.pill}>{t._areaObj.name}</span> : null}
-                <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
+                <div style={{ fontWeight: 800 }}>{t.title}</div>
+                {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
+                <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>
+                  {t.due_at ? fmtDateTime(t.due_at) : ""}
+                </div>
               </div>
 
-              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                Zuständig: {assigneeName} · Unteraufgaben: {doneCount}/{subs.length}
+              <div style={{ marginTop: 6, fontSize: 12, color: "#666", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <span>Zuständig: {assigneeName}</span>
+                <span>Unteraufgaben: {doneCount}/{subs.length}</span>
+
+                {Array.isArray(members) && members.length > 0 ? (
+                  <select
+                    value={t.assignee_id || ""}
+                    onChange={(e) => onAssigneeChange?.(t.id, e.target.value || null)}
+                    style={{ ...styles.input, padding: "6px 10px", minWidth: 220 }}
+                    title="Zuständig ändern"
+                  >
+                    <option value="">– Unzugeordnet –</option>
+                    {members.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {(m.name || m.email || m.id)}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                <button style={styles.btnSmall} onClick={() => onUpdateTask(t.id, { status: safeLower(t.status) === "done" ? "todo" : "done" })}>
+                <button style={styles.btnSmall} onClick={() => onToggle?.(t)} disabled={!canWrite}>
                   Status wechseln
                 </button>
-                <button style={styles.btnSmall} onClick={() => onDeleteTask(t.id)}>
-                  Aufgabe löschen
-                </button>
-                {(t.guide_ids || []).map((gid) => {
-                  const g = (guides || []).find((x) => x.id === gid);
-                  return (
-                    <button key={gid} style={styles.btnSmall} onClick={() => onGuideOpen(gid)}>
-                      Anleitung: {g?.title || gid}
-                    </button>
-                  );
-                })}
               </div>
 
-              <div style={{ marginTop: 10 }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input value={subDraft[t.id] || ""} onChange={(e) => setSubDraft((p) => ({ ...p, [t.id]: e.target.value }))} placeholder="Unteraufgabe hinzufügen…" style={styles.input} />
+              {/* Unteraufgaben */}
+              <div style={{ marginTop: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 70px 90px", gap: 8, alignItems: "center" }}>
+                  <input
+                    value={draft.title || ""}
+                    onChange={(e) => setSubDraft?.(t.id, { title: e.target.value }, color)}
+                    placeholder="Unteraufgabe…"
+                    style={{ ...styles.input, minWidth: 0 }}
+                    disabled={!canWrite}
+                  />
+
+                  <select
+                    value={draft.guide_id || ""}
+                    onChange={(e) => setSubDraft?.(t.id, { guide_id: e.target.value }, color)}
+                    style={{ ...styles.input, minWidth: 0 }}
+                    disabled={!canWrite}
+                    title="Anleitung verknüpfen"
+                  >
+                    <option value="">– Anleitung –</option>
+                    {(guides || []).map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.title}
+                      </option>
+                    ))}
+                  </select>
+
+                  <input
+                    type="color"
+                    value={draft.color || color}
+                    onChange={(e) => setSubDraft?.(t.id, { color: e.target.value }, color)}
+                    style={styles.colorInput}
+                    disabled={!canWrite}
+                    title="Farbe"
+                  />
+
                   <button
                     style={styles.btnSmallPrimary}
-                    onClick={() => {
-                      const txt = (subDraft[t.id] || "").trim();
-                      if (!txt) return;
-                      onAddSubtask(t.id, txt);
-                      setSubDraft((p) => ({ ...p, [t.id]: "" }));
-                    }}
+                    onClick={() => onSubAdd?.(t, color)}
+                    disabled={!canWrite}
+                    title="Unteraufgabe hinzufügen"
                   >
                     +
                   </button>
                 </div>
 
-                <div style={{ marginTop: 10 }}>
-                  {subs.length === 0 ? <div style={{ fontSize: 13, color: "#666" }}>Keine Unteraufgaben</div> : null}
+                <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                  {subs.length === 0 ? (
+                    <div style={{ fontSize: 13, color: "#666" }}>Keine Unteraufgaben</div>
+                  ) : null}
+
                   {subs.map((s) => (
-                    <div key={s.id} style={styles.subRow}>
-                      <input type="checkbox" checked={getSubDone(s)} onChange={() => onToggleSubtask(s)} />
-                      <div style={{ fontSize: 13 }}>{s.title}</div>
-                      <span style={styles.dot(s.color || "#94a3b8")} />
-                      <button style={styles.btnSmall} onClick={() => onDeleteSubtask(s)}>✕</button>
+                    <div key={s.id} style={{ ...styles.subRow, gridTemplateColumns: "24px 1fr 1fr 78px 56px 44px" }}>
+                      <input
+                        type="checkbox"
+                        checked={!!s.is_done}
+                        onChange={() => onSubUpdate?.(s.id, { is_done: !s.is_done })}
+                        disabled={!canWrite}
+                        title="Erledigt"
+                      />
+
+                      <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {s.title}
+                      </div>
+
+                      <button
+                        type="button"
+                        style={{ ...styles.btnSmall, padding: "6px 10px", justifySelf: "start" }}
+                        onClick={() => (s.guide_id ? onGuideOpen?.(s.guide_id) : null)}
+                        disabled={!s.guide_id}
+                        title={s.guide_id ? "Anleitung öffnen" : "Keine Anleitung verknüpft"}
+                      >
+                        {s.guide_id ? `Anleitung: ${(s.guides?.title || (guides || []).find((g) => g.id === s.guide_id)?.title || "öffnen")}` : "Anleitung: —"}
+                      </button>
+
+                      <span style={{ width: 60 }} />
+
+                      <span style={{ ...styles.areaDot, background: s.color || color }} />
+
+                      <button
+                        style={styles.btnSmall}
+                        onClick={() => onSubDelete?.(s.id)}
+                        disabled={!canWrite}
+                        title="Unteraufgabe löschen"
+                      >
+                        ✕
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -887,6 +982,8 @@ function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSub
     </div>
   );
 }
+
+
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -3118,6 +3215,15 @@ const styles = {
     gap: 10,
     alignItems: "center",
   },
+  dot: (color) => ({
+    width: 12,
+    height: 12,
+    borderRadius: 999,
+    background: color || "#94a3b8",
+    border: "1px solid #d8e0ef",
+    display: "inline-block",
+  }),
+
   areaDot: {
     width: 14,
     height: 14,
