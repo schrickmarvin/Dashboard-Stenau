@@ -2163,7 +2163,7 @@ function KanboardPanel({ isAdmin = false }) {
         ))}
       </div>
       ) : (
-        <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", alignItems: "start" }}>
           {(filterUserId === "all" ? (members || []) : (members || []).filter((m) => String(m.id) === String(filterUserId))).map((m) => {
             const mine = (filtered || []).filter((t) => String(t.assignee_id || "") === String(m.id));
             const by = {
