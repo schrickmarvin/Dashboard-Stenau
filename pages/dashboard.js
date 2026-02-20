@@ -1128,7 +1128,7 @@ async function loadUserSettings(userId) {
   if (!userId) return null;
   const { data, error } = await supabase
     .from("user_settings")
-    .select("user_id, primary_color, background_color, background_image_url, notifications_enabled, updated_at")
+    .select("user_id, primary_color, background_color, background_image_url, notifications_enabled")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -1148,8 +1148,7 @@ async function upsertUserSettings(userId,  patch) {
     background_color: patch.background_color ?? null,
     background_image_url: patch.background_image_url ?? null,
     notifications_enabled: typeof patch.notifications_enabled === "boolean" ? patch.notifications_enabled : null,
-    updated_at: new Date().toISOString(),
-  };
+};
 
   const { error } = await supabase.from("user_settings").upsert(payload, { onConflict: "user_id" });
   if (error) throw error;
@@ -1614,7 +1613,7 @@ function GuidesPanel({ isAdmin }) {
 
     const { data: gData, error: gErr } = await supabase
       .from("guides")
-      .select("id, title, content, created_at, updated_at")
+      .select("id, title, content, created_at")
       .order("created_at", { ascending: false });
 
     if (gErr) {
@@ -2344,7 +2343,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
       let q = supabase
         .from("tasks")
         .select(
-          "id,title,status,area_id,assignee_id,due_at,created_at,updated_at"
+          "id,title,status,area_id,assignee_id,due_at,created_at"
         )
         .gte("due_at", rangeStart.toISOString())
         .lte("due_at", rangeEnd.toISOString())
@@ -2471,7 +2470,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
       const { data, error } = await supabase
         .from("tasks")
         .insert(insert)
-        .select("id,title,status,area_id,assignee_id,due_at,created_at,updated_at")
+        .select("id,title,status,area_id,assignee_id,due_at,created_at")
         .single();
       if (error) throw error;
       setTasks((prev) => [...prev, data].sort((a, b) => new Date(a.due_at) - new Date(b.due_at)));
