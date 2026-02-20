@@ -2171,6 +2171,19 @@ function KanboardPanel({ isAdmin = false }) {
               doing: mine.filter((t) => (t.status || "") === "doing"),
               done: mine.filter((t) => (t.status || "") === "done"),
             };
+const statusOrder = { todo: 0, doing: 1, done: 2 };
+const mineSorted = [...mine].sort((a, b) => {
+  const sa = String(a.status || "todo");
+  const sb = String(b.status || "todo");
+  const oa = statusOrder[sa] ?? 9;
+  const ob = statusOrder[sb] ?? 9;
+  if (oa !== ob) return oa - ob;
+  const da = a.due_at ? new Date(a.due_at).getTime() : 9999999999999;
+  const db = b.due_at ? new Date(b.due_at).getTime() : 9999999999999;
+  if (da !== db) return da - db;
+  return String(a.title || "").localeCompare(String(b.title || ""));
+});
+
 
             // optional: hide empty users when "all"
             if (filterUserId === "all" && mine.length === 0) return null;
@@ -2180,41 +2193,50 @@ function KanboardPanel({ isAdmin = false }) {
                 <div style={styles.rowBetween}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                     <div style={{ fontWeight: 900 }}>{m.name || m.email || m.id}</div>
+                    <span style={styles.pill}>Gesamt: {mineSorted.length}</span>
                     <span style={styles.pill}>ToDo: {by.todo.length}</span>
                     <span style={styles.pill}>In Arbeit: {by.doing.length}</span>
                     <span style={styles.pill}>Erledigt: {by.done.length}</span>
                   </div>
                 </div>
 
-                <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                  {[
-                    ["todo", "ToDo"],
-                    ["doing", "In Arbeit"],
-                    ["done", "Erledigt"],
-                  ].map(([k, label]) => (
-                    <div key={k} style={{ ...styles.kanCol, borderRadius: 12 }}>
-                      <div style={styles.colHeader}>
-                        <div style={styles.h3}>
-                          {label} <span style={styles.badge}>{by[k].length}</span>
-                        </div>
+                <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                  {mineSorted.map((t) => {
+                    const areaObj = (t.area_id && areaById.get(t.area_id)) || t.areas || null;
+                    const areaLabel = t.area_label || areaObj?.name || "";
+                    const color = t.area_color || areaObj?.color || "#94a3b8";
+                    const st = String(t.status || "todo");
+                    const stLabel = st === "doing" ? "In Arbeit" : st === "done" ? "Erledigt" : "ToDo";
+
+                    return (
+                      <div
+                        key={t.id}
+                        style={{
+                          ...styles.card,
+                          cursor: "grab",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          flexWrap: "wrap",
+                        }}
+                        draggable
+                        onDragStart={(e) => onDragStart(e, t.id)}
+                        title="Drag & Drop: Aufgabe in eine andere Spalte ziehen (Kanban-Ansicht)"
+                      >
+                        <span style={styles.dot(color)} />
+                        <div style={{ fontWeight: 800 }}>{t.title}</div>
+                        {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
+                        <span style={styles.pill}>Status: {stLabel}</span>
+                        <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
                       </div>
+                    );
+                  })}
 
-                      <div style={{ display: "grid", gap: 10 }}>
-                        {by[k].map((t) => {
-                          const areaObj = (t.area_id && areaById.get(t.area_id)) || t.areas || null;
-                          const areaLabel = t.area_label || areaObj?.name || "";
-                          const color = t.area_color || areaObj?.color || "#94a3b8";
+                  {mineSorted.length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Keine Aufgaben.</div> : null}
+                </div>
+              </div>
+            );
 
-                          return (
-                            <div key={t.id} style={{ ...styles.card, cursor: "grab" }} draggable onDragStart={(e) => onDragStart(e, t.id)}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                                <span style={styles.dot(color)} />
-                                <div style={{ fontWeight: 800 }}>{t.title}</div>
-                                {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
-                                <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
-                              </div>
-                            </div>
-                          );
                         })}
                       </div>
 
