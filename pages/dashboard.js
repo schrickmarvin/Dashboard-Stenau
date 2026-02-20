@@ -1285,7 +1285,7 @@ async function loadUserSettings(userId) {
   if (!userId) return null;
   const { data, error } = await supabase
     .from("user_settings")
-    .select("user_id, primary_color, background_color, background_image_url, notifications_enabled")
+    .select("user_id, primary_color, background_color, background_image_url, notifications_enabled, theme_key, bg_type, bg_value")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -1297,19 +1297,36 @@ async function loadUserSettings(userId) {
   return data || null;
 }
 
-async function upsertUserSettings(userId,  patch) {
-  if (!userId) throw new Error("userId fehlt");
-  const payload = {
-    user_id: userId,
-    primary_color: patch.primary_color ?? null,
-    background_color: patch.background_color ?? null,
-    background_image_url: patch.background_image_url ?? null,
-    notifications_enabled: typeof patch.notifications_enabled === "boolean" ? patch.notifications_enabled : null,
-};
 
-  const { error } = await supabase.from("user_settings").upsert(payload, { onConflict: "user_id" });
-  if (error) throw error;
-  return true;
+async function upsertUserSettings(userId, patch) {
+  if (!userId) throw new Error("userId fehlt");
+
+  // Nur Felder senden, die wirklich im Patch enthalten sind, damit nichts unbeabsichtigt überschrieben wird.
+  const payload = { user_id: userId };
+
+  const has = (k) => Object.prototype.hasOwnProperty.call(patch || {}, k);
+
+  if (has("primary_color")) payload.primary_color = patch.primary_color ?? null;
+  if (has("background_color")) payload.background_color = patch.background_color ?? null;
+  if (has("background_image_url")) payload.background_image_url = patch.background_image_url ?? null;
+  if (has("notifications_enabled")) payload.notifications_enabled = !!patch.notifications_enabled;
+
+  // Final Architecture: Theme + Hintergrund (optional)
+  if (has("theme_key")) payload.theme_key = patch.theme_key ?? FALLBACK_THEME_KEY;
+  if (has("bg_type")) payload.bg_type = patch.bg_type ?? "color";
+  if (has("bg_value")) payload.bg_value = patch.bg_value ?? null;
+
+  const { data, error } = await supabase
+    .from("user_settings")
+    .upsert(payload, { onConflict: "user_id" })
+    .select("user_id, primary_color, background_color, background_image_url, notifications_enabled, theme_key, bg_type, bg_value")
+    .maybeSingle();
+
+  if (error) {
+    console.warn("user_settings upsert failed:", error.message);
+    throw error;
+  }
+  return data || null;
 }
 
 
@@ -3103,25 +3120,56 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
 }
 
 /* ---------------- User Settings Panel ---------------- */
-function UserSettingsPanel({ userId, settings, onChange }) {
-  const [draft, setDraft] = useState(() => ({
-    primary_color: settings?.primary_color || "#0b6b2a",
-    background_color: settings?.background_color || "#f3f6fb",
-    background_image_url: settings?.background_image_url || "",
-    notifications_enabled: settings?.notifications_enabled !== false,
-  }));
+function UserSettingsPanel({ userId, settings, themeKey, setThemeKey, onChange }) {
+  const [draft, setDraft] = useState(() => {
+    const storedTheme =
+      typeof window !== "undefined" ? localStorage.getItem("stenau-theme") || FALLBACK_THEME_KEY : FALLBACK_THEME_KEY;
+
+    const legacyImg = (settings?.background_image_url || "").trim();
+    const derivedBgType = (settings?.bg_type || "").trim() || (legacyImg ? "image" : "color");
+    const derivedBgValue = (settings?.bg_value || "").trim() || (legacyImg ? legacyImg : "");
+
+    return {
+      primary_color: settings?.primary_color || "#0b6b2a",
+      background_color: settings?.background_color || "#f3f6fb",
+      background_image_url: legacyImg,
+      notifications_enabled: settings?.notifications_enabled !== false,
+
+      // Final Architecture
+      theme_key: settings?.theme_key || themeKey || storedTheme,
+      bg_type: derivedBgType,
+      bg_value: derivedBgValue,
+    };
+  });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
   const [info, setInfo] = useState(null);
 
   useEffect(() => {
+    const legacyImg = (settings?.background_image_url || "").trim();
+    const derivedBgType = (settings?.bg_type || "").trim() || (legacyImg ? "image" : "color");
+    const derivedBgValue = (settings?.bg_value || "").trim() || (legacyImg ? legacyImg : "");
+
     setDraft({
       primary_color: settings?.primary_color || "#0b6b2a",
       background_color: settings?.background_color || "#f3f6fb",
-      background_image_url: settings?.background_image_url || "",
+      background_image_url: legacyImg,
       notifications_enabled: settings?.notifications_enabled !== false,
+
+      theme_key: settings?.theme_key || themeKey || FALLBACK_THEME_KEY,
+      bg_type: derivedBgType,
+      bg_value: derivedBgValue,
     });
-  }, [settings?.primary_color, settings?.background_color, settings?.background_image_url, settings?.notifications_enabled]);
+  }, [
+    settings?.primary_color,
+    settings?.background_color,
+    settings?.background_image_url,
+    settings?.notifications_enabled,
+    settings?.theme_key,
+    settings?.bg_type,
+    settings?.bg_value,
+    themeKey,
+  ]);
 
   async function save() {
     setErr(null);
@@ -3156,12 +3204,13 @@ function UserSettingsPanel({ userId, settings, onChange }) {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 10, alignItems: "center" }}>
             <div style={{ color: "var(--muted-text)", fontSize: 13 }}>Theme (Preset)</div>
             <select
-              value={(typeof window !== "undefined" ? (localStorage.getItem("stenau-theme") || FALLBACK_THEME_KEY) : FALLBACK_THEME_KEY)}
+              value={draft.theme_key || themeKey || FALLBACK_THEME_KEY}
               onChange={(e) => {
                 const k = e.target.value;
+                setDraft((p) => ({ ...(p || {}), theme_key: k }));
                 if (typeof window !== "undefined") localStorage.setItem("stenau-theme", k);
-                // sofort anwenden
                 applyThemePresetToRoot(k);
+                setThemeKey?.(k);
               }}
               style={styles.input}
               title="Theme"
@@ -3255,6 +3304,20 @@ export default function Dashboard() {
     if (typeof window !== "undefined") localStorage.setItem("stenau-theme", themeKey);
   }, [themeKey]);
 
+  // Theme-Key pro User in Supabase speichern (debounced), sobald Auth + Settings da sind.
+  useEffect(() => {
+    if (!auth?.profile?.id) return;
+    if (settingsLoading) return;
+
+    const t = setTimeout(() => {
+      upsertUserSettings(auth.profile.id, { theme_key: themeKey }).catch((e) =>
+        console.warn("Theme speichern fehlgeschlagen:", e?.message || e)
+      );
+    }, 400);
+
+    return () => clearTimeout(t);
+  }, [themeKey, auth?.profile?.id, settingsLoading]);
+
   async function refreshAuth() {
     setAuthLoading(true);
     setAuthError(null);
@@ -3266,6 +3329,10 @@ export default function Dashboard() {
         setSettingsLoading(true);
         const s = await loadUserSettings(ctx.profile.id);
         setUserSettings(s);
+        if (s?.theme_key) {
+          setThemeKey(s.theme_key);
+          if (typeof window !== "undefined") localStorage.setItem("stenau-theme", s.theme_key);
+        }
         setSettingsLoading(false);
       } else {
         setUserSettings(null);
@@ -3296,15 +3363,30 @@ export default function Dashboard() {
   }
 
   const primary = userSettings?.primary_color || "#0b6b2a";
-  const pageBg = userSettings?.background_color || "#f3f6fb";
-  const bgImg = (userSettings?.background_image_url || "").trim();
+  const pageBg = userSettings?.background_color || "var(--page-bg)";
+  const legacyBgImg = (userSettings?.background_image_url || "").trim();
+
+  // Final Architecture: bg_type/bg_value hat Vorrang, falls gesetzt; ansonsten legacy Felder nutzen.
+  const bgType = (userSettings?.bg_type || "").trim() || (legacyBgImg ? "image" : "color");
+  const bgValue = (userSettings?.bg_value || "").trim() || (legacyBgImg ? legacyBgImg : "");
+
   const pageStyle = {
     ...styles.page,
     "--primary": primary,
     "--page-bg": pageBg,
-    ...(bgImg
+
+    ...(bgType === "gradient" && bgValue
       ? {
-          backgroundImage: `url(${bgImg})`,
+          backgroundImage: bgValue,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundAttachment: "fixed",
+        }
+      : {}),
+
+    ...(bgType === "image" && bgValue
+      ? {
+          backgroundImage: `url(${bgValue})`,
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundAttachment: "fixed",
@@ -3417,7 +3499,7 @@ export default function Dashboard() {
         <div style={styles.right}>
           <select
             value={themeKey}
-            onChange={(e) => setThemeKey(e.target.value)}
+            onChange={(e) => { const k = e.target.value; setThemeKey(k); setUserSettings((p) => ({ ...(p || {}), theme_key: k })); }}
             style={{ ...styles.input, minWidth: 160 }}
             title="Theme"
           >
@@ -3446,7 +3528,7 @@ export default function Dashboard() {
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "settings" ? (
-        <UserSettingsPanel userId={auth.profile?.id} settings={userSettings} onChange={(s) => setUserSettings((prev) => ({ ...(prev || {}), ...(s || {}) }))} />
+        <UserSettingsPanel userId={auth.profile?.id} settings={userSettings} themeKey={themeKey} setThemeKey={setThemeKey} onChange={(s) => setUserSettings((prev) => ({ ...(prev || {}), ...(s || {}) }))} />
       ) : null}
       {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
