@@ -323,6 +323,27 @@ function TasksBoard({ isAdmin }) {
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
   }
 
+
+  async function deleteTask(taskId) {
+    if (!taskId) return;
+    setErr(null);
+
+    // Erst Unteraufgaben löschen (FK/Abhängigkeiten vermeiden)
+    const { error: subErr } = await supabase.from("subtasks").delete().eq("task_id", taskId);
+    if (subErr) {
+      setErr(subErr.message);
+      return;
+    }
+
+    const { error } = await supabase.from("tasks").delete().eq("id", taskId);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+  }
+
   async function createSeries() {
     if (!seriesForm.title.trim()) return;
     setErr(null);
@@ -604,8 +625,8 @@ function TasksBoard({ isAdmin }) {
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} />
-        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} />
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
@@ -822,6 +843,7 @@ function TaskColumn({
   onGuideOpen,
   members,
   onAssigneeChange,
+  onTaskDelete,
 }) {
   return (
     <div style={styles.panel}>
@@ -883,7 +905,18 @@ function TaskColumn({
                 <button style={styles.btnSmall} onClick={() => onToggle?.(t)} disabled={!canWrite}>
                   Status wechseln
                 </button>
-              </div>
+              
+                <button
+                  style={{ ...styles.btnSmall, borderColor: "#ef4444", color: "#b91c1c" }}
+                  onClick={() => {
+                    if (confirm("Aufgabe wirklich löschen?")) onTaskDelete?.(t.id);
+                  }}
+                  disabled={!canWrite}
+                  title="Aufgabe löschen"
+                >
+                  Löschen
+                </button>
+</div>
 
               {/* Unteraufgaben */}
               <div style={{ marginTop: 12 }}>
@@ -1771,6 +1804,7 @@ function GuidesPanel({ isAdmin }) {
                       multiple
                       onChange={(e) => {
                         const picked = Array.from(e.target.files || []);
+                        setPendingFiles((prev) => ({ ...prev, [g.id]: picked }));
                         // allow picking same file again later
                         e.target.value = "";
                       }}
@@ -1789,7 +1823,13 @@ function GuidesPanel({ isAdmin }) {
                     Upload starten
                   </button>
 
-                  {(pendingFiles[g.id] || []).length > 0 ? (
+                  
+                  <div style={{ fontSize: 12, color: "#666" }}>
+                    {Array.isArray(pendingFiles[g.id]) && pendingFiles[g.id].length > 0
+                      ? `${pendingFiles[g.id].length} Datei(en) ausgewählt`
+                      : "Keine Dateien."}
+                  </div>
+{(pendingFiles[g.id] || []).length > 0 ? (
                     <span style={{ color: "#666", fontSize: 13 }}>
                       Ausgewählt: {(pendingFiles[g.id] || []).map((f) => f.name).join(", ")}
                     </span>
@@ -1972,20 +2012,157 @@ function AreasPanel({ isAdmin }) {
 
 
 /* ---------------- Kanboard (Placeholder) ---------------- */
-function KanboardPanel() {
+
+function KanboardPanel({ isAdmin = false }) {
+  const [areas, setAreas] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const [filterAreaId, setFilterAreaId] = useState("all");
+  const [filterUserId, setFilterUserId] = useState("all");
+
+  useEffect(() => {
+    (async () => {
+      setErr(null);
+      setLoading(true);
+
+      const { data: aData } = await supabase.from("areas").select("id, name, color").order("name", { ascending: true });
+      if (Array.isArray(aData)) setAreas(aData);
+
+      const { data: pData } = await supabase.from("profiles").select("id, email, name, role").order("name", { ascending: true });
+      if (Array.isArray(pData)) setMembers(pData);
+
+      const { data: tData, error: tErr } = await supabase
+        .from("tasks")
+        .select("id, title, status, due_at, area_id, assignee_id, areas:area_id(id, name, color), assignee:assignee_id(id, name, email)")
+        .order("created_at", { ascending: false });
+
+      if (tErr) setErr(tErr.message);
+      if (Array.isArray(tData)) setTasks(tData);
+
+      setLoading(false);
+    })();
+  }, []);
+
+  async function moveTask(taskId, nextStatus) {
+    setErr(null);
+    const { error } = await supabase.from("tasks").update({ status: nextStatus }).eq("id", taskId);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: nextStatus } : t)));
+  }
+
+  const areaById = useMemo(() => new Map((areas || []).map((a) => [a.id, a])), [areas]);
+
+  const filtered = (tasks || []).filter((t) => {
+    if (filterAreaId !== "all" && String(t.area_id || "") !== String(filterAreaId)) return false;
+    if (filterUserId !== "all" && String(t.assignee_id || "") !== String(filterUserId)) return false;
+    return true;
+  });
+
+  const cols = {
+    todo: filtered.filter((t) => (t.status || "todo") === "todo"),
+    doing: filtered.filter((t) => (t.status || "") === "doing"),
+    done: filtered.filter((t) => (t.status || "") === "done"),
+  };
+
+  function onDragStart(e, taskId) {
+    e.dataTransfer.setData("text/plain", String(taskId));
+    e.dataTransfer.effectAllowed = "move";
+  }
+
+  function onDrop(e, status) {
+    e.preventDefault();
+    const id = e.dataTransfer.getData("text/plain");
+    if (!id) return;
+    moveTask(id, status);
+  }
+
+  function allowDrop(e) {
+    e.preventDefault();
+  }
+
   return (
     <div style={styles.panel}>
-      <div style={styles.h3}>Kanboard</div>
-      <div style={{ color: "#666" }}>
-        Dieser Bereich ist vorbereitet. Wenn du willst, bauen wir hier ein echtes Kanban-Board mit Drag & Drop (ToDo / In Arbeit / Erledigt),
-        Filtern und Bereichsfarben.
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Kanboard</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={filterAreaId} onChange={(e) => setFilterAreaId(e.target.value)} style={styles.input}>
+            <option value="all">Alle Bereiche</option>
+            {(areas || []).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+          <select value={filterUserId} onChange={(e) => setFilterUserId(e.target.value)} style={styles.input}>
+            <option value="all">Alle Nutzer</option>
+            {(members || []).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name || m.email || m.id}
+              </option>
+            ))}
+          </select>
+          <button type="button" style={styles.btn} onClick={() => location.reload()}>
+            Neu laden
+          </button>
+        </div>
+      </div>
+
+      {err ? <div style={styles.errorBox}>{err}</div> : null}
+      {loading ? <div style={{ color: "#666" }}>Lädt…</div> : null}
+
+      <div style={styles.kanbanGrid}>
+        {[
+          ["todo", "ToDo"],
+          ["doing", "In Arbeit"],
+          ["done", "Erledigt"],
+        ].map(([key, label]) => (
+          <div key={key} style={styles.kanCol} onDragOver={allowDrop} onDrop={(e) => onDrop(e, key)}>
+            <div style={styles.colHeader}>
+              <div style={styles.h3}>
+                {label} <span style={styles.badge}>{cols[key].length}</span>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {cols[key].map((t) => {
+                const areaObj = (t.area_id && areaById.get(t.area_id)) || t.areas || null;
+                const areaLabel = t.area_label || areaObj?.name || "";
+                const color = t.area_color || areaObj?.color || "#94a3b8";
+                const assigneeName = t.assignee?.name || t.assignee?.email || (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
+
+                return (
+                  <div key={t.id} style={{ ...styles.card, cursor: "grab" }} draggable onDragStart={(e) => onDragStart(e, t.id)}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span style={styles.dot(color)} />
+                      <div style={{ fontWeight: 800 }}>{t.title}</div>
+                      {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
+                      <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>Zuständig: {assigneeName}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
+              Tipp: Aufgaben per Drag & Drop in eine andere Spalte ziehen.
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
+
 /* ---------------- Calendar ---------------- */
-function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = false }) {
+function CalendarPanel({ areaList = [], userList = [], currentUser = null, isAdmin = false }) {
   const [view, setView] = useState("month"); // "month" | "week"
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -2002,6 +2179,34 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
   // filters
   const [filterAreaId, setFilterAreaId] = useState("all");
   const [filterUserId, setFilterUserId] = useState("all");
+
+
+  const [areaList, setAreaList] = useState(() => (Array.isArray(areaList) ? areaList : []));
+  const [userList, setUserList] = useState(() => (Array.isArray(userList) ? userList : []));
+
+  useEffect(() => {
+    // Fallback: Wenn keine Bereiche/Nutzer als Props reinkommen, selbst laden
+    (async () => {
+      try {
+        if (!Array.isArray(areaList) || areaList.length === 0) {
+          const { data: aData } = await supabase.from("areaList").select("id, name, color").order("name", { ascending: true });
+          if (Array.isArray(aData)) setAreaList(aData);
+        } else {
+          setAreaList(areaList);
+        }
+
+        if (!Array.isArray(userList) || userList.length === 0) {
+          const { data: pData } = await supabase.from("profiles").select("id, email, name, role").order("name", { ascending: true });
+          if (Array.isArray(pData)) setUserList(pData);
+        } else {
+          setUserList(userList);
+        }
+      } catch (_) {
+        // ignore
+      }
+    })();
+  }, [areaList, userList]);
+
 
   // tasks data
   const [tasks, setTasks] = useState([]);
@@ -2053,7 +2258,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
       let q = supabase
         .from("tasks")
         .select(
-          "id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at"
+          "id,title,description,status,area_id,assignee_id,due_at,created_at,updated_at"
         )
         .gte("due_at", rangeStart.toISOString())
         .lte("due_at", rangeEnd.toISOString())
@@ -2115,7 +2320,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
     return tasks.filter((t) => {
       if (!t?.due_at) return false;
       if (filterAreaId !== "all" && t.area_id !== filterAreaId) return false;
-      if (filterUserId !== "all" && t.assigned_to !== filterUserId) return false;
+      if (filterUserId !== "all" && t.assignee_id !== filterUserId) return false;
       return true;
     });
   }, [tasks, filterAreaId, filterUserId]);
@@ -2174,14 +2379,14 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
         description: "",
         status: "open",
         area_id: filterAreaId !== "all" ? filterAreaId : null,
-        assigned_to:
+        assignee_id:
           filterUserId !== "all" ? filterUserId : currentUser?.id || null,
         due_at: dueIso,
       };
       const { data, error } = await supabase
         .from("tasks")
         .insert(insert)
-        .select("id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at")
+        .select("id,title,description,status,area_id,assignee_id,due_at,created_at,updated_at")
         .single();
       if (error) throw error;
       setTasks((prev) => [...prev, data].sort((a, b) => new Date(a.due_at) - new Date(b.due_at)));
@@ -2211,8 +2416,8 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
   };
 
   const renderTaskPill = (t) => {
-    const area = areas?.find((a) => a.id === t.area_id);
-    const assignee = users?.find((u) => u.id === t.assigned_to);
+    const area = areaList?.find((a) => a.id === t.area_id);
+    const assignee = userList?.find((u) => u.id === t.assignee_id);
     const label = `${t.title}${assignee ? ` · ${assignee.name}` : ""}`;
     return (
       <div
@@ -2364,8 +2569,8 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
 
   const EditRow = ({ task }) => {
     const isEditing = editingId === task.id;
-    const area = areas?.find((a) => a.id === task.area_id);
-    const assignee = users?.find((u) => u.id === task.assigned_to);
+    const area = areaList?.find((a) => a.id === task.area_id);
+    const assignee = userList?.find((u) => u.id === task.assignee_id);
     const disabled = savingId === task.id;
 
     return (
@@ -2474,7 +2679,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
                   disabled={disabled}
                 >
                   <option value="">—</option>
-                  {(areas || []).map((a) => (
+                  {(areaList || []).map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name}
                     </option>
@@ -2485,12 +2690,12 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
                 <label style={styles.label}>Nutzer</label>
                 <select
                   style={styles.select}
-                  value={task.assigned_to || ""}
-                  onChange={(e) => updateTask(task.id, { assigned_to: e.target.value || null })}
+                  value={task.assignee_id || ""}
+                  onChange={(e) => updateTask(task.id, { assignee_id: e.target.value || null })}
                   disabled={disabled}
                 >
                   <option value="">—</option>
-                  {(users || []).filter(canSeeUser).map((u) => (
+                  {(userList || []).filter(canSeeUser).map((u) => (
                     <option key={u.id} value={u.id}>
                       {u.name}
                     </option>
@@ -2593,7 +2798,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
               title="Bereich-Filter"
             >
               <option value="all">Alle Bereiche</option>
-              {(areas || []).map((a) => (
+              {(areaList || []).map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name}
                 </option>
@@ -2607,7 +2812,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
               title="Nutzer-Filter"
             >
               <option value="all">Alle Nutzer</option>
-              {(users || []).filter(canSeeUser).map((u) => (
+              {(userList || []).filter(canSeeUser).map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.name}
                 </option>
@@ -2946,7 +3151,10 @@ export default function Dashboard() {
         </div>
 
         <div style={styles.right}>
-          <div style={{ color: "#555", fontSize: 14 }}>{auth.profile?.email || auth.user.email}</div>
+          <div style={{ display: "grid", gap: 2 }}>
+            <div style={{ color: "#555", fontSize: 14 }}>{auth.profile?.email || auth.user.email}</div>
+            <div style={{ color: "#777", fontSize: 12 }}>{new Date().toLocaleString("de-DE")} · Version {process.env.NEXT_PUBLIC_APP_VERSION || "dev"}</div>
+          </div>
           <button style={styles.btn} onClick={signOut}>
             Abmelden
           </button>
@@ -2956,8 +3164,8 @@ export default function Dashboard() {
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
-{activeTab === "kanboard" ? <KanboardPanel /> : null}
-      {activeTab === "calendar" ? <CalendarPanel areas={[]} users={[]} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
+{activeTab === "kanboard" ? <KanboardPanel isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "calendar" ? <CalendarPanel currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "settings" ? (
@@ -3035,6 +3243,20 @@ const styles = {
     padding: 16,
     boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
     marginBottom: 14,
+  },
+
+  kanbanGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(280px, 1fr))",
+    gap: 14,
+    alignItems: "start",
+  },
+  kanCol: {
+    background: "rgba(255,255,255,0.92)",
+    border: "1px solid rgba(216,224,239,0.95)",
+    borderRadius: 18,
+    padding: 12,
+    minHeight: 240,
   },
 
   details: {
