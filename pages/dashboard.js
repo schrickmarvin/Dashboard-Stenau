@@ -2344,7 +2344,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
       let q = supabase
         .from("tasks")
         .select(
-          "id,title,description,status,area_id,assignee_id,due_at,created_at,updated_at"
+          "id,title,status,area_id,assignee_id,due_at,created_at,updated_at"
         )
         .gte("due_at", rangeStart.toISOString())
         .lte("due_at", rangeEnd.toISOString())
@@ -2462,7 +2462,6 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
       const dueIso = mergeDateKeepTime(null, selectedDate);
       const insert = {
         title,
-        description: "",
         status: "open",
         area_id: filterAreaId !== "all" ? filterAreaId : null,
         assignee_id:
@@ -2472,7 +2471,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
       const { data, error } = await supabase
         .from("tasks")
         .insert(insert)
-        .select("id,title,description,status,area_id,assignee_id,due_at,created_at,updated_at")
+        .select("id,title,status,area_id,assignee_id,due_at,created_at,updated_at")
         .single();
       if (error) throw error;
       setTasks((prev) => [...prev, data].sort((a, b) => new Date(a.due_at) - new Date(b.due_at)));
@@ -2788,17 +2787,6 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
                   ))}
                 </select>
               </div>
-            </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={styles.label}>Beschreibung</label>
-              <textarea
-                style={styles.textarea}
-                defaultValue={task.description || ""}
-                rows={3}
-                onBlur={(e) => updateTask(task.id, { description: e.target.value })}
-                disabled={disabled}
-              />
             </div>
           </div>
         ) : null}
