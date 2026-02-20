@@ -2022,6 +2022,7 @@ function KanboardPanel({ isAdmin = false }) {
 
   const [filterAreaId, setFilterAreaId] = useState("all");
   const [filterUserId, setFilterUserId] = useState("all");
+  const [viewMode, setViewMode] = useState("board"); // "board" | "assignee"
 
   useEffect(() => {
     (async () => {
@@ -2107,6 +2108,10 @@ function KanboardPanel({ isAdmin = false }) {
               </option>
             ))}
           </select>
+          <select value={viewMode} onChange={(e) => setViewMode(e.target.value)} style={styles.input}>
+            <option value="board">Kanban</option>
+            <option value="assignee">Nach Mitarbeiter</option>
+          </select>
           <button type="button" style={styles.btn} onClick={() => location.reload()}>
             Neu laden
           </button>
@@ -2116,6 +2121,7 @@ function KanboardPanel({ isAdmin = false }) {
       {err ? <div style={styles.errorBox}>{err}</div> : null}
       {loading ? <div style={{ color: "#666" }}>Lädt…</div> : null}
 
+      {viewMode === "board" ? (
       <div style={styles.kanbanGrid}>
         {[
           ["todo", "ToDo"],
@@ -2156,6 +2162,74 @@ function KanboardPanel({ isAdmin = false }) {
           </div>
         ))}
       </div>
+      ) : (
+        <div style={{ display: "grid", gap: 12 }}>
+          {(filterUserId === "all" ? (members || []) : (members || []).filter((m) => String(m.id) === String(filterUserId))).map((m) => {
+            const mine = (filtered || []).filter((t) => String(t.assignee_id || "") === String(m.id));
+            const by = {
+              todo: mine.filter((t) => (t.status || "todo") === "todo"),
+              doing: mine.filter((t) => (t.status || "") === "doing"),
+              done: mine.filter((t) => (t.status || "") === "done"),
+            };
+
+            // optional: hide empty users when "all"
+            if (filterUserId === "all" && mine.length === 0) return null;
+
+            return (
+              <div key={m.id} style={styles.card}>
+                <div style={styles.rowBetween}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 900 }}>{m.name || m.email || m.id}</div>
+                    <span style={styles.pill}>ToDo: {by.todo.length}</span>
+                    <span style={styles.pill}>In Arbeit: {by.doing.length}</span>
+                    <span style={styles.pill}>Erledigt: {by.done.length}</span>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                  {[
+                    ["todo", "ToDo"],
+                    ["doing", "In Arbeit"],
+                    ["done", "Erledigt"],
+                  ].map(([k, label]) => (
+                    <div key={k} style={{ ...styles.kanCol, borderRadius: 12 }}>
+                      <div style={styles.colHeader}>
+                        <div style={styles.h3}>
+                          {label} <span style={styles.badge}>{by[k].length}</span>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "grid", gap: 10 }}>
+                        {by[k].map((t) => {
+                          const areaObj = (t.area_id && areaById.get(t.area_id)) || t.areas || null;
+                          const areaLabel = t.area_label || areaObj?.name || "";
+                          const color = t.area_color || areaObj?.color || "#94a3b8";
+
+                          return (
+                            <div key={t.id} style={{ ...styles.card, cursor: "grab" }} draggable onDragStart={(e) => onDragStart(e, t.id)}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                                <span style={styles.dot(color)} />
+                                <div style={{ fontWeight: 800 }}>{t.title}</div>
+                                {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
+                                <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
+                        Tipp: Aufgaben per Drag & Drop in eine andere Spalte ziehen.
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
     </div>
   );
 }
@@ -2179,6 +2253,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
   // filters
   const [filterAreaId, setFilterAreaId] = useState("all");
   const [filterUserId, setFilterUserId] = useState("all");
+  const [viewMode, setViewMode] = useState("board"); // "board" | "assignee"
 
 
   const [areaList, setAreaList] = useState(() => (Array.isArray(areaListProp) ? areaListProp : []));
