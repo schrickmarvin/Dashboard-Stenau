@@ -4,7 +4,6 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { themePresets } from "../dashboardTheme";
 
 /* ---------------- Supabase --------------- */
 
@@ -324,6 +323,27 @@ function TasksBoard({ isAdmin }) {
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
   }
 
+
+  async function deleteTask(taskId) {
+    if (!taskId) return;
+    setErr(null);
+
+    // Erst Unteraufgaben löschen (FK/Abhängigkeiten vermeiden)
+    const { error: subErr } = await supabase.from("subtasks").delete().eq("task_id", taskId);
+    if (subErr) {
+      setErr(subErr.message);
+      return;
+    }
+
+    const { error } = await supabase.from("tasks").delete().eq("id", taskId);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+  }
+
   async function createSeries() {
     if (!seriesForm.title.trim()) return;
     setErr(null);
@@ -605,8 +625,8 @@ function TasksBoard({ isAdmin }) {
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} />
-        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} />
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
@@ -823,6 +843,7 @@ function TaskColumn({
   onGuideOpen,
   members,
   onAssigneeChange,
+  onTaskDelete,
 }) {
   return (
     <div style={styles.panel}>
@@ -884,7 +905,18 @@ function TaskColumn({
                 <button style={styles.btnSmall} onClick={() => onToggle?.(t)} disabled={!canWrite}>
                   Status wechseln
                 </button>
-              </div>
+              
+                <button
+                  style={{ ...styles.btnSmall, borderColor: "#ef4444", color: "#b91c1c" }}
+                  onClick={() => {
+                    if (confirm("Aufgabe wirklich löschen?")) onTaskDelete?.(t.id);
+                  }}
+                  disabled={!canWrite}
+                  title="Aufgabe löschen"
+                >
+                  Löschen
+                </button>
+</div>
 
               {/* Unteraufgaben */}
               <div style={{ marginTop: 12 }}>
@@ -1122,79 +1154,6 @@ async function upsertUserSettings(userId,  patch) {
   const { error } = await supabase.from("user_settings").upsert(payload, { onConflict: "user_id" });
   if (error) throw error;
   return true;
-/* ---------------- UI Theme (Premium Glass) ---------------- */
-const FALLBACK_THEME_KEY = "corporate"; // Stenau Default
-const FALLBACK_GLASS_MODE = "glassLight"; // "glassLight" | "glassDark"
-
-function clampAlpha(a, min = 0, max = 1) {
-  const x = Number(a);
-  if (Number.isNaN(x)) return min;
-  return Math.min(max, Math.max(min, x));
-}
-
-function computeGlassVars({ themeKey, glassMode, userSettings }) {
-  const preset = themePresets?.[themeKey] || themePresets?.[FALLBACK_THEME_KEY] || themePresets?.classic;
-
-  // base from preset
-  const c = preset?.colors || {};
-  const r = preset?.radius || {};
-
-  // user overrides (existing table)
-  const primary = (userSettings?.primary_color || c.primary || "#0b6b2a");
-  const pageBg = (userSettings?.background_color || c.pageBg || "#f3f6fb");
-  const bgImg = String(userSettings?.background_image_url || "").trim();
-
-  const isDark = glassMode === "glassDark";
-
-  // glass parameters tuned for readability (tables!)
-  const glassPanel = isDark ? "rgba(17,24,39,0.68)" : "rgba(255,255,255,0.78)";
-  const glassCard  = isDark ? "rgba(31,41,55,0.62)" : "rgba(255,255,255,0.72)";
-  const glassTopbar = isDark ? "rgba(17,24,39,0.55)" : "rgba(255,255,255,0.55)";
-  const glassBorder = isDark ? "rgba(255,255,255,0.10)" : "rgba(15,23,42,0.10)";
-  const glassBorderSoft = isDark ? "rgba(255,255,255,0.08)" : "rgba(15,23,42,0.06)";
-  const shadow = isDark ? "0 28px 70px rgba(0,0,0,0.45)" : "0 28px 70px rgba(15,23,42,0.18)";
-
-  const text = isDark ? (c.text || "#e5e7eb") : (c.text || "#1f2937");
-  const muted = isDark ? (c.mutedText || "#9ca3af") : (c.mutedText || "#556274");
-
-  return {
-    // tokens
-    "--primary": primary,
-    "--primary-text": c.primaryText || (isDark ? "#0b1120" : "#ffffff"),
-    "--page-bg": pageBg,
-    "--panel-bg": glassPanel,
-    "--card-bg": glassCard,
-    "--topbar-bg": glassTopbar,
-    "--border": glassBorder,
-    "--border-soft": glassBorderSoft,
-    "--text": text,
-    "--muted-text": muted,
-    "--badge-bg": isDark ? "rgba(17,24,39,0.65)" : "rgba(255,255,255,0.60)",
-    "--badge-text": isDark ? "#e5e7eb" : "#334155",
-    "--pill-bg": isDark ? "rgba(30,41,59,0.70)" : "rgba(255,255,255,0.58)",
-    "--error-bg": isDark ? "rgba(127,29,29,0.25)" : "rgba(255,243,243,0.85)",
-    "--error-border": isDark ? "rgba(248,113,113,0.35)" : "rgba(255,210,210,0.95)",
-    "--error-text": isDark ? "#fecaca" : "#a40000",
-    "--shadow": shadow,
-    "--shadow-soft": isDark ? "0 10px 30px rgba(0,0,0,0.35)" : "0 10px 30px rgba(15,23,42,0.10)",
-    "--blur": isDark ? "16px" : "14px",
-    "--radius-card": `${r.card ?? 18}px`,
-    "--radius-panel": `${r.panel ?? 18}px`,
-    "--radius-input": `${r.input ?? 12}px`,
-    "--radius-button": `${r.button ?? 12}px`,
-    "--radius-tab": `${r.tab ?? 999}px`,
-    "--radius-pill": `${r.pill ?? 999}px`,
-    "--radius-badge": `${r.badge ?? 999}px`,
-    "--font-family": preset?.fontFamily || "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-    // background image
-    __bgImg: bgImg,
-  };
-}
-
-function safeJsonParse(v) {
-  try { return JSON.parse(v); } catch { return null; }
-}
-
 }
 
 
@@ -1864,7 +1823,13 @@ function GuidesPanel({ isAdmin }) {
                     Upload starten
                   </button>
 
-                  {(pendingFiles[g.id] || []).length > 0 ? (
+                  
+                  <div style={{ fontSize: 12, color: "#666" }}>
+                    {Array.isArray(pendingFiles[g.id]) && pendingFiles[g.id].length > 0
+                      ? `${pendingFiles[g.id].length} Datei(en) ausgewählt`
+                      : "Keine Dateien."}
+                  </div>
+{(pendingFiles[g.id] || []).length > 0 ? (
                     <span style={{ color: "#666", fontSize: 13 }}>
                       Ausgewählt: {(pendingFiles[g.id] || []).map((f) => f.name).join(", ")}
                     </span>
@@ -2047,20 +2012,157 @@ function AreasPanel({ isAdmin }) {
 
 
 /* ---------------- Kanboard (Placeholder) ---------------- */
-function KanboardPanel() {
+
+function KanboardPanel({ isAdmin = false }) {
+  const [areas, setAreas] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const [filterAreaId, setFilterAreaId] = useState("all");
+  const [filterUserId, setFilterUserId] = useState("all");
+
+  useEffect(() => {
+    (async () => {
+      setErr(null);
+      setLoading(true);
+
+      const { data: aData } = await supabase.from("areas").select("id, name, color").order("name", { ascending: true });
+      if (Array.isArray(aData)) setAreas(aData);
+
+      const { data: pData } = await supabase.from("profiles").select("id, email, name, role").order("name", { ascending: true });
+      if (Array.isArray(pData)) setMembers(pData);
+
+      const { data: tData, error: tErr } = await supabase
+        .from("tasks")
+        .select("id, title, status, due_at, area_id, assignee_id, areas:area_id(id, name, color), assignee:assignee_id(id, name, email)")
+        .order("created_at", { ascending: false });
+
+      if (tErr) setErr(tErr.message);
+      if (Array.isArray(tData)) setTasks(tData);
+
+      setLoading(false);
+    })();
+  }, []);
+
+  async function moveTask(taskId, nextStatus) {
+    setErr(null);
+    const { error } = await supabase.from("tasks").update({ status: nextStatus }).eq("id", taskId);
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: nextStatus } : t)));
+  }
+
+  const areaById = useMemo(() => new Map((areas || []).map((a) => [a.id, a])), [areas]);
+
+  const filtered = (tasks || []).filter((t) => {
+    if (filterAreaId !== "all" && String(t.area_id || "") !== String(filterAreaId)) return false;
+    if (filterUserId !== "all" && String(t.assignee_id || "") !== String(filterUserId)) return false;
+    return true;
+  });
+
+  const cols = {
+    todo: filtered.filter((t) => (t.status || "todo") === "todo"),
+    doing: filtered.filter((t) => (t.status || "") === "doing"),
+    done: filtered.filter((t) => (t.status || "") === "done"),
+  };
+
+  function onDragStart(e, taskId) {
+    e.dataTransfer.setData("text/plain", String(taskId));
+    e.dataTransfer.effectAllowed = "move";
+  }
+
+  function onDrop(e, status) {
+    e.preventDefault();
+    const id = e.dataTransfer.getData("text/plain");
+    if (!id) return;
+    moveTask(id, status);
+  }
+
+  function allowDrop(e) {
+    e.preventDefault();
+  }
+
   return (
     <div style={styles.panel}>
-      <div style={styles.h3}>Kanboard</div>
-      <div style={{ color: "#666" }}>
-        Dieser Bereich ist vorbereitet. Wenn du willst, bauen wir hier ein echtes Kanban-Board mit Drag & Drop (ToDo / In Arbeit / Erledigt),
-        Filtern und Bereichsfarben.
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Kanboard</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={filterAreaId} onChange={(e) => setFilterAreaId(e.target.value)} style={styles.input}>
+            <option value="all">Alle Bereiche</option>
+            {(areas || []).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+          <select value={filterUserId} onChange={(e) => setFilterUserId(e.target.value)} style={styles.input}>
+            <option value="all">Alle Nutzer</option>
+            {(members || []).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name || m.email || m.id}
+              </option>
+            ))}
+          </select>
+          <button type="button" style={styles.btn} onClick={() => location.reload()}>
+            Neu laden
+          </button>
+        </div>
+      </div>
+
+      {err ? <div style={styles.errorBox}>{err}</div> : null}
+      {loading ? <div style={{ color: "#666" }}>Lädt…</div> : null}
+
+      <div style={styles.kanbanGrid}>
+        {[
+          ["todo", "ToDo"],
+          ["doing", "In Arbeit"],
+          ["done", "Erledigt"],
+        ].map(([key, label]) => (
+          <div key={key} style={styles.kanCol} onDragOver={allowDrop} onDrop={(e) => onDrop(e, key)}>
+            <div style={styles.colHeader}>
+              <div style={styles.h3}>
+                {label} <span style={styles.badge}>{cols[key].length}</span>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {cols[key].map((t) => {
+                const areaObj = (t.area_id && areaById.get(t.area_id)) || t.areas || null;
+                const areaLabel = t.area_label || areaObj?.name || "";
+                const color = t.area_color || areaObj?.color || "#94a3b8";
+                const assigneeName = t.assignee?.name || t.assignee?.email || (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
+
+                return (
+                  <div key={t.id} style={{ ...styles.card, cursor: "grab" }} draggable onDragStart={(e) => onDragStart(e, t.id)}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span style={styles.dot(color)} />
+                      <div style={{ fontWeight: 800 }}>{t.title}</div>
+                      {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
+                      <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>Zuständig: {assigneeName}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
+              Tipp: Aufgaben per Drag & Drop in eine andere Spalte ziehen.
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
+
 /* ---------------- Calendar ---------------- */
-function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = false }) {
+function CalendarPanel({ areaList = [], userList = [], currentUser = null, isAdmin = false }) {
   const [view, setView] = useState("month"); // "month" | "week"
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -2077,6 +2179,34 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
   // filters
   const [filterAreaId, setFilterAreaId] = useState("all");
   const [filterUserId, setFilterUserId] = useState("all");
+
+
+  const [areaList, setAreaList] = useState(() => (Array.isArray(areaList) ? areaList : []));
+  const [userList, setUserList] = useState(() => (Array.isArray(userList) ? userList : []));
+
+  useEffect(() => {
+    // Fallback: Wenn keine Bereiche/Nutzer als Props reinkommen, selbst laden
+    (async () => {
+      try {
+        if (!Array.isArray(areaList) || areaList.length === 0) {
+          const { data: aData } = await supabase.from("areaList").select("id, name, color").order("name", { ascending: true });
+          if (Array.isArray(aData)) setAreaList(aData);
+        } else {
+          setAreaList(areaList);
+        }
+
+        if (!Array.isArray(userList) || userList.length === 0) {
+          const { data: pData } = await supabase.from("profiles").select("id, email, name, role").order("name", { ascending: true });
+          if (Array.isArray(pData)) setUserList(pData);
+        } else {
+          setUserList(userList);
+        }
+      } catch (_) {
+        // ignore
+      }
+    })();
+  }, [areaList, userList]);
+
 
   // tasks data
   const [tasks, setTasks] = useState([]);
@@ -2128,7 +2258,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
       let q = supabase
         .from("tasks")
         .select(
-          "id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at"
+          "id,title,description,status,area_id,assignee_id,due_at,created_at,updated_at"
         )
         .gte("due_at", rangeStart.toISOString())
         .lte("due_at", rangeEnd.toISOString())
@@ -2190,7 +2320,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
     return tasks.filter((t) => {
       if (!t?.due_at) return false;
       if (filterAreaId !== "all" && t.area_id !== filterAreaId) return false;
-      if (filterUserId !== "all" && t.assigned_to !== filterUserId) return false;
+      if (filterUserId !== "all" && t.assignee_id !== filterUserId) return false;
       return true;
     });
   }, [tasks, filterAreaId, filterUserId]);
@@ -2249,14 +2379,14 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
         description: "",
         status: "open",
         area_id: filterAreaId !== "all" ? filterAreaId : null,
-        assigned_to:
+        assignee_id:
           filterUserId !== "all" ? filterUserId : currentUser?.id || null,
         due_at: dueIso,
       };
       const { data, error } = await supabase
         .from("tasks")
         .insert(insert)
-        .select("id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at")
+        .select("id,title,description,status,area_id,assignee_id,due_at,created_at,updated_at")
         .single();
       if (error) throw error;
       setTasks((prev) => [...prev, data].sort((a, b) => new Date(a.due_at) - new Date(b.due_at)));
@@ -2286,8 +2416,8 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
   };
 
   const renderTaskPill = (t) => {
-    const area = areas?.find((a) => a.id === t.area_id);
-    const assignee = users?.find((u) => u.id === t.assigned_to);
+    const area = areaList?.find((a) => a.id === t.area_id);
+    const assignee = userList?.find((u) => u.id === t.assignee_id);
     const label = `${t.title}${assignee ? ` · ${assignee.name}` : ""}`;
     return (
       <div
@@ -2439,8 +2569,8 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
 
   const EditRow = ({ task }) => {
     const isEditing = editingId === task.id;
-    const area = areas?.find((a) => a.id === task.area_id);
-    const assignee = users?.find((u) => u.id === task.assigned_to);
+    const area = areaList?.find((a) => a.id === task.area_id);
+    const assignee = userList?.find((u) => u.id === task.assignee_id);
     const disabled = savingId === task.id;
 
     return (
@@ -2549,7 +2679,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
                   disabled={disabled}
                 >
                   <option value="">—</option>
-                  {(areas || []).map((a) => (
+                  {(areaList || []).map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name}
                     </option>
@@ -2560,12 +2690,12 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
                 <label style={styles.label}>Nutzer</label>
                 <select
                   style={styles.select}
-                  value={task.assigned_to || ""}
-                  onChange={(e) => updateTask(task.id, { assigned_to: e.target.value || null })}
+                  value={task.assignee_id || ""}
+                  onChange={(e) => updateTask(task.id, { assignee_id: e.target.value || null })}
                   disabled={disabled}
                 >
                   <option value="">—</option>
-                  {(users || []).filter(canSeeUser).map((u) => (
+                  {(userList || []).filter(canSeeUser).map((u) => (
                     <option key={u.id} value={u.id}>
                       {u.name}
                     </option>
@@ -2668,7 +2798,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
               title="Bereich-Filter"
             >
               <option value="all">Alle Bereiche</option>
-              {(areas || []).map((a) => (
+              {(areaList || []).map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name}
                 </option>
@@ -2682,7 +2812,7 @@ function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = f
               title="Nutzer-Filter"
             >
               <option value="all">Alle Nutzer</option>
-              {(users || []).filter(canSeeUser).map((u) => (
+              {(userList || []).filter(canSeeUser).map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.name}
                 </option>
@@ -2853,23 +2983,12 @@ function UserSettingsPanel({ userId, settings, onChange }) {
 /* ---------------- Main Component ---------------- */
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("board");
-  const [themeKey, setThemeKey] = useState(FALLBACK_THEME_KEY);
-  const [glassMode, setGlassMode] = useState(FALLBACK_GLASS_MODE);
   const [auth, setAuth] = useState({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
 
   const [userSettings, setUserSettings] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
-
-
-// UI prefs (local first; DB optional)
-useEffect(() => {
-  const t = localStorage.getItem("stenau-themeKey");
-  const m = localStorage.getItem("stenau-glassMode");
-  if (t && themePresets?.[t]) setThemeKey(t);
-  if (m === "glassLight" || m === "glassDark") setGlassMode(m);
-}, []);
 
 
   async function refreshAuth() {
@@ -2912,33 +3031,22 @@ useEffect(() => {
     await supabase.auth.signOut();
   }
 
-const vars = useMemo(
-  () => computeGlassVars({ themeKey, glassMode, userSettings }),
-  [themeKey, glassMode, userSettings]
-);
-
-useEffect(() => {
-  localStorage.setItem("stenau-themeKey", themeKey);
-}, [themeKey]);
-
-useEffect(() => {
-  localStorage.setItem("stenau-glassMode", glassMode);
-}, [glassMode]);
-
-const bgImg = vars.__bgImg;
-
-const pageStyle = {
-  ...styles.page,
-  ...Object.fromEntries(Object.entries(vars).filter(([k]) => k.startsWith("--"))),
-  ...(bgImg
-    ? {
-        backgroundImage: `url(${bgImg})`,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-        backgroundAttachment: "fixed",
-      }
-    : {}),
-};
+  const primary = userSettings?.primary_color || "#0b6b2a";
+  const pageBg = userSettings?.background_color || "#f3f6fb";
+  const bgImg = (userSettings?.background_image_url || "").trim();
+  const pageStyle = {
+    ...styles.page,
+    "--primary": primary,
+    "--page-bg": pageBg,
+    ...(bgImg
+      ? {
+          backgroundImage: `url(${bgImg})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundAttachment: "fixed",
+        }
+      : {}),
+  };
 
   
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -3043,32 +3151,10 @@ const pageStyle = {
         </div>
 
         <div style={styles.right}>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <select
-          value={themeKey}
-          onChange={(e) => setThemeKey(e.target.value)}
-          style={{ ...styles.select, minWidth: 170 }}
-          title="Theme"
-        >
-          {Object.entries(themePresets || {}).map(([key, preset]) => (
-            <option key={key} value={key}>
-              {preset?.label || key}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={glassMode}
-          onChange={(e) => setGlassMode(e.target.value)}
-          style={{ ...styles.select, minWidth: 150 }}
-          title="Look"
-        >
-          <option value="glassLight">Glass Hell</option>
-          <option value="glassDark">Glass Dark</option>
-        </select>
-      </div>
-
-      <div style={{ color: "var(--muted-text)", fontSize: 14 }}>{auth.profile?.email || auth.user.email}</div>
+          <div style={{ display: "grid", gap: 2 }}>
+            <div style={{ color: "#555", fontSize: 14 }}>{auth.profile?.email || auth.user.email}</div>
+            <div style={{ color: "#777", fontSize: 12 }}>{new Date().toLocaleString("de-DE")} · Version {process.env.NEXT_PUBLIC_APP_VERSION || "dev"}</div>
+          </div>
           <button style={styles.btn} onClick={signOut}>
             Abmelden
           </button>
@@ -3078,8 +3164,8 @@ const pageStyle = {
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
-{activeTab === "kanboard" ? <KanboardPanel /> : null}
-      {activeTab === "calendar" ? <CalendarPanel areas={[]} users={[]} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
+{activeTab === "kanboard" ? <KanboardPanel isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "calendar" ? <CalendarPanel currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "settings" ? (
@@ -3106,42 +3192,24 @@ function TabBtn({ active, onClick, children }) {
   );
 }
 
-/* ---------------- Styles (Premium Glass) ---------------- */
+/* ---------------- Styles ---------------- */
 const styles = {
   page: {
     minHeight: "100vh",
     background: "var(--page-bg, #f3f6fb)",
     padding: 18,
-    fontFamily: "var(--font-family, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif)",
-    color: "var(--text, #1f2937)",
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
   },
-
-  // glass helpers
-  glass: {
-    background: "var(--panel-bg, rgba(255,255,255,0.78))",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    boxShadow: "var(--shadow, 0 28px 70px rgba(15,23,42,0.18))",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
-  },
-
   topbar: {
     display: "flex",
     gap: 14,
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 14,
-    padding: 12,
-    borderRadius: 18,
-    background: "var(--topbar-bg, rgba(255,255,255,0.55))",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    boxShadow: "var(--shadow-soft, 0 10px 30px rgba(15,23,42,0.10))",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
   },
   brand: {
-    fontSize: 28,
-    fontWeight: 900,
+    fontSize: 30,
+    fontWeight: 800,
     letterSpacing: -0.5,
   },
   tabs: {
@@ -3151,292 +3219,230 @@ const styles = {
     flexWrap: "wrap",
   },
   tab: {
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    background: "rgba(255,255,255,0.35)",
+    border: "1px solid #d8e0ef",
+    background: "#fff",
     padding: "10px 14px",
-    borderRadius: "var(--radius-tab, 999px)",
+    borderRadius: 999,
     cursor: "pointer",
-    fontWeight: 800,
-    color: "var(--text, #1f2937)",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
-    transition: "transform 140ms ease, box-shadow 140ms ease, background 140ms ease",
+    fontWeight: 600,
   },
   tabActive: {
     background: "var(--primary, #0b6b2a)",
-    borderColor: "rgba(255,255,255,0.18)",
-    color: "var(--primary-text, #fff)",
-    boxShadow: "0 14px 30px rgba(0,0,0,0.12)",
-    transform: "translateY(-1px)",
+    borderColor: "var(--primary, #0b6b2a)",
+    color: "#fff",
   },
   right: {
     display: "flex",
     gap: 12,
     alignItems: "center",
   },
-
   panel: {
-    background: "var(--panel-bg, rgba(255,255,255,0.78))",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    borderRadius: "var(--radius-panel, 18px)",
+    background: "#fff",
+    border: "1px solid #d8e0ef",
+    borderRadius: 18,
     padding: 16,
-    boxShadow: "var(--shadow, 0 28px 70px rgba(15,23,42,0.18))",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
     marginBottom: 14,
   },
 
+  kanbanGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(280px, 1fr))",
+    gap: 14,
+    alignItems: "start",
+  },
+  kanCol: {
+    background: "rgba(255,255,255,0.92)",
+    border: "1px solid rgba(216,224,239,0.95)",
+    borderRadius: 18,
+    padding: 12,
+    minHeight: 240,
+  },
+
   details: {
-    background: "var(--card-bg, rgba(255,255,255,0.72))",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
+    background: "rgba(255,255,255,0.92)",
+    border: "1px solid rgba(216,224,239,0.9)",
     borderRadius: 14,
     padding: 12,
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
   },
   detailsSummary: {
     cursor: "pointer",
-    fontWeight: 900,
+    fontWeight: 800,
     listStyle: "none",
     outline: "none",
   },
 
   calendarOuter: {
     maxWidth: 1280,
-    margin: "0 auto",
+    margin: '0 auto',
   },
   calendarPanelCard: {
-    background: "var(--panel-bg, rgba(255,255,255,0.78))",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    borderRadius: "var(--radius-panel, 18px)",
+    background: 'rgba(255,255,255,0.92)',
+    border: '1px solid rgba(216,224,239,0.9)',
+    borderRadius: 18,
     padding: 16,
-    boxShadow: "var(--shadow, 0 28px 70px rgba(15,23,42,0.18))",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
+    boxShadow: '0 18px 50px rgba(0,0,0,0.10)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
     marginBottom: 14,
   },
   calendarHint: {
     fontSize: 12,
-    color: "var(--muted-text, #5b6b86)",
+    color: '#5b6b86',
     marginTop: 8,
   },
-
-  h3: { fontSize: 18, fontWeight: 900, marginBottom: 10 },
-  h4: { fontSize: 16, fontWeight: 900, marginBottom: 4 },
-
-  rowBetween: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
-
-  columns: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
-  col: { background: "transparent" },
-  colHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
-
+  h3: {
+    fontSize: 18,
+    fontWeight: 800,
+    marginBottom: 10,
+  },
+  h4: {
+    fontSize: 16,
+    fontWeight: 800,
+    marginBottom: 4,
+  },
+  rowBetween: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  columns: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 14,
+  },
+  col: {
+    background: "transparent",
+  },
+  colHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
   badge: {
     minWidth: 28,
     height: 28,
-    borderRadius: "var(--radius-badge, 999px)",
-    background: "var(--badge-bg, rgba(255,255,255,0.60))",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
+    borderRadius: 999,
+    background: "#eef2fb",
+    border: "1px solid #d8e0ef",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontWeight: 900,
-    color: "var(--badge-text, #334155)",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
+    fontWeight: 700,
+    color: "#333",
   },
-
   pill: {
     fontSize: 12,
     padding: "4px 10px",
-    borderRadius: "var(--radius-pill, 999px)",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    background: "var(--pill-bg, rgba(255,255,255,0.58))",
-    fontWeight: 900,
-    color: "var(--text, #1f2937)",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
+    borderRadius: 999,
+    border: "1px solid #d8e0ef",
+    background: "#f7f9ff",
+    fontWeight: 700,
   },
-
   card: {
-    background: "var(--card-bg, rgba(255,255,255,0.72))",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    borderRadius: "var(--radius-card, 18px)",
+    background: "#fff",
+    border: "1px solid #d8e0ef",
+    borderRadius: 18,
     padding: 14,
-    boxShadow: "var(--shadow-soft, 0 10px 30px rgba(15,23,42,0.10))",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
   },
-
   input: {
     padding: 10,
-    borderRadius: "var(--radius-input, 12px)",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
     outline: "none",
-    background: "rgba(255,255,255,0.35)",
+    background: "#fff",
     minWidth: 160,
-    color: "var(--text, #1f2937)",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
-  },
-  select: {
-    padding: 10,
-    borderRadius: "var(--radius-input, 12px)",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    outline: "none",
-    background: "rgba(255,255,255,0.35)",
-    minWidth: 160,
-    color: "var(--text, #1f2937)",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
   },
   textarea: {
     padding: 10,
-    borderRadius: "var(--radius-input, 12px)",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
     outline: "none",
-    background: "rgba(255,255,255,0.35)",
+    background: "#fff",
     width: "100%",
     resize: "vertical",
-    color: "var(--text, #1f2937)",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
   },
-
-  label: { fontSize: 12, fontWeight: 800, color: "var(--muted-text, #556274)" },
-
   btn: {
     padding: "10px 14px",
-    borderRadius: "var(--radius-button, 12px)",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    background: "rgba(255,255,255,0.35)",
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    background: "#fff",
     cursor: "pointer",
-    fontWeight: 900,
-    color: "var(--text, #1f2937)",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
-    transition: "transform 140ms ease, box-shadow 140ms ease",
+    fontWeight: 700,
   },
   btnPrimary: {
     padding: "10px 14px",
-    borderRadius: "var(--radius-button, 12px)",
-    border: "1px solid rgba(255,255,255,0.18)",
+    borderRadius: 12,
+    border: "1px solid var(--primary, #0b6b2a)",
     background: "var(--primary, #0b6b2a)",
-    color: "var(--primary-text, #fff)",
+    color: "#fff",
     cursor: "pointer",
-    fontWeight: 950,
-    boxShadow: "0 14px 30px rgba(0,0,0,0.12)",
-    transition: "transform 140ms ease, box-shadow 140ms ease",
+    fontWeight: 800,
   },
-  primaryBtn: {
-    padding: "10px 14px",
-    borderRadius: "var(--radius-button, 12px)",
-    border: "1px solid rgba(255,255,255,0.18)",
-    background: "var(--primary, #0b6b2a)",
-    color: "var(--primary-text, #fff)",
-    cursor: "pointer",
-    fontWeight: 950,
-    boxShadow: "0 14px 30px rgba(0,0,0,0.12)",
-  },
-
   btnSmall: {
     padding: "8px 10px",
-    borderRadius: "var(--radius-button, 12px)",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    background: "rgba(255,255,255,0.35)",
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    background: "#fff",
     cursor: "pointer",
-    fontWeight: 950,
-    color: "var(--text, #1f2937)",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
+    fontWeight: 800,
   },
-  smallBtn: {
-    padding: "8px 10px",
-    borderRadius: "var(--radius-button, 12px)",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    background: "rgba(255,255,255,0.35)",
-    cursor: "pointer",
-    fontWeight: 950,
-    color: "var(--text, #1f2937)",
-  },
-
-  btnSmallPrimary: {
-    padding: "8px 12px",
-    borderRadius: "var(--radius-button, 12px)",
-    border: "1px solid rgba(255,255,255,0.18)",
-    background: "var(--primary, #0b6b2a)",
-    color: "var(--primary-text, #fff)",
-    cursor: "pointer",
-    fontWeight: 950,
-    boxShadow: "0 14px 30px rgba(0,0,0,0.12)",
-  },
-  btnDanger: {
-    padding: "10px 14px",
-    borderRadius: "var(--radius-button, 12px)",
-    border: "1px solid rgba(239,68,68,0.35)",
-    background: "rgba(239,68,68,0.10)",
-    cursor: "pointer",
-    fontWeight: 950,
-    color: "var(--text, #1f2937)",
-  },
-
   modalBackdrop: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,0.45)",
+    background: "rgba(0,0,0,0.35)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     padding: 16,
     zIndex: 9999,
-    backdropFilter: "blur(10px)",
-    WebkitBackdropFilter: "blur(10px)",
   },
   modal: {
     width: "min(900px, 96vw)",
     maxHeight: "80vh",
     overflow: "auto",
-    background: "var(--panel-bg, rgba(255,255,255,0.78))",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    borderRadius: 20,
+    background: "#fff",
+    border: "1px solid #d8e0ef",
+    borderRadius: 18,
     padding: 16,
-    boxShadow: "var(--shadow, 0 28px 70px rgba(15,23,42,0.18))",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
+    boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
   },
-  modalHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
-
+  modalHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
   error: {
-    background: "var(--error-bg, rgba(255,243,243,0.85))",
-    border: "1px solid var(--error-border, rgba(255,210,210,0.95))",
-    color: "var(--error-text, #a40000)",
+    background: "#fff3f3",
+    border: "1px solid #ffd2d2",
+    color: "#a40000",
     padding: 12,
-    borderRadius: "var(--radius-input, 12px)",
+    borderRadius: 12,
     marginTop: 10,
     marginBottom: 10,
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
   },
-
   taskFormGrid: {
     display: "grid",
     gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr 1fr auto",
     gap: 10,
     alignItems: "start",
   },
-
   subRow: {
     display: "grid",
     gridTemplateColumns: "24px 1fr 1fr 78px 56px 44px",
     gap: 10,
     alignItems: "center",
   },
-
   dot: (color) => ({
     width: 12,
     height: 12,
     borderRadius: 999,
     background: color || "#94a3b8",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
+    border: "1px solid #d8e0ef",
     display: "inline-block",
   }),
 
@@ -3444,84 +3450,65 @@ const styles = {
     width: 14,
     height: 14,
     borderRadius: 999,
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
+    border: "1px solid #d8e0ef",
     display: "inline-block",
   },
-
+  btnSmallPrimary: {
+    padding: "8px 12px",
+    borderRadius: 12,
+    border: "1px solid var(--primary, #0b6b2a)",
+    background: "var(--primary, #0b6b2a)",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 900,
+  },
   colorInput: {
     width: 56,
     height: 38,
     padding: 0,
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    borderRadius: "var(--radius-input, 12px)",
-    background: "rgba(255,255,255,0.35)",
+    border: "1px solid #d8e0ef",
+    borderRadius: 12,
+    background: "#fff",
     cursor: "pointer",
   },
 
   fileBtn: {
     padding: "10px 14px",
-    borderRadius: "var(--radius-button, 12px)",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    background: "rgba(255,255,255,0.35)",
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    background: "#fff",
     cursor: "pointer",
-    fontWeight: 950,
+    fontWeight: 800,
     display: "inline-flex",
     alignItems: "center",
     gap: 8,
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
   },
   fileRow: {
     display: "flex",
     gap: 10,
     alignItems: "center",
     justifyContent: "space-between",
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    borderRadius: "var(--radius-button, 12px)",
+    border: "1px solid #d8e0ef",
+    borderRadius: 12,
     padding: "10px 12px",
-    background: "rgba(255,255,255,0.35)",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
+    background: "#fff",
   },
 
-  table: { width: "100%", borderCollapse: "collapse" },
+
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+  },
   th: {
     textAlign: "left",
     padding: 10,
-    borderBottom: "1px solid var(--border, rgba(15,23,42,0.10))",
+    borderBottom: "1px solid #d8e0ef",
     fontSize: 13,
-    color: "var(--muted-text, #556274)",
+    color: "#555",
   },
   td: {
     padding: 10,
-    borderBottom: "1px solid var(--border-soft, rgba(15,23,42,0.06))",
+    borderBottom: "1px solid #eef2fb",
     verticalAlign: "top",
-  },
-
-  // Calendar sub-styles used in CalendarPanel
-  sectionHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
-  sectionTitle: { fontWeight: 950, fontSize: 16 },
-  sectionSub: { fontSize: 12, color: "var(--muted-text, #556274)", marginTop: 2 },
-
-  tabBtn: {
-    padding: "8px 12px",
-    borderRadius: 999,
-    border: "1px solid var(--border, rgba(15,23,42,0.10))",
-    background: "rgba(255,255,255,0.35)",
-    cursor: "pointer",
-    fontWeight: 900,
-    color: "var(--text, #1f2937)",
-    backdropFilter: "blur(var(--blur, 14px))",
-    WebkitBackdropFilter: "blur(var(--blur, 14px))",
-  },
-  tabBtnActive: {
-    padding: "8px 12px",
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.18)",
-    background: "var(--primary, #0b6b2a)",
-    cursor: "pointer",
-    fontWeight: 950,
-    color: "var(--primary-text, #fff)",
-    boxShadow: "0 14px 30px rgba(0,0,0,0.12)",
   },
 };
