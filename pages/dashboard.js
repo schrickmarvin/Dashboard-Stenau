@@ -5,6 +5,163 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+/* ---------------- Theme Presets (Final Architecture) ---------------- */
+// Zentralisierte Design-Tokens. Basierend auf deiner dashboardTheme.js.
+const baseTheme = {
+  label: "Classic",
+  colors: {
+    pageBg: "#f3f6fb",
+    panelBg: "#ffffff",
+    cardBg: "#ffffff",
+    border: "#d8e0ef",
+    borderSoft: "#eef2fb",
+    text: "#1f2937",
+    mutedText: "#666666",
+    primary: "#0b6b2a",
+    primaryText: "#ffffff",
+    badgeBg: "#eef2fb",
+    badgeText: "#333333",
+    pillBg: "#f7f9ff",
+    errorBg: "#fff3f3",
+    errorBorder: "#ffd2d2",
+    errorText: "#a40000",
+  },
+  radius: {
+    card: 18,
+    panel: 18,
+    input: 12,
+    button: 12,
+    tab: 999,
+    pill: 999,
+    badge: 999,
+  },
+  shadow: "0 10px 30px rgba(0,0,0,0.05)",
+  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+};
+
+const themePresets = {
+  classic: baseTheme,
+  clean: {
+    ...baseTheme,
+    label: "Clean",
+    colors: {
+      ...baseTheme.colors,
+      pageBg: "#f7f8fb",
+      border: "#e5e9f2",
+      borderSoft: "#f0f3f8",
+      primary: "#2563eb",
+      pillBg: "#eef2ff",
+    },
+    shadow: "0 6px 20px rgba(15, 23, 42, 0.08)",
+  },
+  dark: {
+    ...baseTheme,
+    label: "Dark",
+    colors: {
+      pageBg: "#0f172a",
+      panelBg: "#111827",
+      cardBg: "#1f2937",
+      border: "#334155",
+      borderSoft: "#1f2a44",
+      text: "#e5e7eb",
+      mutedText: "#9ca3af",
+      primary: "#38bdf8",
+      primaryText: "#0b1120",
+      badgeBg: "#111827",
+      badgeText: "#e5e7eb",
+      pillBg: "#1e293b",
+      errorBg: "#2b1115",
+      errorBorder: "#7f1d1d",
+      errorText: "#fca5a5",
+    },
+    shadow: "0 14px 40px rgba(0,0,0,0.4)",
+  },
+  corporate: {
+    ...baseTheme,
+    label: "Corporate",
+    colors: {
+      ...baseTheme.colors,
+      pageBg: "#eef2f6",
+      primary: "#1f3b73",
+      primaryText: "#ffffff",
+      badgeBg: "#e0e7f4",
+      pillBg: "#e8eef9",
+    },
+    radius: {
+      ...baseTheme.radius,
+      card: 10,
+      panel: 10,
+      input: 8,
+      button: 8,
+    },
+  },
+  soft: {
+    ...baseTheme,
+    label: "Soft",
+    colors: {
+      ...baseTheme.colors,
+      pageBg: "#fff8f3",
+      panelBg: "#fffefc",
+      cardBg: "#ffffff",
+      border: "#f5d9cc",
+      borderSoft: "#fde9df",
+      primary: "#f97316",
+      primaryText: "#ffffff",
+      badgeBg: "#fde9df",
+      pillBg: "#fff1e6",
+    },
+    radius: {
+      ...baseTheme.radius,
+      card: 22,
+      panel: 22,
+      input: 16,
+      button: 16,
+    },
+    shadow: "0 12px 35px rgba(249, 115, 22, 0.12)",
+  },
+};
+
+const FALLBACK_THEME_KEY = "classic";
+
+function applyThemePresetToRoot(themeKey) {
+  if (typeof document === "undefined") return;
+  const preset = themePresets[themeKey] || themePresets[FALLBACK_THEME_KEY];
+  const root = document.documentElement;
+  const c = preset.colors || {};
+  const r = preset.radius || {};
+
+  // Colors
+  root.style.setProperty("--page-bg", c.pageBg || "#f3f6fb");
+  root.style.setProperty("--panel-bg", c.panelBg || "#ffffff");
+  root.style.setProperty("--card-bg", c.cardBg || "#ffffff");
+  root.style.setProperty("--border", c.border || "#d8e0ef");
+  root.style.setProperty("--border-soft", c.borderSoft || "#eef2fb");
+  root.style.setProperty("--text", c.text || "#1f2937");
+  root.style.setProperty("--muted-text", c.mutedText || "#666666");
+  root.style.setProperty("--primary", c.primary || "#0b6b2a");
+  root.style.setProperty("--primary-text", c.primaryText || "#ffffff");
+  root.style.setProperty("--badge-bg", c.badgeBg || "#eef2fb");
+  root.style.setProperty("--badge-text", c.badgeText || "#333333");
+  root.style.setProperty("--pill-bg", c.pillBg || "#f7f9ff");
+  root.style.setProperty("--error-bg", c.errorBg || "#fff3f3");
+  root.style.setProperty("--error-border", c.errorBorder || "#ffd2d2");
+  root.style.setProperty("--error-text", c.errorText || "#a40000");
+
+  // Radius
+  root.style.setProperty("--radius-card", `${r.card ?? 18}px`);
+  root.style.setProperty("--radius-panel", `${r.panel ?? 18}px`);
+  root.style.setProperty("--radius-input", `${r.input ?? 12}px`);
+  root.style.setProperty("--radius-button", `${r.button ?? 12}px`);
+  root.style.setProperty("--radius-tab", `${r.tab ?? 999}px`);
+  root.style.setProperty("--radius-pill", `${r.pill ?? 999}px`);
+  root.style.setProperty("--radius-badge", `${r.badge ?? 999}px`);
+
+  // Shadow + font
+  root.style.setProperty("--shadow", preset.shadow || "0 10px 30px rgba(0,0,0,0.05)");
+  root.style.setProperty("--font-family", preset.fontFamily || baseTheme.fontFamily);
+}
+
+
 /* ---------------- Supabase --------------- */
 
 function TasksBoard({ isAdmin }) {
@@ -2995,6 +3152,30 @@ function UserSettingsPanel({ userId, settings, onChange }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 10 }}>
         <div style={styles.card}>
+          <div style={styles.h4}>Design</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 10, alignItems: "center" }}>
+            <div style={{ color: "var(--muted-text)", fontSize: 13 }}>Theme (Preset)</div>
+            <select
+              value={(typeof window !== "undefined" ? (localStorage.getItem("stenau-theme") || FALLBACK_THEME_KEY) : FALLBACK_THEME_KEY)}
+              onChange={(e) => {
+                const k = e.target.value;
+                if (typeof window !== "undefined") localStorage.setItem("stenau-theme", k);
+                // sofort anwenden
+                applyThemePresetToRoot(k);
+              }}
+              style={styles.input}
+              title="Theme"
+            >
+              {Object.entries(themePresets).map(([key, preset]) => (
+                <option key={key} value={key}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ height: 10 }} />
+
           <div style={styles.h4}>Farben</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10, alignItems: "center" }}>
             <div style={{ color: "#666", fontSize: 13 }}>Primärfarbe (Buttons / aktiver Tab)</div>
@@ -3055,6 +3236,10 @@ function UserSettingsPanel({ userId, settings, onChange }) {
 
 /* ---------------- Main Component ---------------- */
 export default function Dashboard() {
+  const [themeKey, setThemeKey] = useState(() => {
+    if (typeof window === "undefined") return FALLBACK_THEME_KEY;
+    return localStorage.getItem("stenau-theme") || FALLBACK_THEME_KEY;
+  });
   const [activeTab, setActiveTab] = useState("board");
   const [auth, setAuth] = useState({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
   const [authLoading, setAuthLoading] = useState(true);
@@ -3063,6 +3248,12 @@ export default function Dashboard() {
   const [userSettings, setUserSettings] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
 
+
+  // Theme-Preset direkt auf CSS-Variablen anwenden (Final Architecture)
+  useEffect(() => {
+    applyThemePresetToRoot(themeKey);
+    if (typeof window !== "undefined") localStorage.setItem("stenau-theme", themeKey);
+  }, [themeKey]);
 
   async function refreshAuth() {
     setAuthLoading(true);
@@ -3224,6 +3415,19 @@ export default function Dashboard() {
         </div>
 
         <div style={styles.right}>
+          <select
+            value={themeKey}
+            onChange={(e) => setThemeKey(e.target.value)}
+            style={{ ...styles.input, minWidth: 160 }}
+            title="Theme"
+          >
+            {Object.entries(themePresets).map(([key, preset]) => (
+              <option key={key} value={key}>
+                {preset.label}
+              </option>
+            ))}
+          </select>
+
           <div style={{ display: "grid", gap: 2 }}>
             <div style={{ color: "#555", fontSize: 14 }}>{auth.profile?.email || auth.user.email}</div>
             <div style={{ color: "#777", fontSize: 12 }}>{new Date().toLocaleString("de-DE")} · Version {process.env.NEXT_PUBLIC_APP_VERSION || "dev"}</div>
@@ -3265,13 +3469,14 @@ function TabBtn({ active, onClick, children }) {
   );
 }
 
-/* ---------------- Styles ---------------- */
+/* ---------------- Styles (CSS Vars: Final Architecture) ---------------- */
 const styles = {
   page: {
     minHeight: "100vh",
-    background: "var(--page-bg, #f3f6fb)",
+    background: "var(--page-bg)",
     padding: 18,
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+    fontFamily: "var(--font-family)",
+    color: "var(--text)",
   },
   topbar: {
     display: "flex",
@@ -3284,6 +3489,7 @@ const styles = {
     fontSize: 30,
     fontWeight: 800,
     letterSpacing: -0.5,
+    color: "var(--text)",
   },
   tabs: {
     display: "flex",
@@ -3292,17 +3498,18 @@ const styles = {
     flexWrap: "wrap",
   },
   tab: {
-    border: "1px solid #d8e0ef",
-    background: "#fff",
+    border: "1px solid var(--border)",
+    background: "var(--panel-bg)",
     padding: "10px 14px",
-    borderRadius: 999,
+    borderRadius: "var(--radius-tab)",
     cursor: "pointer",
-    fontWeight: 600,
+    fontWeight: 700,
+    color: "var(--text)",
   },
   tabActive: {
-    background: "var(--primary, #0b6b2a)",
-    borderColor: "var(--primary, #0b6b2a)",
-    color: "#fff",
+    background: "var(--primary)",
+    borderColor: "var(--primary)",
+    color: "var(--primary-text)",
   },
   right: {
     display: "flex",
@@ -3310,12 +3517,13 @@ const styles = {
     alignItems: "center",
   },
   panel: {
-    background: "#fff",
-    border: "1px solid #d8e0ef",
-    borderRadius: 18,
+    background: "var(--panel-bg)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-panel)",
     padding: 16,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
+    boxShadow: "var(--shadow)",
     marginBottom: 14,
+    color: "var(--text)",
   },
 
   kanbanGrid: {
@@ -3325,18 +3533,19 @@ const styles = {
     alignItems: "start",
   },
   kanCol: {
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid rgba(216,224,239,0.95)",
-    borderRadius: 18,
+    background: "color-mix(in srgb, var(--panel-bg) 92%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--border) 95%, transparent)",
+    borderRadius: "var(--radius-panel)",
     padding: 12,
     minHeight: 240,
   },
 
   details: {
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid rgba(216,224,239,0.9)",
+    background: "color-mix(in srgb, var(--panel-bg) 92%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--border) 92%, transparent)",
     borderRadius: 14,
     padding: 12,
+    color: "var(--text)",
   },
   detailsSummary: {
     cursor: "pointer",
@@ -3347,32 +3556,36 @@ const styles = {
 
   calendarOuter: {
     maxWidth: 1280,
-    margin: '0 auto',
+    margin: "0 auto",
   },
   calendarPanelCard: {
-    background: 'rgba(255,255,255,0.92)',
-    border: '1px solid rgba(216,224,239,0.9)',
-    borderRadius: 18,
+    background: "color-mix(in srgb, var(--panel-bg) 92%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--border) 90%, transparent)",
+    borderRadius: "var(--radius-panel)",
     padding: 16,
-    boxShadow: '0 18px 50px rgba(0,0,0,0.10)',
-    backdropFilter: 'blur(10px)',
-    WebkitBackdropFilter: 'blur(10px)',
+    boxShadow: "0 18px 50px rgba(0,0,0,0.10)",
+    backdropFilter: "blur(10px)",
+    WebkitBackdropFilter: "blur(10px)",
     marginBottom: 14,
+    color: "var(--text)",
   },
   calendarHint: {
     fontSize: 12,
-    color: '#5b6b86',
+    color: "var(--muted-text)",
     marginTop: 8,
   },
+
   h3: {
     fontSize: 18,
     fontWeight: 800,
     marginBottom: 10,
+    color: "var(--text)",
   },
   h4: {
     fontSize: 16,
     fontWeight: 800,
     marginBottom: 4,
+    color: "var(--text)",
   },
   rowBetween: {
     display: "flex",
@@ -3397,71 +3610,77 @@ const styles = {
   badge: {
     minWidth: 28,
     height: 28,
-    borderRadius: 999,
-    background: "#eef2fb",
-    border: "1px solid #d8e0ef",
+    borderRadius: "var(--radius-badge)",
+    background: "var(--badge-bg)",
+    border: "1px solid var(--border)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontWeight: 700,
-    color: "#333",
+    fontWeight: 800,
+    color: "var(--badge-text)",
   },
   pill: {
     fontSize: 12,
     padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px solid #d8e0ef",
-    background: "#f7f9ff",
-    fontWeight: 700,
+    borderRadius: "var(--radius-pill)",
+    border: "1px solid var(--border)",
+    background: "var(--pill-bg)",
+    fontWeight: 800,
+    color: "var(--text)",
   },
   card: {
-    background: "#fff",
-    border: "1px solid #d8e0ef",
-    borderRadius: 18,
+    background: "var(--card-bg)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-card)",
     padding: 14,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
+    boxShadow: "var(--shadow)",
+    color: "var(--text)",
   },
   input: {
     padding: 10,
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
+    borderRadius: "var(--radius-input)",
+    border: "1px solid var(--border)",
     outline: "none",
-    background: "#fff",
+    background: "var(--panel-bg)",
     minWidth: 160,
+    color: "var(--text)",
   },
   textarea: {
     padding: 10,
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
+    borderRadius: "var(--radius-input)",
+    border: "1px solid var(--border)",
     outline: "none",
-    background: "#fff",
+    background: "var(--panel-bg)",
     width: "100%",
     resize: "vertical",
+    color: "var(--text)",
   },
   btn: {
     padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
-    background: "#fff",
+    borderRadius: "var(--radius-button)",
+    border: "1px solid var(--border)",
+    background: "var(--panel-bg)",
     cursor: "pointer",
-    fontWeight: 700,
+    fontWeight: 800,
+    color: "var(--text)",
   },
   btnPrimary: {
     padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid var(--primary, #0b6b2a)",
-    background: "var(--primary, #0b6b2a)",
-    color: "#fff",
+    borderRadius: "var(--radius-button)",
+    border: "1px solid var(--primary)",
+    background: "var(--primary)",
+    color: "var(--primary-text)",
     cursor: "pointer",
-    fontWeight: 800,
+    fontWeight: 900,
   },
   btnSmall: {
     padding: "8px 10px",
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
-    background: "#fff",
+    borderRadius: "var(--radius-button)",
+    border: "1px solid var(--border)",
+    background: "var(--panel-bg)",
     cursor: "pointer",
-    fontWeight: 800,
+    fontWeight: 900,
+    color: "var(--text)",
   },
   modalBackdrop: {
     position: "fixed",
@@ -3477,11 +3696,12 @@ const styles = {
     width: "min(900px, 96vw)",
     maxHeight: "80vh",
     overflow: "auto",
-    background: "#fff",
-    border: "1px solid #d8e0ef",
-    borderRadius: 18,
+    background: "var(--panel-bg)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-panel)",
     padding: 16,
     boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+    color: "var(--text)",
   },
   modalHeader: {
     display: "flex",
@@ -3490,11 +3710,11 @@ const styles = {
     gap: 12,
   },
   error: {
-    background: "#fff3f3",
-    border: "1px solid #ffd2d2",
-    color: "#a40000",
+    background: "var(--error-bg)",
+    border: "1px solid var(--error-border)",
+    color: "var(--error-text)",
     padding: 12,
-    borderRadius: 12,
+    borderRadius: "var(--radius-input)",
     marginTop: 10,
     marginBottom: 10,
   },
@@ -3515,23 +3735,22 @@ const styles = {
     height: 12,
     borderRadius: 999,
     background: color || "#94a3b8",
-    border: "1px solid #d8e0ef",
+    border: "1px solid var(--border)",
     display: "inline-block",
   }),
-
   areaDot: {
     width: 14,
     height: 14,
     borderRadius: 999,
-    border: "1px solid #d8e0ef",
+    border: "1px solid var(--border)",
     display: "inline-block",
   },
   btnSmallPrimary: {
     padding: "8px 12px",
-    borderRadius: 12,
-    border: "1px solid var(--primary, #0b6b2a)",
-    background: "var(--primary, #0b6b2a)",
-    color: "#fff",
+    borderRadius: "var(--radius-button)",
+    border: "1px solid var(--primary)",
+    background: "var(--primary)",
+    color: "var(--primary-text)",
     cursor: "pointer",
     fontWeight: 900,
   },
@@ -3539,34 +3758,34 @@ const styles = {
     width: 56,
     height: 38,
     padding: 0,
-    border: "1px solid #d8e0ef",
-    borderRadius: 12,
-    background: "#fff",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-button)",
+    background: "var(--panel-bg)",
     cursor: "pointer",
   },
 
   fileBtn: {
     padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid #d8e0ef",
-    background: "#fff",
+    borderRadius: "var(--radius-button)",
+    border: "1px solid var(--border)",
+    background: "var(--panel-bg)",
     cursor: "pointer",
-    fontWeight: 800,
+    fontWeight: 900,
     display: "inline-flex",
     alignItems: "center",
     gap: 8,
+    color: "var(--text)",
   },
   fileRow: {
     display: "flex",
     gap: 10,
     alignItems: "center",
     justifyContent: "space-between",
-    border: "1px solid #d8e0ef",
-    borderRadius: 12,
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-button)",
     padding: "10px 12px",
-    background: "#fff",
+    background: "var(--panel-bg)",
   },
-
 
   table: {
     width: "100%",
@@ -3575,13 +3794,14 @@ const styles = {
   th: {
     textAlign: "left",
     padding: 10,
-    borderBottom: "1px solid #d8e0ef",
+    borderBottom: "1px solid var(--border)",
     fontSize: 13,
-    color: "#555",
+    color: "var(--muted-text)",
   },
   td: {
     padding: 10,
-    borderBottom: "1px solid #eef2fb",
+    borderBottom: "1px solid var(--border-soft)",
     verticalAlign: "top",
+    color: "var(--text)",
   },
 };
