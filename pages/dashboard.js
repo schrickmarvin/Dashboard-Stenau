@@ -2162,7 +2162,7 @@ function KanboardPanel({ isAdmin = false }) {
 
 
 /* ---------------- Calendar ---------------- */
-function CalendarPanel({ areaList = [], userList = [], currentUser = null, isAdmin = false }) {
+function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [], currentUser = null, isAdmin = false }) {
   const [view, setView] = useState("month"); // "month" | "week"
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -2181,8 +2181,8 @@ function CalendarPanel({ areaList = [], userList = [], currentUser = null, isAdm
   const [filterUserId, setFilterUserId] = useState("all");
 
 
-  const [areaList, setAreaList] = useState(() => (Array.isArray(areaList) ? areaList : []));
-  const [userList, setUserList] = useState(() => (Array.isArray(userList) ? userList : []));
+  const [areaList, setAreaList] = useState(() => (Array.isArray(areaListProp) ? areaListProp : []));
+  const [userList, setUserList] = useState(() => (Array.isArray(userListProp) ? userListProp : []));
 
   useEffect(() => {
     // Fallback: Wenn keine Bereiche/Nutzer als Props reinkommen, selbst laden
