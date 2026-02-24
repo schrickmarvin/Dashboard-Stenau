@@ -3341,6 +3341,17 @@ const styles = {
     backdropFilter: "blur(12px)",
   },
 
+  // kleiner Farbpunkte-Indikator (z.B. Bereichsfarbe)
+  dot: (color) => ({
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    display: "inline-block",
+    background: color || "rgba(148,163,184,0.8)",
+    boxShadow: "0 0 0 3px rgba(255,255,255,0.06)",
+    flex: "0 0 auto",
+  }),
+
   kanbanGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
