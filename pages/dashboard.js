@@ -3109,26 +3109,28 @@ export default function Dashboard() {
   const bgImg = (userSettings?.background_image_url || "").trim();
   const pageStyle = {
     ...styles.page,
+    // Dezent Corporate-Glass (lesbar): helle Glas-Karten + dunkle Schrift
     "--primary": primary,
     "--page-bg": pageBg,
-    "--text": "rgba(226,232,240,0.96)",
-    "--text-soft": "rgba(226,232,240,0.72)",
-    "--card-bg": "rgba(255,255,255,0.11)",
-    "--card-border": "rgba(255,255,255,0.18)",
-    "--card-shadow": "0 14px 40px rgba(2,6,23,0.45)",
-    "--card-shadow-soft": "0 10px 26px rgba(2,6,23,0.35)",
-    "--input-bg": "rgba(255,255,255,0.12)",
-    "--input-border": "rgba(255,255,255,0.16)",
-    "--muted-bg": "rgba(255,255,255,0.08)",
+    "--text": "rgba(15,23,42,0.96)",
+    "--text-soft": "rgba(51,65,85,0.92)",
+    "--card-bg": "rgba(255,255,255,0.78)",
+    "--card-border": "rgba(15,23,42,0.12)",
+    "--card-shadow": "0 18px 46px rgba(2,6,23,0.18)",
+    "--card-shadow-soft": "0 10px 28px rgba(2,6,23,0.14)",
+    "--input-bg": "rgba(255,255,255,0.92)",
+    "--input-border": "rgba(15,23,42,0.16)",
+    "--muted-bg": "rgba(255,255,255,0.55)",
     ...(bgImg
       ? {
-          backgroundImage: `linear-gradient(rgba(2,6,23,0.38), rgba(2,6,23,0.38)), url(${bgImg})`,
+          // Overlay beruhigt das Bild, ohne den Kontrast zu killen
+          backgroundImage: `linear-gradient(rgba(15,23,42,0.22), rgba(15,23,42,0.22)), url(${bgImg})`,
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundAttachment: "fixed",
         }
       : {
-          background: "linear-gradient(180deg, rgba(2,6,23,0.70), rgba(2,6,23,0.70))",
+          background: "linear-gradient(180deg, rgba(241,245,249,1), rgba(226,232,240,1))",
         }),
   };
 
@@ -3284,6 +3286,7 @@ const styles = {
     color: "var(--text, rgba(226,232,240,0.96))",
     padding: 18,
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+    lineHeight: 1.35,
   },
 
   topbar: {
@@ -3310,13 +3313,13 @@ const styles = {
 
   tab: {
     border: "1px solid var(--card-border, rgba(255,255,255,0.18))",
-    background: "rgba(255,255,255,0.06)",
+    background: "var(--card-bg, rgba(255,255,255,0.78))",
     padding: "10px 14px",
     borderRadius: 999,
     cursor: "pointer",
     fontWeight: 700,
     color: "var(--text, rgba(226,232,240,0.96))",
-    backdropFilter: "blur(10px)",
+    backdropFilter: "blur(8px)",
     transition: "transform 120ms ease, background 120ms ease, border-color 120ms ease",
   },
 
@@ -3338,7 +3341,7 @@ const styles = {
     borderRadius: 20,
     padding: 16,
     boxShadow: "var(--card-shadow, 0 14px 40px rgba(2,6,23,0.45))",
-    backdropFilter: "blur(12px)",
+    backdropFilter: "blur(8px)",
   },
 
   // kleiner Farbpunkte-Indikator (z.B. Bereichsfarbe)
@@ -3359,22 +3362,22 @@ const styles = {
   },
 
   kanCol: {
-    background: "rgba(255,255,255,0.06)",
+    background: "var(--card-bg, rgba(255,255,255,0.78))",
     border: "1px solid var(--card-border, rgba(255,255,255,0.18))",
     borderRadius: 18,
     padding: 12,
     minHeight: 480,
     boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.35))",
-    backdropFilter: "blur(10px)",
+    backdropFilter: "blur(8px)",
   },
 
   details: {
-    background: "rgba(255,255,255,0.06)",
+    background: "var(--card-bg, rgba(255,255,255,0.78))",
     border: "1px solid var(--card-border, rgba(255,255,255,0.18))",
     borderRadius: 18,
     padding: 14,
     boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.35))",
-    backdropFilter: "blur(10px)",
+    backdropFilter: "blur(8px)",
   },
 
   detailsSummary: {
@@ -3392,12 +3395,12 @@ const styles = {
   },
 
   calendarPanelCard: {
-    background: "rgba(255,255,255,0.06)",
+    background: "var(--card-bg, rgba(255,255,255,0.78))",
     border: "1px solid var(--card-border, rgba(255,255,255,0.18))",
     borderRadius: 18,
     padding: 14,
     boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.35))",
-    backdropFilter: "blur(10px)",
+    backdropFilter: "blur(8px)",
   },
 
   calendarHint: {
@@ -3435,13 +3438,13 @@ const styles = {
   },
 
   col: {
-    background: "rgba(255,255,255,0.06)",
+    background: "var(--card-bg, rgba(255,255,255,0.78))",
     border: "1px solid var(--card-border, rgba(255,255,255,0.18))",
     borderRadius: 18,
     padding: 12,
     minHeight: 420,
     boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.35))",
-    backdropFilter: "blur(10px)",
+    backdropFilter: "blur(8px)",
   },
 
   colHeader: {
@@ -3456,7 +3459,7 @@ const styles = {
     padding: "5px 10px",
     borderRadius: 999,
     border: "1px solid var(--card-border, rgba(255,255,255,0.18))",
-    background: "rgba(255,255,255,0.08)",
+    background: "var(--muted-bg, rgba(255,255,255,0.55))",
     fontSize: 12,
     fontWeight: 800,
     color: "var(--text, rgba(226,232,240,0.96))",
@@ -3469,19 +3472,19 @@ const styles = {
     padding: "6px 10px",
     borderRadius: 999,
     border: "1px solid var(--card-border, rgba(255,255,255,0.18))",
-    background: "rgba(255,255,255,0.06)",
+    background: "var(--muted-bg, rgba(255,255,255,0.55))",
     fontSize: 12,
     fontWeight: 700,
     color: "var(--text, rgba(226,232,240,0.96))",
   },
 
   card: {
-    background: "rgba(255,255,255,0.06)",
+    background: "var(--card-bg, rgba(255,255,255,0.78))",
     border: "1px solid var(--card-border, rgba(255,255,255,0.18))",
     borderRadius: 16,
     padding: 12,
     boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.35))",
-    backdropFilter: "blur(10px)",
+    backdropFilter: "blur(8px)",
   },
 
   input: {
@@ -3509,13 +3512,13 @@ const styles = {
   btn: {
     padding: "10px 14px",
     borderRadius: 12,
-    border: "1px solid var(--card-border, rgba(255,255,255,0.18))",
-    background: "rgba(255,255,255,0.06)",
+    border: "1px solid var(--card-border, rgba(15,23,42,0.12))",
+    background: "var(--muted-bg, rgba(255,255,255,0.55))",
     color: "var(--text, rgba(226,232,240,0.96))",
     fontWeight: 750,
     cursor: "pointer",
     transition: "transform 120ms ease, background 120ms ease, border-color 120ms ease",
-    backdropFilter: "blur(10px)",
+    backdropFilter: "blur(8px)",
   },
 
   btnPrimary: {
@@ -3533,7 +3536,7 @@ const styles = {
     padding: "7px 10px",
     borderRadius: 10,
     border: "1px solid var(--card-border, rgba(255,255,255,0.18))",
-    background: "rgba(255,255,255,0.06)",
+    background: "var(--card-bg, rgba(255,255,255,0.78))",
     color: "var(--text, rgba(226,232,240,0.96))",
     fontWeight: 750,
     cursor: "pointer",
@@ -3556,7 +3559,7 @@ const styles = {
     border: "1px solid rgba(255,255,255,0.16)",
     borderRadius: 22,
     boxShadow: "0 26px 80px rgba(0,0,0,0.55)",
-    backdropFilter: "blur(14px)",
+    backdropFilter: "blur(12px)",
     overflow: "hidden",
   },
 
@@ -3626,7 +3629,7 @@ const styles = {
     padding: "9px 12px",
     borderRadius: 12,
     border: "1px dashed rgba(255,255,255,0.22)",
-    background: "rgba(255,255,255,0.06)",
+    background: "var(--card-bg, rgba(255,255,255,0.78))",
     color: "var(--text, rgba(226,232,240,0.96))",
     cursor: "pointer",
     fontWeight: 750,
