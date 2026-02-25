@@ -2021,7 +2021,7 @@ function KanboardPanel({ isAdmin = false }) {
 
   const [filterAreaId, setFilterAreaId] = useState("all");
   const [filterUserId, setFilterUserId] = useState("all");
-  const [viewMode, setViewMode] = useState("board"); // "board" | "assignee"
+  const [viewMode, setViewMode] = useState("assignee"); // "board" | "assignee"
 
   useEffect(() => {
     (async () => {
@@ -2263,7 +2263,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
   // filters
   const [filterAreaId, setFilterAreaId] = useState("all");
   const [filterUserId, setFilterUserId] = useState("all");
-  const [viewMode, setViewMode] = useState("board"); // "board" | "assignee"
+  const [viewMode, setViewMode] = useState("assignee"); // "board" | "assignee"
 
 
   const [areaList, setAreaList] = useState(() => (Array.isArray(areaListProp) ? areaListProp : []));
@@ -3279,6 +3279,11 @@ function TabBtn({ active, onClick, children }) {
 }
 
 /* ---------------- Styles ---------------- */
+const USER_COLORS = [
+  "#2563eb", "#16a34a", "#dc2626", "#7c3aed", "#ea580c",
+  "#0d9488", "#db2777", "#ca8a04", "#4f46e5", "#059669"
+];
+
 const styles = {
   /* ---------------- Layout / Theme ---------------- */
   page: {
@@ -3363,9 +3368,12 @@ const styles = {
   }),
 
   kanbanGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    display: "flex",
     gap: 12,
+    alignItems: "stretch",
+    overflowX: "auto",
+    paddingBottom: 8,
+    scrollSnapType: "x mandatory",
   },
 
   kanCol: {
@@ -3374,6 +3382,9 @@ const styles = {
     borderRadius: 18,
     padding: 14,
     minHeight: 480,
+    flex: "1 0 380px",
+    scrollSnapAlign: "start",
+
     boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
     backdropFilter: "blur(10px)",
   },
