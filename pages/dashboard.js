@@ -584,7 +584,7 @@ function TasksBoard({ isAdmin }) {
                 value={form.guideIds}
                 onChange={(e) => {
                   const vals = Array.from(e.target.selectedOptions).map((o) => o.value);
-                  setSelectedGuideIds(vals);
+                  setForm((p) => ({ ...p, guideIds: vals }));
                 }}
               >
                 {guides.map((g) => (
