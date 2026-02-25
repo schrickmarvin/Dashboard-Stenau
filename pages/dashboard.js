@@ -5,11 +5,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// Safety-Net: Falls irgendwo versehentlich eine freie Referenz `form` entsteht
-// (z.B. durch Refactor/Minify), soll die Seite nicht komplett crashen.
-// Lokale `form`-States in Komponenten bleiben davon unberührt (Shadowing).
-const form = undefined;
-
 /* ---------------- Supabase --------------- */
 
 function TasksBoard({ isAdmin }) {
@@ -578,7 +573,7 @@ function TasksBoard({ isAdmin }) {
             <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, alignItems: "center" }}>
               <select style={styles.select} value={form.assignee_id} onChange={(e) => setForm((p) => ({ ...p, assignee_id: e.target.value }))}>
                 <option value="">– Zuständig –</option>
-                {(members || []).map((u) => (
+                {users.map((u) => (
                   <option key={u.id} value={u.id}>{u.name || u.email}</option>
                 ))}
               </select>
@@ -589,7 +584,7 @@ function TasksBoard({ isAdmin }) {
                 value={form.guideIds}
                 onChange={(e) => {
                   const vals = Array.from(e.target.selectedOptions).map((o) => o.value);
-                  setForm((p) => ({ ...p, guideIds: vals }));
+                  setSelectedGuideIds(vals);
                 }}
               >
                 {guides.map((g) => (
