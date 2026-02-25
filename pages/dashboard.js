@@ -1166,7 +1166,13 @@ function UsersAdminPanel({ isAdmin }) {
   const [createLoading, setCreateLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [passwordDrafts, setPasswordDrafts] = useState({});
-  const [newUser, setNewUser] = useState({
+  
+  const [expandedAreas, setExpandedAreas] = useState({});
+  const [delegations, setDelegations] = useState([]);
+  const [delegForm, setDelegForm] = useState({ userId: "", substituteId: "", start: "", end: "" });
+  const [delegLoading, setDelegLoading] = useState(false);
+
+const [newUser, setNewUser] = useState({
     email: "",
     password: "",
     name: "",
@@ -1229,7 +1235,19 @@ function UsersAdminPanel({ isAdmin }) {
     setRoles(rolesRes.data || []);
     setAreas(areasRes.data || []);
     setUsers((usersData || []).map((u) => ({ ...u, profile_areas: areasByProfile[u.id] || [] })));
-    setLoading(false);
+    
+      // Delegationen / Vertretungen (optional)
+      try {
+        const dRes = await supabase
+          .from("user_delegations")
+          .select("id,user_id,substitute_id,start_at,end_at")
+          .order("start_at", { ascending: false });
+        if (!dRes.error) setDelegations(dRes.data || []);
+      } catch (e) {
+        // table might not exist yet
+      }
+
+setLoading(false);
   }
 
   useEffect(() => {
@@ -1407,7 +1425,67 @@ function UsersAdminPanel({ isAdmin }) {
   }
 
   if (!isAdmin) {
-    return (
+    
+  async function addDelegation() {
+    const { userId, substituteId, start, end } = delegForm || {};
+    if (!userId || !substituteId || !start || !end) {
+      alert("Bitte Nutzer, Vertretung sowie Von/Bis ausfüllen.");
+      return;
+    }
+    if (userId === substituteId) {
+      alert("Vertretung darf nicht identisch mit dem Nutzer sein.");
+      return;
+    }
+
+    setDelegLoading(true);
+    try {
+      const payload = {
+        user_id: userId,
+        substitute_id: substituteId,
+        start_at: new Date(start).toISOString(),
+        end_at: new Date(end).toISOString(),
+      };
+      const ins = await supabase.from("user_delegations").insert(payload).select();
+      if (ins.error) throw ins.error;
+
+      try {
+        const dRes = await supabase
+          .from("user_delegations")
+          .select("id,user_id,substitute_id,start_at,end_at")
+          .order("start_at", { ascending: false });
+        if (!dRes.error) setDelegations(dRes.data || []);
+      } catch (e) {}
+
+      setDelegForm({ userId: "", substituteId: "", start: "", end: "" });
+    } catch (e) {
+      alert(
+        "Konnte Vertretung nicht speichern. (Tabelle user_delegations vorhanden?)\n" +
+          (e?.message || String(e))
+      );
+    } finally {
+      setDelegLoading(false);
+    }
+  }
+
+  async function deleteDelegation(id) {
+    if (!id) return;
+    if (!confirm("Vertretung wirklich löschen?")) return;
+
+    try {
+      const del = await supabase.from("user_delegations").delete().eq("id", id);
+      if (del.error) throw del.error;
+      setDelegations((p) => (p || []).filter((d) => d.id !== id));
+    } catch (e) {
+      alert("Konnte Vertretung nicht löschen: " + (e?.message || String(e)));
+    }
+  }
+
+  function userLabelById(id) {
+    const u = (users || []).find((x) => x.id === id);
+    return u?.name ? `${u.name} (${u.email})` : u?.email || id || "";
+  }
+
+return (
       <div style={styles.panel}>
         <div style={styles.h3}>Nutzer</div>
         <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
@@ -1506,87 +1584,273 @@ function UsersAdminPanel({ isAdmin }) {
           </thead>
           <tbody>
             {filtered.map((u) => {
-              const assignedAreaIds = (u.profile_areas || []).map((pa) => pa.area_id);
-              return (
-                <tr key={u.id}>
-                  <td style={styles.td}>
-                    <input
-                      value={u.name ?? ""}
-                      onChange={(e) => updateUser(u.id, { name: e.target.value })}
-                      style={styles.input}
-                    />
-                  </td>
-                  <td style={styles.td}>{u.email ?? ""}</td>
-                  <td style={styles.td}>
-                    <select
-                      value={u.role_id ?? ""}
-                      onChange={(e) => updateUserRole(u.id, e.target.value || null)}
-                      style={styles.input}
-                    >
-                      <option value="">–</option>
-                      {roles.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td style={styles.td}>
-                    <select
-                      multiple
-                      value={assignedAreaIds}
-                      onChange={(e) =>
-                        updateUserAreas(
-                          u.id,
-                          Array.from(e.target.selectedOptions).map((o) => o.value)
-                        )
-                      }
-                      style={{ ...styles.input, height: 94 }}
-                      title="Mehrfachauswahl: Strg/Cmd + Klick"
-                    >
-                      {areas.map((area) => (
-                        <option key={area.id} value={area.id}>
-                          {area.name}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td style={styles.td}>
-                    <input
-                      type="checkbox"
-                      checked={u.is_active !== false}
-                      onChange={(e) => updateUser(u.id, { is_active: e.target.checked })}
-                    />
-                  </td>
-                  <td style={styles.td}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input
-                        type="password"
-                        value={passwordDrafts[u.id] ?? ""}
-                        onChange={(e) =>
-                          setPasswordDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))
-                        }
-                        placeholder="Neues Passwort"
-                        style={styles.input}
-                      />
-                      <button style={styles.btnSmall} onClick={() => setPassword(u.id)}>
-                        Setzen
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+  const isExpanded = !!expandedAreas[u.id];
+  const selectedAreaIds = Array.isArray(u.area_ids) ? u.area_ids : [];
+  const selectedAreaNames = selectedAreaIds
+    .map((id) => areas.find((a) => a.id === id)?.name)
+    .filter(Boolean);
 
-            {filtered.length === 0 ? (
-              <tr>
-                <td style={styles.td} colSpan={6}>
-                  Keine Nutzer gefunden.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
+  return (
+    <React.Fragment key={u.id}>
+      <tr>
+        <td style={{ padding: "10px 10px", verticalAlign: "top", width: 260 }}>
+          <input
+            value={u.name || ""}
+            onChange={(e) => updateUserField(u.id, { name: e.target.value })}
+            style={{ ...styles.input, width: "100%", maxWidth: 240 }}
+          />
+        </td>
+
+        <td style={{ padding: "10px 10px", verticalAlign: "top", width: 260 }}>
+          <span style={{ fontSize: 13, color: "#233" }}>{u.email}</span>
+        </td>
+
+        <td style={{ padding: "10px 10px", verticalAlign: "top", width: 160 }}>
+          <select
+            value={u.role_id || ""}
+            onChange={(e) => updateUserField(u.id, { role_id: e.target.value || null })}
+            style={{ ...styles.select, width: 140 }}
+          >
+            <option value="">–</option>
+            {roles.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name || r.key}
+              </option>
+            ))}
+          </select>
+        </td>
+
+        <td style={{ padding: "10px 10px", verticalAlign: "top", width: 220 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button
+              type="button"
+              onClick={() => setExpandedAreas((p) => ({ ...p, [u.id]: !p[u.id] }))}
+              style={{
+                ...styles.btnSmall,
+                padding: "7px 10px",
+                borderRadius: 10,
+                fontSize: 12,
+                whiteSpace: "nowrap",
+              }}
+              title="Bereiche bearbeiten"
+            >
+              Bereiche ({selectedAreaIds.length})
+            </button>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxWidth: 320 }}>
+              {selectedAreaNames.slice(0, 3).map((n) => (
+                <span key={n} style={styles.pillSmall}>
+                  {n}
+                </span>
+              ))}
+              {selectedAreaNames.length > 3 ? (
+                <span style={styles.pillSmallMuted}>+{selectedAreaNames.length - 3}</span>
+              ) : null}
+            </div>
+          </div>
+        </td>
+
+        <td style={{ padding: "10px 10px", verticalAlign: "top", width: 90 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <input
+              type="checkbox"
+              checked={!!u.active}
+              onChange={(e) => updateUserField(u.id, { active: e.target.checked })}
+            />
+            <span style={{ fontSize: 12, color: "#233" }}>{u.active ? "✓" : ""}</span>
+          </label>
+        </td>
+
+        <td style={{ padding: "10px 10px", verticalAlign: "top", minWidth: 260 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input
+              placeholder="Neues Passwort"
+              value={passwordDrafts[u.id] || ""}
+              onChange={(e) => setPasswordDrafts((p) => ({ ...p, [u.id]: e.target.value }))}
+              style={{ ...styles.input, width: 180 }}
+            />
+            <button
+              onClick={() => setUserPassword(u.id, passwordDrafts[u.id])}
+              style={{ ...styles.btnSmall, padding: "8px 12px", borderRadius: 10 }}
+            >
+              Setzen
+            </button>
+          </div>
+        </td>
+      </tr>
+
+      {isExpanded ? (
+        <tr>
+          <td colSpan={6} style={{ padding: "0 10px 12px 10px" }}>
+            <div
+              style={{
+                background: "rgba(255,255,255,0.75)",
+                border: "1px solid rgba(180,200,220,0.55)",
+                borderRadius: 14,
+                padding: 12,
+                boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#123", marginBottom: 8 }}>
+                Bereiche für {u.name || u.email}
+              </div>
+
+              <select
+                multiple
+                value={selectedAreaIds}
+                onChange={(e) =>
+                  updateUserAreas(
+                    u.id,
+                    Array.from(e.target.selectedOptions).map((o) => o.value)
+                  )
+                }
+                style={{ ...styles.select, width: "100%", minHeight: 120 }}
+              >
+                {areas.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+
+              <div style={{ marginTop: 8, fontSize: 12, color: "#456" }}>
+                Tipp: Mit Strg/Cmd kannst du mehrere Bereiche auswählen.
+              </div>
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </React.Fragment>
+  );
+})}</tbody>
         </table>
+        <div style={{ height: 14 }} />
+
+        <div style={styles.card}>
+          <div style={styles.cardHeader}>
+            <div style={styles.cardTitle}>Vertretung / Abwesenheit</div>
+            <div style={styles.cardSubTitle}>
+              Während der Abwesenheit wird im Dashboard die Vertretung als zuständig angezeigt.
+            </div>
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+              gap: 12,
+            }}
+          >
+            <div>
+              <div style={styles.label}>Nutzer</div>
+              <select
+                value={delegForm.userId}
+                onChange={(e) => setDelegForm((p) => ({ ...p, userId: e.target.value }))}
+                style={{ ...styles.select, width: "100%" }}
+              >
+                <option value="">– wählen –</option>
+                {(users || []).map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name ? `${u.name} (${u.email})` : u.email}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <div style={styles.label}>Vertretung (Nutzer)</div>
+              <select
+                value={delegForm.substituteId}
+                onChange={(e) =>
+                  setDelegForm((p) => ({ ...p, substituteId: e.target.value }))
+                }
+                style={{ ...styles.select, width: "100%" }}
+              >
+                <option value="">– wählen –</option>
+                {(users || []).map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name ? `${u.name} (${u.email})` : u.email}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <div style={styles.label}>Abwesend von</div>
+              <input
+                type="datetime-local"
+                value={delegForm.start}
+                onChange={(e) => setDelegForm((p) => ({ ...p, start: e.target.value }))}
+                style={{ ...styles.input, width: "100%" }}
+              />
+            </div>
+
+            <div>
+              <div style={styles.label}>Abwesend bis</div>
+              <input
+                type="datetime-local"
+                value={delegForm.end}
+                onChange={(e) => setDelegForm((p) => ({ ...p, end: e.target.value }))}
+                style={{ ...styles.input, width: "100%" }}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+            <button
+              onClick={addDelegation}
+              disabled={delegLoading}
+              style={{ ...styles.btnPrimary, padding: "10px 16px", borderRadius: 12 }}
+            >
+              {delegLoading ? "Speichern..." : "Speichern"}
+            </button>
+          </div>
+
+          <div style={{ height: 12 }} />
+
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#123", marginBottom: 8 }}>
+            Aktive / geplante Vertretungen
+          </div>
+
+          {(delegations || []).length === 0 ? (
+            <div style={{ fontSize: 13, color: "#456" }}>Noch keine Vertretungen angelegt.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(delegations || []).map((d) => (
+                <div
+                  key={d.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    padding: "10px 12px",
+                    borderRadius: 14,
+                    border: "1px solid rgba(180,200,220,0.55)",
+                    background: "rgba(255,255,255,0.55)",
+                  }}
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    <div style={{ fontWeight: 800, color: "#123" }}>
+                      {userLabelById(d.user_id)} → {userLabelById(d.substitute_id)}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#456" }}>
+                      {new Date(d.start_at).toLocaleString()} – {new Date(d.end_at).toLocaleString()}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => deleteDelegation(d.id)}
+                    style={{ ...styles.btnSmall, borderRadius: 12 }}
+                  >
+                    Löschen
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
       </div>
     </div>
   );
@@ -3448,6 +3712,30 @@ const styles = {
     fontWeight: 750,
     color: "#0f172a",
   },
+  pillSmall: {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "3px 8px",
+    borderRadius: 999,
+    fontSize: 12,
+    border: "1px solid rgba(40,80,140,0.16)",
+    background: "rgba(255,255,255,0.55)",
+    color: "#113",
+    whiteSpace: "nowrap",
+  },
+  pillSmallMuted: {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "3px 8px",
+    borderRadius: 999,
+    fontSize: 12,
+    border: "1px solid rgba(60,80,110,0.14)",
+    background: "rgba(255,255,255,0.35)",
+    color: "rgba(10,20,35,0.6)",
+    whiteSpace: "nowrap",
+  },
+
+
 
   card: {
     background: "var(--card-bg, rgba(255,255,255,0.78))",
