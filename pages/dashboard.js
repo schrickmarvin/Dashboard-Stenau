@@ -556,22 +556,22 @@ function TasksBoard({ isAdmin }) {
           ) : null}
 
           <div style={styles.taskFormGrid}>
-            <input style={styles.input} placeholder="Titel" value={title} onChange={(e) => setTitle(e.target.value)} />
-            <select style={styles.select} value={areaId} onChange={(e) => setAreaId(e.target.value)}>
+            <input style={styles.input} placeholder="Titel" value={form.title} onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))} />
+            <select style={styles.select} value={form.area} onChange={(e) => setForm((p) => ({ ...p, area: e.target.value }))}>
               <option value="">Bereich</option>
               {areas.map((a) => (
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
             </select>
-            <input style={styles.input} placeholder="tt.mm.jjjj --:--" value={dateStr} onChange={(e) => setDateStr(e.target.value)} />
-            <select style={styles.select} value={status} onChange={(e) => setStatus(e.target.value)}>
+            <input style={styles.input} placeholder="tt.mm.jjjj --:--" value={form.due_at} onChange={(e) => setForm((p) => ({ ...p, due_at: e.target.value }))} />
+            <select style={styles.select} value={form.status} onChange={(e) => setForm((p) => ({ ...p, status: e.target.value }))}>
               <option value="todo">Zu erledigen</option>
               <option value="doing">In Arbeit</option>
               <option value="done">Erledigt</option>
             </select>
 
             <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, alignItems: "center" }}>
-              <select style={styles.select} value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
+              <select style={styles.select} value={form.assignee_id} onChange={(e) => setForm((p) => ({ ...p, assignee_id: e.target.value }))}>
                 <option value="">– Zuständig –</option>
                 {users.map((u) => (
                   <option key={u.id} value={u.id}>{u.name || u.email}</option>
@@ -581,7 +581,7 @@ function TasksBoard({ isAdmin }) {
               <select
                 style={styles.select}
                 multiple
-                value={selectedGuideIds}
+                value={form.guideIds}
                 onChange={(e) => {
                   const vals = Array.from(e.target.selectedOptions).map((o) => o.value);
                   setSelectedGuideIds(vals);
@@ -1737,7 +1737,7 @@ function GuidesPanel({ isAdmin }) {
         <div style={{ ...styles.card, marginBottom: 14 }}>
           <div style={styles.h4}>Neue Anleitung</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titel" style={styles.input} />
+            <input value={form.title} onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))} placeholder="Titel" style={styles.input} />
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
