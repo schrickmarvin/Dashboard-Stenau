@@ -255,10 +255,10 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="name@stenau.net"
                 autoComplete="email"
-                style={
+                style={{
                   ...styles.input,
-                  ...(focus === "email" ? styles.inputFocus : null),
-                }
+                  ...(focus === "email" ? styles.inputFocus : {}),
+                }}
                 onFocus={() => setFocus("email")}
                 onBlur={() => setFocus(null)}
                 required
@@ -273,10 +273,10 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
                 autoComplete="current-password"
-                style={
+                style={{
                   ...styles.input,
-                  ...(focus === "pw" ? styles.inputFocus : null),
-                }
+                  ...(focus === "pw" ? styles.inputFocus : {}),
+                }}
                 onFocus={() => setFocus("pw")}
                 onBlur={() => setFocus(null)}
                 required
@@ -286,10 +286,10 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              style={
+              style={{
                 ...styles.button,
-                ...(loading ? styles.buttonDisabled : null),
-              }
+                ...(loading ? styles.buttonDisabled : {}),
+              }}
             >
               {loading ? "Login läuft…" : "Login"}
             </button>
