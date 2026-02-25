@@ -543,88 +543,64 @@ function TasksBoard({ isAdmin }) {
 
   return (
     <div>
-      <div style={styles.panel}>
-        <div style={styles.h3}>Aufgabe anlegen</div>
+      
+      <details style={styles.details} open>
+        <summary style={styles.detailsSummary}>Aufgabe anlegen</summary>
 
-        {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+        <div style={{ paddingTop: 12 }}>
+          {err ? (
+            <div style={{ marginBottom: 10, padding: 10, border: "1px solid #f5b4b4", background: "rgba(255, 235, 235, 0.9)", borderRadius: 10, color: "#b00020" }}>
+              {err}
+              <button style={{ ...styles.btnSmall, marginLeft: 10 }} onClick={() => setErr("")}>OK</button>
+            </div>
+          ) : null}
 
-        <div style={styles.taskFormGrid}>
-          <input
-            value={form.title}
-            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-            placeholder="Titel"
-            style={styles.input}
-          />
+          <div style={styles.taskFormGrid}>
+            <input style={styles.input} placeholder="Titel" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <select style={styles.select} value={areaId} onChange={(e) => setAreaId(e.target.value)}>
+              <option value="">Bereich</option>
+              {areas.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+            <input style={styles.input} placeholder="tt.mm.jjjj --:--" value={dateStr} onChange={(e) => setDateStr(e.target.value)} />
+            <select style={styles.select} value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="todo">Zu erledigen</option>
+              <option value="doing">In Arbeit</option>
+              <option value="done">Erledigt</option>
+            </select>
 
-          <input
-            value={form.area}
-            onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))}
-            placeholder="Bereich"
-            list="areas-list"
-            style={styles.input}
-          />
-          <datalist id="areas-list">
-            {areas.map((a) => (
-              <option key={a.id} value={a.name} />
-            ))}
-          </datalist>
+            <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, alignItems: "center" }}>
+              <select style={styles.select} value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
+                <option value="">– Zuständig –</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name || u.email}</option>
+                ))}
+              </select>
 
-          <input
-            type="datetime-local"
-            value={form.due_at}
-            onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))}
-            style={styles.input}
-          />
+              <select
+                style={styles.select}
+                multiple
+                value={selectedGuideIds}
+                onChange={(e) => {
+                  const vals = Array.from(e.target.selectedOptions).map((o) => o.value);
+                  setSelectedGuideIds(vals);
+                }}
+              >
+                {guides.map((g) => (
+                  <option key={g.id} value={g.id}>{g.title}</option>
+                ))}
+              </select>
 
-          <select
-            value={form.status}
-            onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
-            style={styles.input}
-          >
-            <option value="todo">Zu erledigen</option>
-            <option value="done">Erledigt</option>
-          </select>
-
-          <select
-            multiple
-            value={form.guideIds}
-            onChange={onGuideSelect}
-            style={{ ...styles.input, height: 94 }}
-            title="Mehrfachauswahl: Strg/Cmd + Klick"
-          >
-            {guides.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.title}
-              </option>
-            ))}
-          </select>
-
-
-          <select
-            value={form.assignee_id}
-            onChange={(e) => setForm((f) => ({ ...f, assignee_id: e.target.value }))}
-            style={styles.input}
-            title="Zuständig"
-          >
-            <option value="">– Zuständig –</option>
-            {members.map((m) => (
-              <option key={m.id} value={m.id}>
-                {(m.name || m.email || m.id)}
-              </option>
-            ))}
-          </select>
-
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
-            <button style={styles.btnPrimary} onClick={createTask}>
-              Anlegen
-            </button>
+              <button style={styles.btnPrimary} onClick={createTask}>Anlegen</button>
+            </div>
           </div>
+
+          <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick</div>
         </div>
+      </details>
 
-        <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick</div>
-      </div>
-
-      <div style={styles.columns}>
+<div style={styles.columns}>
         <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
         <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
       </div>
