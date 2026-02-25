@@ -5,6 +5,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+// Safety-Net: Falls irgendwo versehentlich eine freie Referenz `form` entsteht
+// (z.B. durch Refactor/Minify), soll die Seite nicht komplett crashen.
+// Lokale `form`-States in Komponenten bleiben davon unberührt (Shadowing).
+const form = undefined;
+
 /* ---------------- Supabase --------------- */
 
 function TasksBoard({ isAdmin }) {
