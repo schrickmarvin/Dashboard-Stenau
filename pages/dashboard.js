@@ -573,7 +573,7 @@ function TasksBoard({ isAdmin }) {
             <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, alignItems: "center" }}>
               <select style={styles.select} value={form.assignee_id} onChange={(e) => setForm((p) => ({ ...p, assignee_id: e.target.value }))}>
                 <option value="">– Zuständig –</option>
-                {users.map((u) => (
+                {(members || []).map((u) => (
                   <option key={u.id} value={u.id}>{u.name || u.email}</option>
                 ))}
               </select>
