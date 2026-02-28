@@ -1018,12 +1018,20 @@ function TaskColumn({
 
 
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// Supabase runtime config (support both legacy anon key and new publishable key env names)
+const SUPABASE_URL =
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_PROJECT_URL ||
+  "";
+
+const SUPABASE_PUBLIC_KEY =
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+  "";
 
 const supabase = (() => {
-  const url = SUPABASE_URL || "";
-  const key = SUPABASE_ANON_KEY || "";
+  const url = SUPABASE_URL;
+  const key = SUPABASE_PUBLIC_KEY;
   // Singleton to avoid multiple GoTrueClient instances in the same browser context
   const g = typeof globalThis !== "undefined" ? globalThis : {};
   const k = "__stenau_supabase_client__";
