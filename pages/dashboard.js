@@ -3357,7 +3357,8 @@ export default function Dashboard() {
       ]);
 
     try {
-      const ctx = await withTimeout(loadMyAuthContext(), 8000, 'Auth');
+      // Auth kann in seltenen Fällen (Storage-Lock / frischer Tab) länger dauern.
+      const ctx = await withTimeout(loadMyAuthContext(), 20000, 'Auth');
       setAuth(ctx);
 
       if (ctx?.profile?.id) {
@@ -3375,11 +3376,19 @@ export default function Dashboard() {
         setUserSettings(null);
       }
     } catch (e) {
+      const msg = e?.message || String(e);
       console.error('Auth init failed:', e);
       setAuth({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
-      setAuthError(e?.message || String(e));
+      setAuthError(msg);
       setUserSettings(null);
       setSettingsLoading(false);
+
+      // Wenn Auth hängt -> sauber zur Login-Seite zurück.
+      if (typeof window !== 'undefined' && /Auth Timeout/i.test(msg)) {
+        setTimeout(() => {
+          window.location.href = '/login';
+        }, 500);
+      }
     } finally {
       setAuthLoading(false);
     }
