@@ -1021,7 +1021,23 @@ function TaskColumn({
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const supabase = createClient(SUPABASE_URL || "", SUPABASE_ANON_KEY || "");
+const supabase = (() => {
+  const url = SUPABASE_URL || "";
+  const key = SUPABASE_ANON_KEY || "";
+  // Singleton to avoid multiple GoTrueClient instances in the same browser context
+  const g = typeof globalThis !== "undefined" ? globalThis : {};
+  const k = "__stenau_supabase_client__";
+  if (!g[k]) {
+    g[k] = createClient(url, key, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    });
+  }
+  return g[k];
+})();
 
 /* ---------------- Helpers ---------------- */
 function fmtDateTime(value) {
@@ -3332,21 +3348,38 @@ export default function Dashboard() {
     setAuthLoading(true);
     setAuthError(null);
 
+    const withTimeout = (promise, ms, label) =>
+      Promise.race([
+        promise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`${label} Timeout`)), ms)
+        ),
+      ]);
+
     try {
-      const ctx = await loadMyAuthContext();
+      const ctx = await withTimeout(loadMyAuthContext(), 8000, 'Auth');
       setAuth(ctx);
+
       if (ctx?.profile?.id) {
         setSettingsLoading(true);
-        const s = await loadUserSettings(ctx.profile.id);
-        setUserSettings(s);
-        setSettingsLoading(false);
+        try {
+          const s = await withTimeout(loadUserSettings(ctx.profile.id), 6000, 'User settings');
+          setUserSettings(s);
+        } catch (e) {
+          console.warn('User settings konnten nicht geladen werden:', e);
+          setUserSettings(null);
+        } finally {
+          setSettingsLoading(false);
+        }
       } else {
         setUserSettings(null);
       }
     } catch (e) {
-      console.error("Auth init failed:", e);
+      console.error('Auth init failed:', e);
       setAuth({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
       setAuthError(e?.message || String(e));
+      setUserSettings(null);
+      setSettingsLoading(false);
     } finally {
       setAuthLoading(false);
     }
