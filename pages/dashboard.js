@@ -1424,8 +1424,6 @@ setLoading(false);
     }
   }
 
-  if (!isAdmin) {
-    
   async function addDelegation() {
     const { userId, substituteId, start, end } = delegForm || {};
     if (!userId || !substituteId || !start || !end) {
