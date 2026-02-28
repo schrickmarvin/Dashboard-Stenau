@@ -1483,13 +1483,15 @@ setLoading(false);
     return u?.name ? `${u.name} (${u.email})` : u?.email || id || "";
   }
 
-return (
-      <div style={styles.panel}>
-        <div style={styles.h3}>Nutzer</div>
-        <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
-      </div>
-    );
-  }
+	// Guard: nur Admin darf Nutzerverwaltung sehen
+	if (!isAdmin) {
+	  return (
+	    <div style={styles.panel}>
+	      <div style={styles.h3}>Nutzer</div>
+	      <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
+	    </div>
+	  );
+	}
 
   return (
     <div style={styles.panel}>
