@@ -323,27 +323,6 @@ function TasksBoard({ isAdmin }) {
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
   }
 
-
-  async function deleteTask(taskId) {
-    if (!taskId) return;
-    setErr(null);
-
-    // Erst Unteraufgaben löschen (FK/Abhängigkeiten vermeiden)
-    const { error: subErr } = await supabase.from("subtasks").delete().eq("task_id", taskId);
-    if (subErr) {
-      setErr(subErr.message);
-      return;
-    }
-
-    const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-
-    setTasks((prev) => prev.filter((t) => t.id !== taskId));
-  }
-
   async function createSeries() {
     if (!seriesForm.title.trim()) return;
     setErr(null);
@@ -625,8 +604,8 @@ function TasksBoard({ isAdmin }) {
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
-        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} />
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
@@ -827,183 +806,76 @@ function TasksBoard({ isAdmin }) {
   );
 }
 
-function TaskColumn({
-  title,
-  count,
-  tasks,
-  onToggle,
-  areaById,
-  guides,
-  canWrite,
-  getSubDraft,
-  setSubDraft,
-  onSubAdd,
-  onSubUpdate,
-  onSubDelete,
-  onGuideOpen,
-  members,
-  onAssigneeChange,
-  onTaskDelete,
-}) {
+function TaskColumn({ title, tasks, guides, onUpdateTask, onDeleteTask, onAddSubtask, onToggleSubtask, onDeleteSubtask, onGuideOpen }) {
+  const [subDraft, setSubDraft] = useState({});
   return (
     <div style={styles.panel}>
-      <div style={styles.colHeader}>
-        <div style={styles.h3}>
-          {title} <span style={styles.badge}>{typeof count === "number" ? count : (tasks || []).length}</span>
-        </div>
-      </div>
-
+      <div style={styles.h3}>{title} ({(tasks || []).length})</div>
       <div style={{ display: "grid", gap: 10 }}>
         {(tasks || []).map((t) => {
-          const areaObj = (t.area_id && areaById?.get?.(t.area_id)) || null;
-          const areaLabel = t.area_label || areaObj?.name || t.area || "";
-          const color = t.area_color || areaObj?.color || "#94a3b8";
-
+          const color = t._areaObj?.color || t.color || "#94a3b8";
           const assigneeName =
-            t.assignee?.name ||
-            t.assignee?.email ||
+            t._assignee?.name ||
+            t._assignee?.full_name ||
+            t._assignee?.email ||
             (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
-
-          const subs = Array.isArray(t.subtasks) ? t.subtasks : [];
-          const doneCount = subs.filter((s) => !!s.is_done).length;
-
-          const draft = getSubDraft ? getSubDraft(t.id, color) : { title: "", guide_id: "", color };
+          const subs = t._subtasks || [];
+          const doneCount = t._subDoneCount || 0;
 
           return (
             <div key={t.id} style={styles.card}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span style={styles.dot(color)} />
-                <div style={{ fontWeight: 800 }}>{t.title}</div>
-                {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
-                <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>
-                  {t.due_at ? fmtDateTime(t.due_at) : ""}
-                </div>
+                <div style={{ fontWeight: 700 }}>{t.title}</div>
+                {t._areaObj?.name ? <span style={styles.pill}>{t._areaObj.name}</span> : null}
+                <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
               </div>
 
-              <div style={{ marginTop: 6, fontSize: 12, color: "#666", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <span>Zuständig: {assigneeName}</span>
-                <span>Unteraufgaben: {doneCount}/{subs.length}</span>
-
-                {Array.isArray(members) && members.length > 0 ? (
-                  <select
-                    value={t.assignee_id || ""}
-                    onChange={(e) => onAssigneeChange?.(t.id, e.target.value || null)}
-                    style={{ ...styles.input, padding: "6px 10px", minWidth: 220 }}
-                    title="Zuständig ändern"
-                  >
-                    <option value="">– Unzugeordnet –</option>
-                    {members.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {(m.name || m.email || m.id)}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
+              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                Zuständig: {assigneeName} · Unteraufgaben: {doneCount}/{subs.length}
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                <button style={styles.btnSmall} onClick={() => onToggle?.(t)} disabled={!canWrite}>
+                <button style={styles.btnSmall} onClick={() => onUpdateTask(t.id, { status: safeLower(t.status) === "done" ? "todo" : "done" })}>
                   Status wechseln
                 </button>
-              
-                <button
-                  style={{ ...styles.btnSmall, borderColor: "#ef4444", color: "#b91c1c" }}
-                  onClick={() => {
-                    if (confirm("Aufgabe wirklich löschen?")) onTaskDelete?.(t.id);
-                  }}
-                  disabled={!canWrite}
-                  title="Aufgabe löschen"
-                >
-                  Löschen
+                <button style={styles.btnSmall} onClick={() => onDeleteTask(t.id)}>
+                  Aufgabe löschen
                 </button>
-</div>
+                {(t.guide_ids || []).map((gid) => {
+                  const g = (guides || []).find((x) => x.id === gid);
+                  return (
+                    <button key={gid} style={styles.btnSmall} onClick={() => onGuideOpen(gid)}>
+                      Anleitung: {g?.title || gid}
+                    </button>
+                  );
+                })}
+              </div>
 
-              {/* Unteraufgaben */}
-              <div style={{ marginTop: 12 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 70px 90px", gap: 8, alignItems: "center" }}>
-                  <input
-                    value={draft.title || ""}
-                    onChange={(e) => setSubDraft?.(t.id, { title: e.target.value }, color)}
-                    placeholder="Unteraufgabe…"
-                    style={{ ...styles.input, minWidth: 0 }}
-                    disabled={!canWrite}
-                  />
-
-                  <select
-                    value={draft.guide_id || ""}
-                    onChange={(e) => setSubDraft?.(t.id, { guide_id: e.target.value }, color)}
-                    style={{ ...styles.input, minWidth: 0 }}
-                    disabled={!canWrite}
-                    title="Anleitung verknüpfen"
-                  >
-                    <option value="">– Anleitung –</option>
-                    {(guides || []).map((g) => (
-                      <option key={g.id} value={g.id}>
-                        {g.title}
-                      </option>
-                    ))}
-                  </select>
-
-                  <input
-                    type="color"
-                    value={draft.color || color}
-                    onChange={(e) => setSubDraft?.(t.id, { color: e.target.value }, color)}
-                    style={styles.colorInput}
-                    disabled={!canWrite}
-                    title="Farbe"
-                  />
-
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input value={subDraft[t.id] || ""} onChange={(e) => setSubDraft((p) => ({ ...p, [t.id]: e.target.value }))} placeholder="Unteraufgabe hinzufügen…" style={styles.input} />
                   <button
                     style={styles.btnSmallPrimary}
-                    onClick={() => onSubAdd?.(t, color)}
-                    disabled={!canWrite}
-                    title="Unteraufgabe hinzufügen"
+                    onClick={() => {
+                      const txt = (subDraft[t.id] || "").trim();
+                      if (!txt) return;
+                      onAddSubtask(t.id, txt);
+                      setSubDraft((p) => ({ ...p, [t.id]: "" }));
+                    }}
                   >
                     +
                   </button>
                 </div>
 
-                <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                  {subs.length === 0 ? (
-                    <div style={{ fontSize: 13, color: "#666" }}>Keine Unteraufgaben</div>
-                  ) : null}
-
+                <div style={{ marginTop: 10 }}>
+                  {subs.length === 0 ? <div style={{ fontSize: 13, color: "#666" }}>Keine Unteraufgaben</div> : null}
                   {subs.map((s) => (
-                    <div key={s.id} style={{ ...styles.subRow, gridTemplateColumns: "24px 1fr 1fr 78px 56px 44px" }}>
-                      <input
-                        type="checkbox"
-                        checked={!!s.is_done}
-                        onChange={() => onSubUpdate?.(s.id, { is_done: !s.is_done })}
-                        disabled={!canWrite}
-                        title="Erledigt"
-                      />
-
-                      <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {s.title}
-                      </div>
-
-                      <button
-                        type="button"
-                        style={{ ...styles.btnSmall, padding: "6px 10px", justifySelf: "start" }}
-                        onClick={() => (s.guide_id ? onGuideOpen?.(s.guide_id) : null)}
-                        disabled={!s.guide_id}
-                        title={s.guide_id ? "Anleitung öffnen" : "Keine Anleitung verknüpft"}
-                      >
-                        {s.guide_id ? `Anleitung: ${(s.guides?.title || (guides || []).find((g) => g.id === s.guide_id)?.title || "öffnen")}` : "Anleitung: —"}
-                      </button>
-
-                      <span style={{ width: 60 }} />
-
-                      <span style={{ ...styles.areaDot, background: s.color || color }} />
-
-                      <button
-                        style={styles.btnSmall}
-                        onClick={() => onSubDelete?.(s.id)}
-                        disabled={!canWrite}
-                        title="Unteraufgabe löschen"
-                      >
-                        ✕
-                      </button>
+                    <div key={s.id} style={styles.subRow}>
+                      <input type="checkbox" checked={getSubDone(s)} onChange={() => onToggleSubtask(s)} />
+                      <div style={{ fontSize: 13 }}>{s.title}</div>
+                      <span style={styles.dot(s.color || "#94a3b8")} />
+                      <button style={styles.btnSmall} onClick={() => onDeleteSubtask(s)}>✕</button>
                     </div>
                   ))}
                 </div>
@@ -1016,37 +888,29 @@ function TaskColumn({
   );
 }
 
-
-
-// Supabase runtime config (support both legacy anon key and new publishable key env names)
+// Supabase (lazy init, avoids SSR/prerender crashes)
 const SUPABASE_URL =
   process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  process.env.NEXT_PUBLIC_SUPABASE_PROJECT_URL ||
+  process.env.SUPABASE_URL ||
   "";
-
-const SUPABASE_PUBLIC_KEY =
+const SUPABASE_ANON_KEY =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
   "";
 
-const supabase = (() => {
-  const url = SUPABASE_URL;
-  const key = SUPABASE_PUBLIC_KEY;
-  // Singleton to avoid multiple GoTrueClient instances in the same browser context
-  const g = typeof globalThis !== "undefined" ? globalThis : {};
-  const k = "__stenau_supabase_client__";
-  if (!g[k]) {
-    g[k] = createClient(url, key, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true,
-      },
-    });
-  }
-  return g[k];
-})();
+let _supabase = null;
+function getSupabaseClient() {
+  // next export / prerender runs on server – do not init Supabase there
+  if (typeof window === "undefined") return null;
+  if (_supabase) return _supabase;
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  _supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+  });
+  return _supabase;
+}
 
+const supabase = getSupabaseClient();
 /* ---------------- Helpers ---------------- */
 function fmtDateTime(value) {
   if (!value) return "";
@@ -1152,7 +1016,7 @@ async function loadUserSettings(userId) {
   if (!userId) return null;
   const { data, error } = await supabase
     .from("user_settings")
-    .select("user_id, primary_color, background_color, background_image_url, notifications_enabled")
+    .select("user_id, primary_color, background_color, background_image_url, notifications_enabled, updated_at")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -1172,7 +1036,8 @@ async function upsertUserSettings(userId,  patch) {
     background_color: patch.background_color ?? null,
     background_image_url: patch.background_image_url ?? null,
     notifications_enabled: typeof patch.notifications_enabled === "boolean" ? patch.notifications_enabled : null,
-};
+    updated_at: new Date().toISOString(),
+  };
 
   const { error } = await supabase.from("user_settings").upsert(payload, { onConflict: "user_id" });
   if (error) throw error;
@@ -1190,13 +1055,7 @@ function UsersAdminPanel({ isAdmin }) {
   const [createLoading, setCreateLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [passwordDrafts, setPasswordDrafts] = useState({});
-  
-  const [expandedAreas, setExpandedAreas] = useState({});
-  const [delegations, setDelegations] = useState([]);
-  const [delegForm, setDelegForm] = useState({ userId: "", substituteId: "", start: "", end: "" });
-  const [delegLoading, setDelegLoading] = useState(false);
-
-const [newUser, setNewUser] = useState({
+  const [newUser, setNewUser] = useState({
     email: "",
     password: "",
     name: "",
@@ -1259,19 +1118,7 @@ const [newUser, setNewUser] = useState({
     setRoles(rolesRes.data || []);
     setAreas(areasRes.data || []);
     setUsers((usersData || []).map((u) => ({ ...u, profile_areas: areasByProfile[u.id] || [] })));
-    
-      // Delegationen / Vertretungen (optional)
-      try {
-        const dRes = await supabase
-          .from("user_delegations")
-          .select("id,user_id,substitute_id,start_at,end_at")
-          .order("start_at", { ascending: false });
-        if (!dRes.error) setDelegations(dRes.data || []);
-      } catch (e) {
-        // table might not exist yet
-      }
-
-setLoading(false);
+    setLoading(false);
   }
 
   useEffect(() => {
@@ -1448,74 +1295,14 @@ setLoading(false);
     }
   }
 
-  async function addDelegation() {
-    const { userId, substituteId, start, end } = delegForm || {};
-    if (!userId || !substituteId || !start || !end) {
-      alert("Bitte Nutzer, Vertretung sowie Von/Bis ausfüllen.");
-      return;
-    }
-    if (userId === substituteId) {
-      alert("Vertretung darf nicht identisch mit dem Nutzer sein.");
-      return;
-    }
-
-    setDelegLoading(true);
-    try {
-      const payload = {
-        user_id: userId,
-        substitute_id: substituteId,
-        start_at: new Date(start).toISOString(),
-        end_at: new Date(end).toISOString(),
-      };
-      const ins = await supabase.from("user_delegations").insert(payload).select();
-      if (ins.error) throw ins.error;
-
-      try {
-        const dRes = await supabase
-          .from("user_delegations")
-          .select("id,user_id,substitute_id,start_at,end_at")
-          .order("start_at", { ascending: false });
-        if (!dRes.error) setDelegations(dRes.data || []);
-      } catch (e) {}
-
-      setDelegForm({ userId: "", substituteId: "", start: "", end: "" });
-    } catch (e) {
-      alert(
-        "Konnte Vertretung nicht speichern. (Tabelle user_delegations vorhanden?)\n" +
-          (e?.message || String(e))
-      );
-    } finally {
-      setDelegLoading(false);
-    }
+  if (!isAdmin) {
+    return (
+      <div style={styles.panel}>
+        <div style={styles.h3}>Nutzer</div>
+        <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
+      </div>
+    );
   }
-
-  async function deleteDelegation(id) {
-    if (!id) return;
-    if (!confirm("Vertretung wirklich löschen?")) return;
-
-    try {
-      const del = await supabase.from("user_delegations").delete().eq("id", id);
-      if (del.error) throw del.error;
-      setDelegations((p) => (p || []).filter((d) => d.id !== id));
-    } catch (e) {
-      alert("Konnte Vertretung nicht löschen: " + (e?.message || String(e)));
-    }
-  }
-
-  function userLabelById(id) {
-    const u = (users || []).find((x) => x.id === id);
-    return u?.name ? `${u.name} (${u.email})` : u?.email || id || "";
-  }
-
-	// Guard: nur Admin darf Nutzerverwaltung sehen
-	if (!isAdmin) {
-	  return (
-	    <div style={styles.panel}>
-	      <div style={styles.h3}>Nutzer</div>
-	      <div>Du hast keine Berechtigung, diesen Bereich zu öffnen.</div>
-	    </div>
-	  );
-	}
 
   return (
     <div style={styles.panel}>
@@ -1608,273 +1395,87 @@ setLoading(false);
           </thead>
           <tbody>
             {filtered.map((u) => {
-  const isExpanded = !!expandedAreas[u.id];
-  const selectedAreaIds = Array.isArray(u.area_ids) ? u.area_ids : [];
-  const selectedAreaNames = selectedAreaIds
-    .map((id) => areas.find((a) => a.id === id)?.name)
-    .filter(Boolean);
+              const assignedAreaIds = (u.profile_areas || []).map((pa) => pa.area_id);
+              return (
+                <tr key={u.id}>
+                  <td style={styles.td}>
+                    <input
+                      value={u.name ?? ""}
+                      onChange={(e) => updateUser(u.id, { name: e.target.value })}
+                      style={styles.input}
+                    />
+                  </td>
+                  <td style={styles.td}>{u.email ?? ""}</td>
+                  <td style={styles.td}>
+                    <select
+                      value={u.role_id ?? ""}
+                      onChange={(e) => updateUserRole(u.id, e.target.value || null)}
+                      style={styles.input}
+                    >
+                      <option value="">–</option>
+                      {roles.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td style={styles.td}>
+                    <select
+                      multiple
+                      value={assignedAreaIds}
+                      onChange={(e) =>
+                        updateUserAreas(
+                          u.id,
+                          Array.from(e.target.selectedOptions).map((o) => o.value)
+                        )
+                      }
+                      style={{ ...styles.input, height: 94 }}
+                      title="Mehrfachauswahl: Strg/Cmd + Klick"
+                    >
+                      {areas.map((area) => (
+                        <option key={area.id} value={area.id}>
+                          {area.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td style={styles.td}>
+                    <input
+                      type="checkbox"
+                      checked={u.is_active !== false}
+                      onChange={(e) => updateUser(u.id, { is_active: e.target.checked })}
+                    />
+                  </td>
+                  <td style={styles.td}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input
+                        type="password"
+                        value={passwordDrafts[u.id] ?? ""}
+                        onChange={(e) =>
+                          setPasswordDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))
+                        }
+                        placeholder="Neues Passwort"
+                        style={styles.input}
+                      />
+                      <button style={styles.btnSmall} onClick={() => setPassword(u.id)}>
+                        Setzen
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
 
-  return (
-    <React.Fragment key={u.id}>
-      <tr>
-        <td style={{ padding: "10px 10px", verticalAlign: "top", width: 260 }}>
-          <input
-            value={u.name || ""}
-            onChange={(e) => updateUserField(u.id, { name: e.target.value })}
-            style={{ ...styles.input, width: "100%", maxWidth: 240 }}
-          />
-        </td>
-
-        <td style={{ padding: "10px 10px", verticalAlign: "top", width: 260 }}>
-          <span style={{ fontSize: 13, color: "#233" }}>{u.email}</span>
-        </td>
-
-        <td style={{ padding: "10px 10px", verticalAlign: "top", width: 160 }}>
-          <select
-            value={u.role_id || ""}
-            onChange={(e) => updateUserField(u.id, { role_id: e.target.value || null })}
-            style={{ ...styles.select, width: 140 }}
-          >
-            <option value="">–</option>
-            {roles.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name || r.key}
-              </option>
-            ))}
-          </select>
-        </td>
-
-        <td style={{ padding: "10px 10px", verticalAlign: "top", width: 220 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button
-              type="button"
-              onClick={() => setExpandedAreas((p) => ({ ...p, [u.id]: !p[u.id] }))}
-              style={{
-                ...styles.btnSmall,
-                padding: "7px 10px",
-                borderRadius: 10,
-                fontSize: 12,
-                whiteSpace: "nowrap",
-              }}
-              title="Bereiche bearbeiten"
-            >
-              Bereiche ({selectedAreaIds.length})
-            </button>
-
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxWidth: 320 }}>
-              {selectedAreaNames.slice(0, 3).map((n) => (
-                <span key={n} style={styles.pillSmall}>
-                  {n}
-                </span>
-              ))}
-              {selectedAreaNames.length > 3 ? (
-                <span style={styles.pillSmallMuted}>+{selectedAreaNames.length - 3}</span>
-              ) : null}
-            </div>
-          </div>
-        </td>
-
-        <td style={{ padding: "10px 10px", verticalAlign: "top", width: 90 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <input
-              type="checkbox"
-              checked={!!u.active}
-              onChange={(e) => updateUserField(u.id, { active: e.target.checked })}
-            />
-            <span style={{ fontSize: 12, color: "#233" }}>{u.active ? "✓" : ""}</span>
-          </label>
-        </td>
-
-        <td style={{ padding: "10px 10px", verticalAlign: "top", minWidth: 260 }}>
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <input
-              placeholder="Neues Passwort"
-              value={passwordDrafts[u.id] || ""}
-              onChange={(e) => setPasswordDrafts((p) => ({ ...p, [u.id]: e.target.value }))}
-              style={{ ...styles.input, width: 180 }}
-            />
-            <button
-              onClick={() => setUserPassword(u.id, passwordDrafts[u.id])}
-              style={{ ...styles.btnSmall, padding: "8px 12px", borderRadius: 10 }}
-            >
-              Setzen
-            </button>
-          </div>
-        </td>
-      </tr>
-
-      {isExpanded ? (
-        <tr>
-          <td colSpan={6} style={{ padding: "0 10px 12px 10px" }}>
-            <div
-              style={{
-                background: "rgba(255,255,255,0.75)",
-                border: "1px solid rgba(180,200,220,0.55)",
-                borderRadius: 14,
-                padding: 12,
-                boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
-              }}
-            >
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#123", marginBottom: 8 }}>
-                Bereiche für {u.name || u.email}
-              </div>
-
-              <select
-                multiple
-                value={selectedAreaIds}
-                onChange={(e) =>
-                  updateUserAreas(
-                    u.id,
-                    Array.from(e.target.selectedOptions).map((o) => o.value)
-                  )
-                }
-                style={{ ...styles.select, width: "100%", minHeight: 120 }}
-              >
-                {areas.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-
-              <div style={{ marginTop: 8, fontSize: 12, color: "#456" }}>
-                Tipp: Mit Strg/Cmd kannst du mehrere Bereiche auswählen.
-              </div>
-            </div>
-          </td>
-        </tr>
-      ) : null}
-    </React.Fragment>
-  );
-})}</tbody>
+            {filtered.length === 0 ? (
+              <tr>
+                <td style={styles.td} colSpan={6}>
+                  Keine Nutzer gefunden.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
         </table>
-        <div style={{ height: 14 }} />
-
-        <div style={styles.card}>
-          <div style={styles.cardHeader}>
-            <div style={styles.cardTitle}>Vertretung / Abwesenheit</div>
-            <div style={styles.cardSubTitle}>
-              Während der Abwesenheit wird im Dashboard die Vertretung als zuständig angezeigt.
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-              gap: 12,
-            }}
-          >
-            <div>
-              <div style={styles.label}>Nutzer</div>
-              <select
-                value={delegForm.userId}
-                onChange={(e) => setDelegForm((p) => ({ ...p, userId: e.target.value }))}
-                style={{ ...styles.select, width: "100%" }}
-              >
-                <option value="">– wählen –</option>
-                {(users || []).map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name ? `${u.name} (${u.email})` : u.email}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <div style={styles.label}>Vertretung (Nutzer)</div>
-              <select
-                value={delegForm.substituteId}
-                onChange={(e) =>
-                  setDelegForm((p) => ({ ...p, substituteId: e.target.value }))
-                }
-                style={{ ...styles.select, width: "100%" }}
-              >
-                <option value="">– wählen –</option>
-                {(users || []).map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name ? `${u.name} (${u.email})` : u.email}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <div style={styles.label}>Abwesend von</div>
-              <input
-                type="datetime-local"
-                value={delegForm.start}
-                onChange={(e) => setDelegForm((p) => ({ ...p, start: e.target.value }))}
-                style={{ ...styles.input, width: "100%" }}
-              />
-            </div>
-
-            <div>
-              <div style={styles.label}>Abwesend bis</div>
-              <input
-                type="datetime-local"
-                value={delegForm.end}
-                onChange={(e) => setDelegForm((p) => ({ ...p, end: e.target.value }))}
-                style={{ ...styles.input, width: "100%" }}
-              />
-            </div>
-          </div>
-
-          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
-            <button
-              onClick={addDelegation}
-              disabled={delegLoading}
-              style={{ ...styles.btnPrimary, padding: "10px 16px", borderRadius: 12 }}
-            >
-              {delegLoading ? "Speichern..." : "Speichern"}
-            </button>
-          </div>
-
-          <div style={{ height: 12 }} />
-
-          <div style={{ fontSize: 13, fontWeight: 800, color: "#123", marginBottom: 8 }}>
-            Aktive / geplante Vertretungen
-          </div>
-
-          {(delegations || []).length === 0 ? (
-            <div style={{ fontSize: 13, color: "#456" }}>Noch keine Vertretungen angelegt.</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {(delegations || []).map((d) => (
-                <div
-                  key={d.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    padding: "10px 12px",
-                    borderRadius: 14,
-                    border: "1px solid rgba(180,200,220,0.55)",
-                    background: "rgba(255,255,255,0.55)",
-                  }}
-                >
-                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                    <div style={{ fontWeight: 800, color: "#123" }}>
-                      {userLabelById(d.user_id)} → {userLabelById(d.substitute_id)}
-                    </div>
-                    <div style={{ fontSize: 12, color: "#456" }}>
-                      {new Date(d.start_at).toLocaleString()} – {new Date(d.end_at).toLocaleString()}
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => deleteDelegation(d.id)}
-                    style={{ ...styles.btnSmall, borderRadius: 12 }}
-                  >
-                    Löschen
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
       </div>
     </div>
   );
@@ -1901,7 +1502,7 @@ function GuidesPanel({ isAdmin }) {
 
     const { data: gData, error: gErr } = await supabase
       .from("guides")
-      .select("id, title, content, created_at")
+      .select("id, title, content, created_at, updated_at")
       .order("created_at", { ascending: false });
 
     if (gErr) {
@@ -2091,7 +1692,6 @@ function GuidesPanel({ isAdmin }) {
                       multiple
                       onChange={(e) => {
                         const picked = Array.from(e.target.files || []);
-                        setPendingFiles((prev) => ({ ...prev, [g.id]: picked }));
                         // allow picking same file again later
                         e.target.value = "";
                       }}
@@ -2110,13 +1710,7 @@ function GuidesPanel({ isAdmin }) {
                     Upload starten
                   </button>
 
-                  
-                  <div style={{ fontSize: 12, color: "#666" }}>
-                    {Array.isArray(pendingFiles[g.id]) && pendingFiles[g.id].length > 0
-                      ? `${pendingFiles[g.id].length} Datei(en) ausgewählt`
-                      : "Keine Dateien."}
-                  </div>
-{(pendingFiles[g.id] || []).length > 0 ? (
+                  {(pendingFiles[g.id] || []).length > 0 ? (
                     <span style={{ color: "#666", fontSize: 13 }}>
                       Ausgewählt: {(pendingFiles[g.id] || []).map((f) => f.name).join(", ")}
                     </span>
@@ -2299,242 +1893,20 @@ function AreasPanel({ isAdmin }) {
 
 
 /* ---------------- Kanboard (Placeholder) ---------------- */
-
-function KanboardPanel({ isAdmin = false }) {
-  const [areas, setAreas] = useState([]);
-  const [members, setMembers] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
-  const [filterAreaId, setFilterAreaId] = useState("all");
-  const [filterUserId, setFilterUserId] = useState("all");
-  const [viewMode, setViewMode] = useState("assignee"); // "board" | "assignee"
-
-  useEffect(() => {
-    (async () => {
-      setErr(null);
-      setLoading(true);
-
-      const { data: aData } = await supabase.from("areas").select("id, name, color").order("name", { ascending: true });
-      if (Array.isArray(aData)) setAreas(aData);
-
-      const { data: pData } = await supabase.from("profiles").select("id, email, name, role").order("name", { ascending: true });
-      if (Array.isArray(pData)) setMembers(pData);
-
-      const { data: tData, error: tErr } = await supabase
-        .from("tasks")
-        .select("id, title, status, due_at, area_id, assignee_id, areas:area_id(id, name, color), assignee:assignee_id(id, name, email)")
-        .order("created_at", { ascending: false });
-
-      if (tErr) setErr(tErr.message);
-      if (Array.isArray(tData)) setTasks(tData);
-
-      setLoading(false);
-    })();
-  }, []);
-
-  async function moveTask(taskId, nextStatus) {
-    setErr(null);
-    const { error } = await supabase.from("tasks").update({ status: nextStatus }).eq("id", taskId);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: nextStatus } : t)));
-  }
-
-  const areaById = useMemo(() => new Map((areas || []).map((a) => [a.id, a])), [areas]);
-
-  const filtered = (tasks || []).filter((t) => {
-    if (filterAreaId !== "all" && String(t.area_id || "") !== String(filterAreaId)) return false;
-    if (filterUserId !== "all" && String(t.assignee_id || "") !== String(filterUserId)) return false;
-    return true;
-  });
-
-  const cols = {
-    todo: filtered.filter((t) => (t.status || "todo") === "todo"),
-    doing: filtered.filter((t) => (t.status || "") === "doing"),
-    done: filtered.filter((t) => (t.status || "") === "done"),
-  };
-
-  function onDragStart(e, taskId) {
-    e.dataTransfer.setData("text/plain", String(taskId));
-    e.dataTransfer.effectAllowed = "move";
-  }
-
-  function onDrop(e, status) {
-    e.preventDefault();
-    const id = e.dataTransfer.getData("text/plain");
-    if (!id) return;
-    moveTask(id, status);
-  }
-
-  function allowDrop(e) {
-    e.preventDefault();
-  }
-
+function KanboardPanel() {
   return (
     <div style={styles.panel}>
-      <div style={styles.rowBetween}>
-        <div style={styles.h3}>Kanboard</div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <select value={filterAreaId} onChange={(e) => setFilterAreaId(e.target.value)} style={styles.input}>
-            <option value="all">Alle Bereiche</option>
-            {(areas || []).map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-          <select value={filterUserId} onChange={(e) => setFilterUserId(e.target.value)} style={styles.input}>
-            <option value="all">Alle Nutzer</option>
-            {(members || []).map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name || m.email || m.id}
-              </option>
-            ))}
-          </select>
-          <select value={viewMode} onChange={(e) => setViewMode(e.target.value)} style={styles.input}>
-            <option value="board">Kanban</option>
-            <option value="assignee">Nach Mitarbeiter</option>
-          </select>
-          <button type="button" style={styles.btn} onClick={() => location.reload()}>
-            Neu laden
-          </button>
-        </div>
+      <div style={styles.h3}>Kanboard</div>
+      <div style={{ color: "#666" }}>
+        Dieser Bereich ist vorbereitet. Wenn du willst, bauen wir hier ein echtes Kanban-Board mit Drag & Drop (ToDo / In Arbeit / Erledigt),
+        Filtern und Bereichsfarben.
       </div>
-
-      {err ? <div style={styles.errorBox}>{err}</div> : null}
-      {loading ? <div style={{ color: "#666" }}>Lädt…</div> : null}
-
-      {viewMode === "board" ? (
-      <div style={styles.kanbanGrid}>
-        {[
-          ["todo", "ToDo"],
-          ["doing", "In Arbeit"],
-          ["done", "Erledigt"],
-        ].map(([key, label]) => (
-          <div key={key} style={styles.kanCol} onDragOver={allowDrop} onDrop={(e) => onDrop(e, key)}>
-            <div style={styles.colHeader}>
-              <div style={styles.h3}>
-                {label} <span style={styles.badge}>{cols[key].length}</span>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gap: 10 }}>
-              {cols[key].map((t) => {
-                const areaObj = (t.area_id && areaById.get(t.area_id)) || t.areas || null;
-                const areaLabel = t.area_label || areaObj?.name || "";
-                const color = t.area_color || areaObj?.color || "#94a3b8";
-                const assigneeName = t.assignee?.name || t.assignee?.email || (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
-
-                return (
-                  <div key={t.id} style={{ ...styles.card, cursor: "grab" }} draggable onDragStart={(e) => onDragStart(e, t.id)}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                      <span style={styles.dot(color)} />
-                      <div style={{ fontWeight: 800 }}>{t.title}</div>
-                      {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
-                      <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
-                    </div>
-                    <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>Zuständig: {assigneeName}</div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
-              Tipp: Aufgaben per Drag & Drop in eine andere Spalte ziehen.
-            </div>
-          </div>
-        ))}
-      </div>
-      ) : (
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", alignItems: "start" }}>
-          {(filterUserId === "all" ? (members || []) : (members || []).filter((m) => String(m.id) === String(filterUserId))).map((m) => {
-            const mine = (filtered || []).filter((t) => String(t.assignee_id || "") === String(m.id));
-            const by = {
-              todo: mine.filter((t) => (t.status || "todo") === "todo"),
-              doing: mine.filter((t) => (t.status || "") === "doing"),
-              done: mine.filter((t) => (t.status || "") === "done"),
-            };
-const statusOrder = { todo: 0, doing: 1, done: 2 };
-const mineSorted = [...mine].sort((a, b) => {
-  const sa = String(a.status || "todo");
-  const sb = String(b.status || "todo");
-  const oa = statusOrder[sa] ?? 9;
-  const ob = statusOrder[sb] ?? 9;
-  if (oa !== ob) return oa - ob;
-  const da = a.due_at ? new Date(a.due_at).getTime() : 9999999999999;
-  const db = b.due_at ? new Date(b.due_at).getTime() : 9999999999999;
-  if (da !== db) return da - db;
-  return String(a.title || "").localeCompare(String(b.title || ""));
-});
-
-
-            // optional: hide empty users when "all"
-            if (filterUserId === "all" && mine.length === 0) return null;
-
-            return (
-              <div key={m.id} style={styles.card}>
-                <div style={styles.rowBetween}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 900 }}>{m.name || m.email || m.id}</div>
-                    <span style={styles.pill}>Gesamt: {mineSorted.length}</span>
-                    <span style={styles.pill}>ToDo: {by.todo.length}</span>
-                    <span style={styles.pill}>In Arbeit: {by.doing.length}</span>
-                    <span style={styles.pill}>Erledigt: {by.done.length}</span>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                  {mineSorted.map((t) => {
-                    const areaObj = (t.area_id && areaById.get(t.area_id)) || t.areas || null;
-                    const areaLabel = t.area_label || areaObj?.name || "";
-                    const color = t.area_color || areaObj?.color || "#94a3b8";
-                    const st = String(t.status || "todo");
-                    const stLabel = st === "doing" ? "In Arbeit" : st === "done" ? "Erledigt" : "ToDo";
-
-                    return (
-                      <div
-                        key={t.id}
-                        style={{
-                          ...styles.card,
-                          cursor: "grab",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 10,
-                          flexWrap: "wrap",
-                        }}
-                        draggable
-                        onDragStart={(e) => onDragStart(e, t.id)}
-                        title="Drag & Drop: Aufgabe in eine andere Spalte ziehen (Kanban-Ansicht)"
-                      >
-                        <span style={styles.dot(color)} />
-                        <div style={{ fontWeight: 800 }}>{t.title}</div>
-                        {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
-                        <span style={styles.pill}>Status: {stLabel}</span>
-                        <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
-                      </div>
-                    );
-                  })}
-
-                  {mineSorted.length === 0 ? <div style={{ color: "#666", fontSize: 13 }}>Keine Aufgaben.</div> : null}
-                </div>
-              </div>
-            );
-
-          })}
-        </div>
-      )}
-
     </div>
   );
 }
 
-
 /* ---------------- Calendar ---------------- */
-function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [], currentUser = null, isAdmin = false }) {
+function CalendarPanel({ areas = [], users = [], currentUser = null, isAdmin = false }) {
   const [view, setView] = useState("month"); // "month" | "week"
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -2551,35 +1923,6 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
   // filters
   const [filterAreaId, setFilterAreaId] = useState("all");
   const [filterUserId, setFilterUserId] = useState("all");
-  const [viewMode, setViewMode] = useState("assignee"); // "board" | "assignee"
-
-
-  const [areaList, setAreaList] = useState(() => (Array.isArray(areaListProp) ? areaListProp : []));
-  const [userList, setUserList] = useState(() => (Array.isArray(userListProp) ? userListProp : []));
-
-  useEffect(() => {
-    // Fallback: Wenn keine Bereiche/Nutzer als Props reinkommen, selbst laden
-    (async () => {
-      try {
-        if (!Array.isArray(areaList) || areaList.length === 0) {
-          const { data: aData } = await supabase.from("areaList").select("id, name, color").order("name", { ascending: true });
-          if (Array.isArray(aData)) setAreaList(aData);
-        } else {
-          setAreaList(areaList);
-        }
-
-        if (!Array.isArray(userList) || userList.length === 0) {
-          const { data: pData } = await supabase.from("profiles").select("id, email, name, role").order("name", { ascending: true });
-          if (Array.isArray(pData)) setUserList(pData);
-        } else {
-          setUserList(userList);
-        }
-      } catch (_) {
-        // ignore
-      }
-    })();
-  }, [areaList, userList]);
-
 
   // tasks data
   const [tasks, setTasks] = useState([]);
@@ -2631,7 +1974,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
       let q = supabase
         .from("tasks")
         .select(
-          "id,title,status,area_id,assignee_id,due_at,created_at"
+          "id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at"
         )
         .gte("due_at", rangeStart.toISOString())
         .lte("due_at", rangeEnd.toISOString())
@@ -2693,7 +2036,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
     return tasks.filter((t) => {
       if (!t?.due_at) return false;
       if (filterAreaId !== "all" && t.area_id !== filterAreaId) return false;
-      if (filterUserId !== "all" && t.assignee_id !== filterUserId) return false;
+      if (filterUserId !== "all" && t.assigned_to !== filterUserId) return false;
       return true;
     });
   }, [tasks, filterAreaId, filterUserId]);
@@ -2749,16 +2092,17 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
       const dueIso = mergeDateKeepTime(null, selectedDate);
       const insert = {
         title,
+        description: "",
         status: "open",
         area_id: filterAreaId !== "all" ? filterAreaId : null,
-        assignee_id:
+        assigned_to:
           filterUserId !== "all" ? filterUserId : currentUser?.id || null,
         due_at: dueIso,
       };
       const { data, error } = await supabase
         .from("tasks")
         .insert(insert)
-        .select("id,title,status,area_id,assignee_id,due_at,created_at")
+        .select("id,title,description,status,area_id,assigned_to,due_at,created_at,updated_at")
         .single();
       if (error) throw error;
       setTasks((prev) => [...prev, data].sort((a, b) => new Date(a.due_at) - new Date(b.due_at)));
@@ -2788,8 +2132,8 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
   };
 
   const renderTaskPill = (t) => {
-    const area = areaList?.find((a) => a.id === t.area_id);
-    const assignee = userList?.find((u) => u.id === t.assignee_id);
+    const area = areas?.find((a) => a.id === t.area_id);
+    const assignee = users?.find((u) => u.id === t.assigned_to);
     const label = `${t.title}${assignee ? ` · ${assignee.name}` : ""}`;
     return (
       <div
@@ -2941,8 +2285,8 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
 
   const EditRow = ({ task }) => {
     const isEditing = editingId === task.id;
-    const area = areaList?.find((a) => a.id === task.area_id);
-    const assignee = userList?.find((u) => u.id === task.assignee_id);
+    const area = areas?.find((a) => a.id === task.area_id);
+    const assignee = users?.find((u) => u.id === task.assigned_to);
     const disabled = savingId === task.id;
 
     return (
@@ -3051,7 +2395,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
                   disabled={disabled}
                 >
                   <option value="">—</option>
-                  {(areaList || []).map((a) => (
+                  {(areas || []).map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name}
                     </option>
@@ -3062,18 +2406,29 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
                 <label style={styles.label}>Nutzer</label>
                 <select
                   style={styles.select}
-                  value={task.assignee_id || ""}
-                  onChange={(e) => updateTask(task.id, { assignee_id: e.target.value || null })}
+                  value={task.assigned_to || ""}
+                  onChange={(e) => updateTask(task.id, { assigned_to: e.target.value || null })}
                   disabled={disabled}
                 >
                   <option value="">—</option>
-                  {(userList || []).filter(canSeeUser).map((u) => (
+                  {(users || []).filter(canSeeUser).map((u) => (
                     <option key={u.id} value={u.id}>
                       {u.name}
                     </option>
                   ))}
                 </select>
               </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={styles.label}>Beschreibung</label>
+              <textarea
+                style={styles.textarea}
+                defaultValue={task.description || ""}
+                rows={3}
+                onBlur={(e) => updateTask(task.id, { description: e.target.value })}
+                disabled={disabled}
+              />
             </div>
           </div>
         ) : null}
@@ -3159,7 +2514,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
               title="Bereich-Filter"
             >
               <option value="all">Alle Bereiche</option>
-              {(areaList || []).map((a) => (
+              {(areas || []).map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name}
                 </option>
@@ -3173,7 +2528,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
               title="Nutzer-Filter"
             >
               <option value="all">Alle Nutzer</option>
-              {(userList || []).filter(canSeeUser).map((u) => (
+              {(users || []).filter(canSeeUser).map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.name}
                 </option>
@@ -3356,47 +2711,21 @@ export default function Dashboard() {
     setAuthLoading(true);
     setAuthError(null);
 
-    const withTimeout = (promise, ms, label) =>
-      Promise.race([
-        promise,
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`${label} Timeout`)), ms)
-        ),
-      ]);
-
     try {
-      // Auth kann in seltenen Fällen (Storage-Lock / frischer Tab) länger dauern.
-      const ctx = await withTimeout(loadMyAuthContext(), 20000, 'Auth');
+      const ctx = await loadMyAuthContext();
       setAuth(ctx);
-
       if (ctx?.profile?.id) {
         setSettingsLoading(true);
-        try {
-          const s = await withTimeout(loadUserSettings(ctx.profile.id), 6000, 'User settings');
-          setUserSettings(s);
-        } catch (e) {
-          console.warn('User settings konnten nicht geladen werden:', e);
-          setUserSettings(null);
-        } finally {
-          setSettingsLoading(false);
-        }
+        const s = await loadUserSettings(ctx.profile.id);
+        setUserSettings(s);
+        setSettingsLoading(false);
       } else {
         setUserSettings(null);
       }
     } catch (e) {
-      const msg = e?.message || String(e);
-      console.error('Auth init failed:', e);
+      console.error("Auth init failed:", e);
       setAuth({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
-      setAuthError(msg);
-      setUserSettings(null);
-      setSettingsLoading(false);
-
-      // Wenn Auth hängt -> sauber zur Login-Seite zurück.
-      if (typeof window !== 'undefined' && /Auth Timeout/i.test(msg)) {
-        setTimeout(() => {
-          window.location.href = '/login';
-        }, 500);
-      }
+      setAuthError(e?.message || String(e));
     } finally {
       setAuthLoading(false);
     }
@@ -3423,29 +2752,16 @@ export default function Dashboard() {
   const bgImg = (userSettings?.background_image_url || "").trim();
   const pageStyle = {
     ...styles.page,
-    // Dezent Corporate-Glass (lesbar): helle Glas-Karten + dunkle Schrift
     "--primary": primary,
     "--page-bg": pageBg,
-    "--text": "rgba(15,23,42,0.96)",
-    "--text-soft": "rgba(51,65,85,0.92)",
-    "--card-bg": "rgba(255,255,255,0.78)",
-    "--card-border": "rgba(15,23,42,0.12)",
-    "--card-shadow": "0 18px 46px rgba(2,6,23,0.18)",
-    "--card-shadow-soft": "0 10px 28px rgba(2,6,23,0.14)",
-    "--input-bg": "rgba(255,255,255,0.92)",
-    "--input-border": "rgba(15,23,42,0.16)",
-    "--muted-bg": "rgba(255,255,255,0.55)",
     ...(bgImg
       ? {
-          // Overlay beruhigt das Bild, ohne den Kontrast zu killen
-          backgroundImage: `linear-gradient(rgba(15,23,42,0.22), rgba(15,23,42,0.22)), url(${bgImg})`,
+          backgroundImage: `url(${bgImg})`,
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundAttachment: "fixed",
         }
-      : {
-          background: "linear-gradient(180deg, rgba(241,245,249,1), rgba(226,232,240,1))",
-        }),
+      : {}),
   };
 
   
@@ -3551,10 +2867,7 @@ export default function Dashboard() {
         </div>
 
         <div style={styles.right}>
-          <div style={{ display: "grid", gap: 2 }}>
-            <div style={{ color: "#555", fontSize: 14 }}>{auth.profile?.email || auth.user.email}</div>
-            <div style={{ color: "#777", fontSize: 12 }}>{new Date().toLocaleString("de-DE")} · Version {process.env.NEXT_PUBLIC_APP_VERSION || "dev"}</div>
-          </div>
+          <div style={{ color: "#555", fontSize: 14 }}>{auth.profile?.email || auth.user.email}</div>
           <button style={styles.btn} onClick={signOut}>
             Abmelden
           </button>
@@ -3564,8 +2877,8 @@ export default function Dashboard() {
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
       {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
-{activeTab === "kanboard" ? <KanboardPanel isAdmin={auth.isAdmin} /> : null}
-      {activeTab === "calendar" ? <CalendarPanel currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
+{activeTab === "kanboard" ? <KanboardPanel /> : null}
+      {activeTab === "calendar" ? <CalendarPanel areas={[]} users={[]} currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "areas" ? <AreasPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "settings" ? (
@@ -3593,415 +2906,299 @@ function TabBtn({ active, onClick, children }) {
 }
 
 /* ---------------- Styles ---------------- */
-const USER_COLORS = [
-  "#2563eb", "#16a34a", "#dc2626", "#7c3aed", "#ea580c",
-  "#0d9488", "#db2777", "#ca8a04", "#4f46e5", "#059669"
-];
-
 const styles = {
-  /* ---------------- Layout / Theme ---------------- */
   page: {
     minHeight: "100vh",
-    background: "var(--page-bg, #0b1220)",
-    color: "var(--text, #0f172a)",
-    padding: 16,
+    background: "var(--page-bg, #f3f6fb)",
+    padding: 18,
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-    lineHeight: 1.35,
   },
-
   topbar: {
     display: "flex",
-    gap: 12,
+    gap: 14,
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 12,
+    marginBottom: 14,
   },
-
   brand: {
-    fontSize: 28,
-    fontWeight: 850,
-    letterSpacing: -0.6,
-    color: "var(--brand, #0b1220)",
+    fontSize: 30,
+    fontWeight: 800,
+    letterSpacing: -0.5,
   },
-
   tabs: {
     display: "flex",
-    gap: 8,
+    gap: 10,
     alignItems: "center",
     flexWrap: "wrap",
   },
-
   tab: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    minHeight: 34,
-    border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
-    background: "var(--card-bg, rgba(255,255,255,0.78))",
-    padding: "8px 12px",
+    border: "1px solid #d8e0ef",
+    background: "#fff",
+    padding: "10px 14px",
     borderRadius: 999,
     cursor: "pointer",
-    fontWeight: 750,
-    fontSize: 13,
-    color: "var(--tab-text, #0f172a)",
-    backdropFilter: "blur(8px)",
-    transition: "transform 120ms ease, background 120ms ease, border-color 120ms ease",
-    userSelect: "none",
+    fontWeight: 600,
   },
-
   tabActive: {
-    background: "rgba(59,130,246,0.18)",
-    borderColor: "rgba(59,130,246,0.55)",
+    background: "var(--primary, #0b6b2a)",
+    borderColor: "var(--primary, #0b6b2a)",
+    color: "#fff",
   },
-
   right: {
     display: "flex",
-    gap: 10,
+    gap: 12,
     alignItems: "center",
   },
-
   panel: {
-    background: "var(--card-bg, rgba(255,255,255,0.78))",
-    border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
-    borderRadius: 20,
-    padding: 18,
-    boxShadow: "var(--card-shadow, 0 14px 40px rgba(2,6,23,0.18))",
-    backdropFilter: "blur(10px)",
-  },
-
-  /* kleiner Farbpunkte-Indikator (z.B. Bereichsfarbe) */
-  dot: (color) => ({
-    width: 10,
-    height: 10,
-    borderRadius: 999,
-    display: "inline-block",
-    background: color || "rgba(148,163,184,0.95)",
-    boxShadow: "0 0 0 3px rgba(15,23,42,0.06)",
-    flex: "0 0 auto",
-  }),
-
-  kanbanGrid: {
-    display: "flex",
-    gap: 12,
-    alignItems: "stretch",
-    overflowX: "auto",
-    paddingBottom: 8,
-    scrollSnapType: "x mandatory",
-  },
-
-  kanCol: {
-    background: "var(--card-bg, rgba(255,255,255,0.78))",
-    border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
+    background: "#fff",
+    border: "1px solid #d8e0ef",
     borderRadius: 18,
-    padding: 14,
-    minHeight: 480,
-    flex: "1 0 380px",
-    scrollSnapAlign: "start",
-
-    boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
-    backdropFilter: "blur(10px)",
+    padding: 16,
+    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
+    marginBottom: 14,
   },
 
   details: {
-    background: "var(--card-bg, rgba(255,255,255,0.78))",
-    border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
-    borderRadius: 18,
-    padding: 16,
-    boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
-    backdropFilter: "blur(10px)",
+    background: "rgba(255,255,255,0.92)",
+    border: "1px solid rgba(216,224,239,0.9)",
+    borderRadius: 14,
+    padding: 12,
   },
-
   detailsSummary: {
-    display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-    gap: 12,
-    marginTop: 12,
+    cursor: "pointer",
+    fontWeight: 800,
+    listStyle: "none",
+    outline: "none",
   },
 
   calendarOuter: {
-    display: "grid",
-    gridTemplateColumns: "1.3fr 0.7fr",
-    gap: 12,
-    alignItems: "start",
+    maxWidth: 1280,
+    margin: '0 auto',
   },
-
   calendarPanelCard: {
-    background: "var(--card-bg, rgba(255,255,255,0.78))",
-    border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
+    background: 'rgba(255,255,255,0.92)',
+    border: '1px solid rgba(216,224,239,0.9)',
     borderRadius: 18,
     padding: 16,
-    boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
-    backdropFilter: "blur(10px)",
+    boxShadow: '0 18px 50px rgba(0,0,0,0.10)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+    marginBottom: 14,
   },
-
-  badge: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    minWidth: 26,
-    height: 22,
-    padding: "0 8px",
-    borderRadius: 999,
-    border: "1px solid rgba(15,23,42,0.12)",
-    background: "rgba(255,255,255,0.72)",
+  calendarHint: {
     fontSize: 12,
+    color: '#5b6b86',
+    marginTop: 8,
+  },
+  h3: {
+    fontSize: 18,
     fontWeight: 800,
-    color: "#0f172a",
+    marginBottom: 10,
   },
-
-  pill: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "5px 10px",
-    borderRadius: 999,
-    border: "1px solid rgba(15,23,42,0.12)",
-    background: "rgba(255,255,255,0.72)",
-    fontSize: 12,
-    fontWeight: 750,
-    color: "#0f172a",
-  },
-  pillSmall: {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "3px 8px",
-    borderRadius: 999,
-    fontSize: 12,
-    border: "1px solid rgba(40,80,140,0.16)",
-    background: "rgba(255,255,255,0.55)",
-    color: "#113",
-    whiteSpace: "nowrap",
-  },
-  pillSmallMuted: {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "3px 8px",
-    borderRadius: 999,
-    fontSize: 12,
-    border: "1px solid rgba(60,80,110,0.14)",
-    background: "rgba(255,255,255,0.35)",
-    color: "rgba(10,20,35,0.6)",
-    whiteSpace: "nowrap",
-  },
-
-
-
-  card: {
-    background: "var(--card-bg, rgba(255,255,255,0.78))",
-    border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
-    borderRadius: 16,
-    padding: 14,
-    boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
-    backdropFilter: "blur(10px)",
-  },
-
-  /* ---------------- Inputs / Buttons ---------------- */
-  input: {
-    width: "100%",
-    height: 38,
-    padding: "8px 12px",
-    borderRadius: 12,
-    border: "1px solid rgba(15,23,42,0.14)",
-    background: "rgba(255,255,255,0.92)",
-    color: "#0f172a",
-    outline: "none",
-    fontSize: 14,
-  },
-
-  textarea: {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid rgba(15,23,42,0.14)",
-    background: "rgba(255,255,255,0.92)",
-    color: "#0f172a",
-    outline: "none",
-    fontSize: 14,
-    minHeight: 100,
-    resize: "vertical",
-  },
-
-  btn: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    minHeight: 38,
-    padding: "8px 14px",
-    borderRadius: 12,
-    border: "1px solid rgba(15,23,42,0.14)",
-    background: "rgba(255,255,255,0.82)",
-    color: "#0f172a",
+  h4: {
+    fontSize: 16,
     fontWeight: 800,
-    fontSize: 13,
-    cursor: "pointer",
-    transition: "transform 120ms ease, background 120ms ease, border-color 120ms ease",
-    backdropFilter: "blur(8px)",
-    userSelect: "none",
-    whiteSpace: "nowrap",
+    marginBottom: 4,
   },
-
-  btnPrimary: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    minHeight: 38,
-    padding: "8px 14px",
-    borderRadius: 12,
-    border: "1px solid rgba(59,130,246,0.70)",
-    background: "linear-gradient(180deg, rgba(59,130,246,0.95), rgba(37,99,235,0.92))",
-    color: "#fff",
-    fontWeight: 850,
-    fontSize: 13,
-    cursor: "pointer",
-    boxShadow: "0 10px 26px rgba(2,6,23,0.18)",
-    userSelect: "none",
-    whiteSpace: "nowrap",
-  },
-
-  btnDanger: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    minHeight: 38,
-    padding: "8px 14px",
-    borderRadius: 12,
-    border: "1px solid rgba(239,68,68,0.55)",
-    background: "rgba(239,68,68,0.10)",
-    color: "#991b1b",
-    fontWeight: 850,
-    fontSize: 13,
-    cursor: "pointer",
-    userSelect: "none",
-    whiteSpace: "nowrap",
-  },
-
-  btnSmall: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    minHeight: 32,
-    padding: "6px 10px",
-    borderRadius: 10,
-    border: "1px solid rgba(15,23,42,0.14)",
-    background: "rgba(255,255,255,0.88)",
-    color: "#0f172a",
-    fontWeight: 800,
-    fontSize: 12.5,
-    cursor: "pointer",
-    userSelect: "none",
-    whiteSpace: "nowrap",
-  },
-
-  btnSmallPrimary: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    minHeight: 32,
-    padding: "6px 10px",
-    borderRadius: 10,
-    border: "1px solid rgba(59,130,246,0.70)",
-    background: "rgba(59,130,246,0.16)",
-    color: "#0b2a66",
-    fontWeight: 900,
-    fontSize: 12.5,
-    cursor: "pointer",
-    userSelect: "none",
-    whiteSpace: "nowrap",
-  },
-
-  modalBackdrop: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(2,6,23,0.65)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 18,
-    zIndex: 50,
-  },
-
-  modal: {
-    width: "min(860px, 100%)",
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid rgba(15,23,42,0.14)",
-    borderRadius: 22,
-    boxShadow: "0 26px 80px rgba(0,0,0,0.35)",
-    backdropFilter: "blur(12px)",
-    overflow: "hidden",
-    color: "#0f172a",
-  },
-
-  modalHeader: {
-    padding: 16,
-    borderBottom: "1px solid rgba(15,23,42,0.12)",
+  rowBetween: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
   },
-
-  error: {
-    padding: 12,
-    borderRadius: 14,
-    border: "1px solid rgba(248,113,113,0.35)",
-    background: "rgba(248,113,113,0.10)",
-    color: "#991b1b",
-    fontWeight: 750,
+  columns: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 14,
   },
-
+  col: {
+    background: "transparent",
+  },
+  colHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  badge: {
+    minWidth: 28,
+    height: 28,
+    borderRadius: 999,
+    background: "#eef2fb",
+    border: "1px solid #d8e0ef",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontWeight: 700,
+    color: "#333",
+  },
+  pill: {
+    fontSize: 12,
+    padding: "4px 10px",
+    borderRadius: 999,
+    border: "1px solid #d8e0ef",
+    background: "#f7f9ff",
+    fontWeight: 700,
+  },
+  card: {
+    background: "#fff",
+    border: "1px solid #d8e0ef",
+    borderRadius: 18,
+    padding: 14,
+    boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
+  },
+  input: {
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    outline: "none",
+    background: "#fff",
+    minWidth: 160,
+  },
+  textarea: {
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    outline: "none",
+    background: "#fff",
+    width: "100%",
+    resize: "vertical",
+  },
+  btn: {
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    background: "#fff",
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+  btnPrimary: {
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: "1px solid var(--primary, #0b6b2a)",
+    background: "var(--primary, #0b6b2a)",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 800,
+  },
+  btnSmall: {
+    padding: "8px 10px",
+    borderRadius: 12,
+    border: "1px solid #d8e0ef",
+    background: "#fff",
+    cursor: "pointer",
+    fontWeight: 800,
+  },
+  modalBackdrop: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.35)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    zIndex: 9999,
+  },
+  modal: {
+    width: "min(900px, 96vw)",
+    maxHeight: "80vh",
+    overflow: "auto",
+    background: "#fff",
+    border: "1px solid #d8e0ef",
+    borderRadius: 18,
+    padding: 16,
+    boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+  },
+  modalHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  error: {
+    background: "#fff3f3",
+    border: "1px solid #ffd2d2",
+    color: "#a40000",
+    padding: 12,
+    borderRadius: 12,
+    marginTop: 10,
+    marginBottom: 10,
+  },
   taskFormGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-    gap: 12,
-    alignItems: "end",
+    gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1.2fr 1fr auto",
+    gap: 10,
+    alignItems: "start",
   },
-
   subRow: {
     display: "grid",
-    gridTemplateColumns: "1fr auto auto",
+    gridTemplateColumns: "24px 1fr 1fr 78px 56px 44px",
     gap: 10,
     alignItems: "center",
   },
-
   areaDot: {
-    width: 10,
-    height: 10,
+    width: 14,
+    height: 14,
     borderRadius: 999,
-    background: "var(--primary, #3b82f6)",
+    border: "1px solid #d8e0ef",
     display: "inline-block",
   },
-
+  btnSmallPrimary: {
+    padding: "8px 12px",
+    borderRadius: 12,
+    border: "1px solid var(--primary, #0b6b2a)",
+    background: "var(--primary, #0b6b2a)",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 900,
+  },
   colorInput: {
-    width: 42,
-    height: 34,
-    borderRadius: 10,
-    border: "1px solid rgba(15,23,42,0.14)",
-    background: "rgba(255,255,255,0.92)",
+    width: 56,
+    height: 38,
     padding: 0,
+    border: "1px solid #d8e0ef",
+    borderRadius: 12,
+    background: "#fff",
+    cursor: "pointer",
   },
 
   fileBtn: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    minHeight: 38,
-    padding: "8px 12px",
+    padding: "10px 14px",
     borderRadius: 12,
-    border: "1px dashed rgba(15,23,42,0.22)",
-    background: "rgba(255,255,255,0.88)",
-    color: "#0f172a",
+    border: "1px solid #d8e0ef",
+    background: "#fff",
     cursor: "pointer",
     fontWeight: 800,
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  fileRow: {
+    display: "flex",
+    gap: 10,
+    alignItems: "center",
+    justifyContent: "space-between",
+    border: "1px solid #d8e0ef",
+    borderRadius: 12,
+    padding: "10px 12px",
+    background: "#fff",
+  },
+
+
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+  },
+  th: {
+    textAlign: "left",
+    padding: 10,
+    borderBottom: "1px solid #d8e0ef",
     fontSize: 13,
-    userSelect: "none",
-    whiteSpace: "nowrap",
+    color: "#555",
+  },
+  td: {
+    padding: 10,
+    borderBottom: "1px solid #eef2fb",
+    verticalAlign: "top",
   },
 };
-
