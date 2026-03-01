@@ -3201,4 +3201,13 @@ const styles = {
     borderBottom: "1px solid #eef2fb",
     verticalAlign: "top",
   },
+
+  dot: (color = "#3b82f6") => ({
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    background: color,
+    boxShadow: "0 0 0 3px rgba(255,255,255,0.85)",
+    flex: "0 0 auto",
+  }),
 };
