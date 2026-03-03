@@ -2600,36 +2600,28 @@ const mineSorted = [...mine].sort((a, b) => {
             if (filterUserId === "all" && mine.length === 0) return null;
 
             return (
-              <div key={m.id} style={{ ...styles.card, borderTop: `4px solid ${colColor}` }}>
-                <div style={styles.rowBetween}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 900 }}>{m.name || m.email || m.id}</div>
+              <div key={m.id} style={{ ...styles.kanCol, borderTop: `4px solid ${colColor}` }}>
+                <div style={styles.kanColHeader}>
+                  <div style={styles.kanColTitleRow}>
+                    <div style={styles.kanColTitle}>{m.name || m.email || m.id}</div>
+                    <input
+                      type="color"
+                      value={colColor}
+                      onChange={(e) => setUserColor(m.id, e.target.value)}
+                      title="Spaltenfarbe wählen"
+                      style={styles.colorPicker}
+                    />
+                  </div>
+
+                  <div style={styles.kanColBadges}>
                     <span style={styles.pill}>Gesamt: {mineSorted.length}</span>
                     <span style={styles.pill}>ToDo: {by.todo.length}</span>
                     <span style={styles.pill}>In Arbeit: {by.doing.length}</span>
                     <span style={styles.pill}>Erledigt: {by.done.length}</span>
                   </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 12, opacity: 0.85 }}>Farbe</span>
-                  <input
-                    type="color"
-                    value={colColor}
-                    onChange={(e) => setUserColor(m.id, e.target.value)}
-                    title="Spaltenfarbe wählen"
-                    style={{
-                      width: 34,
-                      height: 24,
-                      border: "1px solid rgba(0,0,0,0.15)",
-                      borderRadius: 8,
-                      padding: 0,
-                      background: "transparent",
-                      cursor: "pointer",
-                    }}
-                  />
-                </div>
                 </div>
 
-                <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                <div style={styles.kanTaskList}>
                   {mineSorted.map((t) => {
                     const areaObj = (t.area_id && areaById.get(t.area_id)) || t.areas || null;
                     const areaLabel = t.area_label || areaObj?.name || "";
@@ -3868,17 +3860,41 @@ const styles = {
   },
 
   kanCol: {
-    background: "var(--card-bg, rgba(255,255,255,0.78))",
+    background: "var(--card-bg, rgba(255,255,255,0.80))",
     border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
     borderRadius: 18,
     padding: 14,
-    minHeight: 480,
+    minHeight: 520,
     flex: "1 0 380px",
     scrollSnapAlign: "start",
-
     boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
     backdropFilter: "blur(10px)",
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    overflow: "hidden",
   },
+  kanColHeader: {
+    paddingBottom: 10,
+    borderBottom: "1px solid rgba(15,23,42,0.10)",
+  },
+  kanColTitleRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  kanColTitle: { fontWeight: 900, fontSize: 15, letterSpacing: 0.2, color: "rgba(15,23,42,0.88)" },
+  kanColBadges: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 },
+  colorPicker: { width: 28, height: 18, border: "1px solid rgba(15,23,42,0.18)", borderRadius: 6, background: "transparent", cursor: "pointer" },
+  kanTaskList: { marginTop: 10, display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", paddingRight: 4, flex: "1 1 auto", minHeight: 0 },
+  kanTaskCard: {
+    background: "rgba(255,255,255,0.96)",
+    border: "1px solid rgba(15,23,42,0.10)",
+    borderRadius: 14,
+    padding: 12,
+    boxShadow: "0 6px 18px rgba(2,6,23,0.10)",
+    cursor: "grab",
+  },
+  kanSubHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 10, paddingTop: 10, borderTop: "1px dashed rgba(15,23,42,0.16)", cursor: "pointer" },
+  kanSubList: { marginTop: 8, display: "grid", gap: 6 },
+  kanSubItem: { display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 10, background: "rgba(15,23,42,0.04)" },
+
 
   details: {
     background: "var(--card-bg, rgba(255,255,255,0.78))",
