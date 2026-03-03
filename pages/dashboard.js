@@ -2,7 +2,7 @@
 // Standalone dashboard page (React) for Next.js + Supabase
 // Hinweis: Datei vollständig übernehmen (keine diff-Markierungen wie "diff --git" einfügen).
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 /* ---------------- Supabase --------------- */
