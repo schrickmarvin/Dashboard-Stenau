@@ -2467,16 +2467,6 @@ function KanboardPanel({ isAdmin = false }) {
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)));
   }
 
-  async function toggleSubtaskDone(task, subId) {
-    const arr = Array.isArray(task?.subtasks) ? task.subtasks : [];
-    const next = arr.map((s) => (s?.id === subId ? { ...s, done: !s?.done } : s));
-    await patchTask(task.id, {
-      subtasks: next,
-      subtasks_total: next.length,
-      subtasks_done: next.filter((s) => !!s?.done).length,
-    });
-  }
-
   const areaById = useMemo(() => new Map((areas || []).map((a) => [a.id, a])), [areas]);
 
   const filtered = (tasks || []).filter((t) => {
