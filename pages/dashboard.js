@@ -2341,6 +2341,9 @@ function KanboardPanel({ isAdmin = false }) {
   const [filterUserId, setFilterUserId] = useState("all");
   const [viewMode, setViewMode] = useState("assignee"); // "board" | "assignee"
 
+  // Kanboard: Unteraufgaben pro Aufgabe auf-/zuklappbar
+  const [expandedTaskIds, setExpandedTaskIds] = useState(() => new Set());
+
   // Kanboard: individuelle Mitarbeiter-Farben (persistiert im Browser)
   const [userColors, setUserColors] = useState({});
 
@@ -2369,7 +2372,9 @@ function KanboardPanel({ isAdmin = false }) {
 
       const { data: tData, error: tErr } = await supabase
         .from("tasks")
-        .select("id, title, status, due_at, area_id, assignee_id, areas:area_id(id, name, color), assignee:assignee_id(id, name, email)")
+        .select(
+          "id, title, status, due_at, area_id, assignee_id, subtasks, subtasks_done, subtasks_total, areas:area_id(id, name, color), assignee:assignee_id(id, name, email)"
+        )
         .order("created_at", { ascending: false });
 
       if (tErr) setErr(tErr.message);
@@ -2387,6 +2392,35 @@ function KanboardPanel({ isAdmin = false }) {
       return;
     }
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: nextStatus } : t)));
+  }
+
+  function toggleExpand(taskId) {
+    setExpandedTaskIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  }
+
+  async function patchTask(taskId, patch) {
+    setErr(null);
+    const { error } = await supabase.from("tasks").update(patch).eq("id", taskId);
+    if (error) {
+      setErr(error.message);
+      throw error;
+    }
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)));
+  }
+
+  async function toggleSubtaskDone(task, subId) {
+    const arr = Array.isArray(task?.subtasks) ? task.subtasks : [];
+    const next = arr.map((s) => (s?.id === subId ? { ...s, done: !s?.done } : s));
+    await patchTask(task.id, {
+      subtasks: next,
+      subtasks_total: next.length,
+      subtasks_done: next.filter((s) => !!s?.done).length,
+    });
   }
 
   const areaById = useMemo(() => new Map((areas || []).map((a) => [a.id, a])), [areas]);
