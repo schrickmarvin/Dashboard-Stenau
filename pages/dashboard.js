@@ -2359,6 +2359,39 @@ function KanboardPanel({ isAdmin = false }) {
     });
   };
 
+  const toggleExpandedTask = (taskId) => {
+    setExpandedTaskIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  };
+
+  const isSubtaskDone = (st) => Boolean(st?.is_done ?? st?.done);
+
+  const toggleSubtaskDone = async (taskId, subtaskId, done) => {
+    try {
+      const { error } = await supabase
+        .from('subtasks')
+        .update({ is_done: done, done })
+        .eq('id', subtaskId);
+      if (error) throw error;
+
+      setTasks((prev) =>
+        prev.map((t) => {
+          if (t.id !== taskId) return t;
+          const nextSub = (t.subtasks || []).map((st) => (st.id === subtaskId ? { ...st, is_done: done, done } : st));
+          const total = nextSub.length;
+          const doneCount = nextSub.filter((st) => isSubtaskDone(st)).length;
+          return { ...t, subtasks: nextSub, subtasks_total: total, subtasks_done: doneCount };
+        })
+      );
+    } catch (e) {
+      setErr(e?.message || String(e));
+    }
+  };
+
   useEffect(() => {
     (async () => {
       setErr(null);
@@ -2373,12 +2406,33 @@ function KanboardPanel({ isAdmin = false }) {
       const { data: tData, error: tErr } = await supabase
         .from("tasks")
         .select(
-          "id, title, status, due_at, area_id, assignee_id, subtasks, subtasks_done, subtasks_total, areas:area_id(id, name, color), assignee:assignee_id(id, name, email)"
+          "id, title, status, due_at, area_id, assignee_id, subtasks_done, subtasks_total, areas:area_id(id, name, color), assignee:assignee_id(id, name, email)"
         )
         .order("created_at", { ascending: false });
 
       if (tErr) setErr(tErr.message);
-      if (Array.isArray(tData)) setTasks(tData);
+
+      // Subtasks separat laden (Tabelle: public.subtasks)
+      let subtasksGrouped = {};
+      const taskIds = Array.isArray(tData) ? tData.map((t) => t.id).filter(Boolean) : [];
+      if (!tErr && taskIds.length) {
+        const { data: stData, error: stErr } = await supabase
+          .from('subtasks')
+          .select('id, task_id, title, is_done, done, status, color, created_at, updated_at')
+          .in('task_id', taskIds)
+          .order('created_at', { ascending: true });
+        if (stErr) setErr(stErr.message);
+        subtasksGrouped = (stData || []).reduce((acc, st) => {
+          const k = String(st.task_id);
+          (acc[k] ||= []).push(st);
+          return acc;
+        }, {});
+      }
+
+      if (Array.isArray(tData)) {
+        const merged = tData.map((t) => ({ ...t, subtasks: subtasksGrouped[String(t.id)] || [] }));
+        setTasks(merged);
+      }
 
       setLoading(false);
     })();
@@ -2606,6 +2660,7 @@ const mineSorted = [...mine].sort((a, b) => {
                         }}
                         draggable
                         onDragStart={(e) => onDragStart(e, t.id)}
+                        onClick={() => toggleExpandedTask(t.id)}
                         title="Drag & Drop: Aufgabe in eine andere Spalte ziehen (Kanban-Ansicht)"
                       >
                         <span style={dotStyle(color)} />
@@ -2613,7 +2668,58 @@ const mineSorted = [...mine].sort((a, b) => {
                         {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
                         <span style={styles.pill}>Status: {stLabel}</span>
                         <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
-                      </div>
+                      
+
+                        {expandedTaskIds.has(t.id) ? (
+                          <div
+                            style={{
+                              width: '100%',
+                              marginTop: 8,
+                              paddingTop: 8,
+                              borderTop: '1px solid rgba(0,0,0,0.08)',
+                              display: 'grid',
+                              gap: 6,
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div style={{ fontSize: 12, color: '#555', fontWeight: 800 }}>Unteraufgaben</div>
+                            {(t.subtasks || []).length ? (
+                              (t.subtasks || []).map((st) => (
+                                <label
+                                  key={st.id}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 8,
+                                    padding: '6px 10px',
+                                    borderRadius: 10,
+                                    background: 'rgba(255,255,255,0.7)',
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isSubtaskDone(st)}
+                                    onChange={(e) => toggleSubtaskDone(t.id, st.id, e.target.checked)}
+                                  />
+                                  <span
+                                    style={{
+                                      fontSize: 13,
+                                      color: isSubtaskDone(st) ? '#777' : '#111',
+                                      textDecoration: isSubtaskDone(st) ? 'line-through' : 'none',
+                                      flex: 1,
+                                    }}
+                                  >
+                                    {st.title}
+                                  </span>
+                                  {st.status ? <span style={{ fontSize: 12, color: '#666' }}>{st.status}</span> : null}
+                                </label>
+                              ))
+                            ) : (
+                              <div style={{ fontSize: 13, color: '#666' }}>Keine Unteraufgaben.</div>
+                            )}
+                          </div>
+                        ) : null}
+</div>
                     );
                   })}
 
