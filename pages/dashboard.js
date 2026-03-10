@@ -117,6 +117,11 @@ function TasksBoard({ isAdmin }) {
   const [err, setErr] = useState(null);
   const canWrite = true;
 
+  const [filterArea, setFilterArea] = useState("");
+  const [filterUser, setFilterUser] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+
   async function loadAll() {
     setErr(null);
     setLoading(true);
@@ -196,15 +201,40 @@ function TasksBoard({ isAdmin }) {
     return m;
   }, [areas]);
 
+  const filteredTasks = useMemo(() => {
+    const needle = String(searchQuery || "").trim().toLowerCase();
+
+    return (tasks || []).filter((t) => {
+      const taskAreaId = t.area_id ? String(t.area_id) : "";
+      const taskAssigneeId = t.assignee_id ? String(t.assignee_id) : "";
+      const taskStatus = String(t.status ?? "todo");
+      const haystack = [
+        t.title || "",
+        t.area_label || "",
+        t.area || "",
+        ...(Array.isArray(t.subtasks) ? t.subtasks.map((s) => s?.title || "") : []),
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      if (filterArea && taskAreaId !== String(filterArea)) return false;
+      if (filterUser && taskAssigneeId !== String(filterUser)) return false;
+      if (filterStatus && taskStatus !== String(filterStatus)) return false;
+      if (needle && !haystack.includes(needle)) return false;
+
+      return true;
+    });
+  }, [tasks, filterArea, filterUser, filterStatus, searchQuery]);
+
   const columns = useMemo(() => {
     const todo = [];
     const done = [];
-    for (const t of tasks) {
+    for (const t of filteredTasks) {
       if ((t.status ?? "todo") === "done") done.push(t);
       else todo.push(t);
     }
     return { todo, done };
-  }, [tasks]);
+  }, [filteredTasks]);
 
   function onGuideSelect(e) {
     const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
@@ -660,6 +690,55 @@ function TasksBoard({ isAdmin }) {
         </div>
 
         <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick</div>
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.h4}>Filter & Suche</div>
+        <div style={styles.filtersRow}>
+          <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={styles.select}>
+            <option value="">Alle Bereiche</option>
+            {areas.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+
+          <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} style={styles.select}>
+            <option value="">Alle Mitarbeiter</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name || m.email || m.id}
+              </option>
+            ))}
+          </select>
+
+          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} style={styles.select}>
+            <option value="">Alle Status</option>
+            <option value="todo">Zu erledigen</option>
+            <option value="done">Erledigt</option>
+          </select>
+
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Suche in Aufgaben / Unteraufgaben…"
+            style={styles.input}
+          />
+
+          <button
+            type="button"
+            style={styles.btn}
+            onClick={() => {
+              setFilterArea("");
+              setFilterUser("");
+              setFilterStatus("");
+              setSearchQuery("");
+            }}
+          >
+            Filter zurücksetzen
+          </button>
+        </div>
       </div>
 
       <div style={styles.columns}>
@@ -1532,6 +1611,27 @@ setLoading(false);
     }
   }
 
+  async function updateUserField(id, patch) {
+    if (!id || !patch || typeof patch !== "object") return;
+
+    if (Object.prototype.hasOwnProperty.call(patch, "role_id")) {
+      await updateUserRole(id, patch.role_id || null);
+      return;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, "active")) {
+      await updateUser(id, { is_active: !!patch.active });
+      return;
+    }
+
+    await updateUser(id, patch);
+  }
+
+  async function setUserPassword(userId, password) {
+    setPasswordDrafts((prev) => ({ ...prev, [userId]: password || "" }));
+    await setPassword(userId);
+  }
+
   function userLabelById(id) {
     const u = (users || []).find((x) => x.id === id);
     return u?.name ? `${u.name} (${u.email})` : u?.email || id || "";
@@ -1639,7 +1739,7 @@ setLoading(false);
           <tbody>
             {filtered.map((u) => {
   const isExpanded = !!expandedAreas[u.id];
-  const selectedAreaIds = Array.isArray(u.area_ids) ? u.area_ids : [];
+  const selectedAreaIds = Array.isArray(u.profile_areas) ? u.profile_areas.map((x) => x.area_id).filter(Boolean) : [];
   const selectedAreaNames = selectedAreaIds
     .map((id) => areas.find((a) => a.id === id)?.name)
     .filter(Boolean);
@@ -1708,10 +1808,10 @@ setLoading(false);
           <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <input
               type="checkbox"
-              checked={!!u.active}
+              checked={!!u.is_active}
               onChange={(e) => updateUserField(u.id, { active: e.target.checked })}
             />
-            <span style={{ fontSize: 12, color: "#233" }}>{u.active ? "✓" : ""}</span>
+            <span style={{ fontSize: 12, color: "#233" }}>{u.is_active ? "✓" : ""}</span>
           </label>
         </td>
 
@@ -2748,7 +2848,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
     (async () => {
       try {
         if (!Array.isArray(areaList) || areaList.length === 0) {
-          const { data: aData } = await supabase.from("areaList").select("id, name, color").order("name", { ascending: true });
+          const { data: aData } = await supabase.from("areas").select("id, name, color").order("name", { ascending: true });
           if (Array.isArray(aData)) setAreaList(aData);
         } else {
           setAreaList(areaList);
@@ -3691,7 +3791,7 @@ export default function Dashboard() {
   return (
     <div style={pageStyle}>
       <div style={styles.topbar}>
-        <div style={styles.brand}>Armaturenbrett</div>
+        <div style={styles.brand}>STENAU Dashboard</div>
 
         <div style={styles.tabs}>
           <TabBtn active={activeTab === "board"} onClick={() => setActiveTab("board")}>
@@ -4195,6 +4295,194 @@ const styles = {
     fontSize: 13,
     userSelect: "none",
     whiteSpace: "nowrap",
+  },
+
+  rowBetween: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+
+  h3: {
+    fontSize: 20,
+    fontWeight: 850,
+    letterSpacing: -0.2,
+    color: "#0f172a",
+  },
+
+  h4: {
+    fontSize: 15,
+    fontWeight: 800,
+    color: "#0f172a",
+  },
+
+  columns: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: 12,
+    alignItems: "start",
+    marginTop: 12,
+  },
+
+  colHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 10,
+  },
+
+  select: {
+    width: "100%",
+    minHeight: 38,
+    padding: "8px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(15,23,42,0.14)",
+    background: "rgba(255,255,255,0.92)",
+    color: "#0f172a",
+    outline: "none",
+    fontSize: 14,
+  },
+
+  filtersRow: {
+    display: "grid",
+    gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+    gap: 10,
+    alignItems: "center",
+    marginTop: 10,
+  },
+
+  table: {
+    width: "100%",
+    borderCollapse: "separate",
+    borderSpacing: 0,
+  },
+
+  th: {
+    textAlign: "left",
+    padding: "10px 10px",
+    fontSize: 12,
+    color: "#475569",
+    borderBottom: "1px solid rgba(15,23,42,0.10)",
+    background: "rgba(255,255,255,0.35)",
+    position: "sticky",
+    top: 0,
+  },
+
+  td: {
+    padding: "10px 10px",
+    verticalAlign: "top",
+    borderBottom: "1px solid rgba(15,23,42,0.06)",
+  },
+
+  label: {
+    fontSize: 12,
+    fontWeight: 700,
+    color: "#475569",
+  },
+
+  cardHeader: {
+    display: "grid",
+    gap: 4,
+    marginBottom: 12,
+  },
+
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: 850,
+    color: "#0f172a",
+  },
+
+  cardSubTitle: {
+    fontSize: 13,
+    color: "#475569",
+  },
+
+  errorBox: {
+    padding: 12,
+    borderRadius: 14,
+    border: "1px solid rgba(248,113,113,0.35)",
+    background: "rgba(248,113,113,0.10)",
+    color: "#991b1b",
+    marginBottom: 12,
+  },
+
+  sectionHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+  },
+
+  sectionTitle: {
+    fontSize: 20,
+    fontWeight: 850,
+    color: "#0f172a",
+  },
+
+  sectionSub: {
+    fontSize: 13,
+    color: "#475569",
+    marginTop: 4,
+  },
+
+  tabBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 36,
+    padding: "8px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(15,23,42,0.14)",
+    background: "rgba(255,255,255,0.82)",
+    color: "#0f172a",
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+
+  tabBtnActive: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 36,
+    padding: "8px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(59,130,246,0.60)",
+    background: "rgba(59,130,246,0.14)",
+    color: "#0f172a",
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+
+  primaryBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 38,
+    padding: "8px 14px",
+    borderRadius: 12,
+    border: "1px solid rgba(59,130,246,0.70)",
+    background: "linear-gradient(180deg, rgba(59,130,246,0.95), rgba(37,99,235,0.92))",
+    color: "#fff",
+    fontWeight: 850,
+    cursor: "pointer",
+  },
+
+  smallBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 30,
+    padding: "6px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(15,23,42,0.14)",
+    background: "rgba(255,255,255,0.82)",
+    color: "#0f172a",
+    fontWeight: 700,
+    cursor: "pointer",
   },
 };
 
