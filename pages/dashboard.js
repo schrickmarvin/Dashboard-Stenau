@@ -43,9 +43,96 @@ function defaultUserColor(seed) {
 }
 
 
+function useIsCompact(breakpoint = 900) {
+  const [isCompact, setIsCompact] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const apply = () => setIsCompact(window.innerWidth <= breakpoint);
+    apply();
+
+    window.addEventListener("resize", apply);
+    return () => window.removeEventListener("resize", apply);
+  }, [breakpoint]);
+
+  return isCompact;
+}
+
+function getInitials(value) {
+  const parts = String(value || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (parts.length === 0) return "—";
+  return parts.map((p) => p[0]?.toUpperCase() || "").join("");
+}
+
+function getAreaIcon(areaName) {
+  const key = safeLower(areaName);
+  if (!key) return "📌";
+  if (key.includes("lvp")) return "🟡";
+  if (key.includes("ppk") || key.includes("papier")) return "🔵";
+  if (key.includes("container")) return "🟠";
+  if (key.includes("bio")) return "🟢";
+  if (key.includes("rest")) return "⚫";
+  if (key.includes("glas")) return "🟣";
+  if (key.includes("werkstatt")) return "🛠️";
+  if (key.includes("verwaltung")) return "🏢";
+  if (key.includes("tour")) return "🚛";
+  return "📌";
+}
+
+function AvatarChip({ name, email, size = 28, bg }) {
+  const label = name || email || "Unzugeordnet";
+  const base = bg || defaultUserColor(label);
+  return (
+    <span
+      title={label}
+      style={{
+        width: size,
+        height: size,
+        minWidth: size,
+        borderRadius: 999,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: base,
+        color: "#fff",
+        fontSize: Math.max(11, Math.round(size * 0.38)),
+        fontWeight: 800,
+        boxShadow: "0 0 0 3px rgba(255,255,255,0.75)",
+      }}
+    >
+      {getInitials(label)}
+    </span>
+  );
+}
+
+function AreaPill({ label, color, compact = false }) {
+  if (!label) return null;
+  return (
+    <span
+      style={{
+        ...styles.pill,
+        padding: compact ? "4px 8px" : styles.pill.padding,
+        gap: compact ? 6 : 8,
+      }}
+      title={label}
+    >
+      <span>{getAreaIcon(label)}</span>
+      <span>{label}</span>
+    </span>
+  );
+}
+
+
 /* ---------------- Supabase --------------- */
 
 function TasksBoard({ isAdmin }) {
+  const isCompact = useIsCompact(980);
   const [areas, setAreas] = useState([]);
   const [guides, setGuides] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -616,7 +703,7 @@ function TasksBoard({ isAdmin }) {
 
         {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-        <div style={styles.taskFormGrid}>
+        <div style={{ ...styles.taskFormGrid, gridTemplateColumns: isCompact ? "1fr" : styles.taskFormGrid.gridTemplateColumns }}>
           <input
             value={form.title}
             onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
@@ -694,7 +781,7 @@ function TasksBoard({ isAdmin }) {
 
       <div style={styles.card}>
         <div style={styles.h4}>Filter & Suche</div>
-        <div style={styles.filtersRow}>
+        <div style={{ ...styles.filtersRow, gridTemplateColumns: isCompact ? "1fr" : styles.filtersRow.gridTemplateColumns }}>
           <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={styles.select}>
             <option value="">Alle Bereiche</option>
             {areas.map((a) => (
@@ -741,7 +828,7 @@ function TasksBoard({ isAdmin }) {
         </div>
       </div>
 
-      <div style={styles.columns}>
+      <div style={{ ...styles.columns, gridTemplateColumns: isCompact ? "1fr" : styles.columns.gridTemplateColumns }}>
         <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
         <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
       </div>
@@ -765,7 +852,7 @@ function TasksBoard({ isAdmin }) {
 
           <div style={{ paddingTop: 12 }}>
             <div style={styles.h3}>Serie anlegen / bearbeiten</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 1fr 120px 120px auto", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: isCompact ? "1fr" : "1.2fr 1fr 1fr 1fr 120px 120px auto", gap: 10 }}>
           <input
             value={seriesForm.title}
             onChange={(e) => setSeriesForm((f) => ({ ...f, title: e.target.value }))}
@@ -892,20 +979,36 @@ function TasksBoard({ isAdmin }) {
               <div style={styles.h3}>Serienübersicht</div>
               {seriesLoading ? <div style={{ color: "#666" }}>Lade…</div> : null}
               <div style={{ display: "grid", gap: 10 }}>
-                {(series || []).map((s) => (
-                  <div key={s.id} style={styles.card}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <div style={styles.h4}>{s.title}</div>
-                      <span style={styles.pill}>{s.series_rule || "—"}</span>
-                      <span style={{ color: "#666", fontSize: 13 }}>
-                        ab {s.due_at ? fmtDateTime(s.due_at) : "–"} · jede {s.series_interval || 1} · {s.repeat_count || 0} Instanzen
-                      </span>
-                      <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => startEditSeries(s)}>
-                        Bearbeiten
-                      </button>
+                {(series || []).map((s) => {
+                  const areaObj = (s.area_id && areaById?.get?.(s.area_id)) || null;
+                  const seriesAreaLabel = areaObj?.name || s.area || "";
+                  const templateCount = Array.isArray(s.subtasks) ? s.subtasks.length : 0;
+
+                  return (
+                    <div key={s.id} style={{ ...styles.card, padding: isCompact ? 12 : 14 }}>
+                      <div style={{ display: "flex", alignItems: isCompact ? "flex-start" : "center", gap: 10, flexWrap: "wrap" }}>
+                        <div style={{ display: "grid", gap: 6, minWidth: 0, flex: "1 1 280px" }}>
+                          <div style={{ ...styles.h4, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <span>{s.title}</span>
+                            <span style={styles.pillSmall}>{String(s.series_rule || "—").toUpperCase()}</span>
+                            {seriesAreaLabel ? <AreaPill label={seriesAreaLabel} compact /> : null}
+                          </div>
+
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <span style={styles.pillSmall}>Start: {s.due_at ? fmtDateTime(s.due_at) : "–"}</span>
+                            <span style={styles.pillSmall}>Intervall: {s.series_interval || 1}</span>
+                            <span style={styles.pillSmall}>Instanzen: {s.repeat_count || 0}</span>
+                            <span style={styles.pillSmall}>Vorlagen: {templateCount}</span>
+                          </div>
+                        </div>
+
+                        <button style={{ ...styles.btn, marginLeft: isCompact ? 0 : "auto" }} onClick={() => startEditSeries(s)}>
+                          Bearbeiten
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {series.length === 0 && !seriesLoading ? <div style={{ color: "#666" }}>Noch keine Serien.</div> : null}
               </div>
             </div>
@@ -962,6 +1065,7 @@ function TaskColumn({
   onAssigneeChange,
   onTaskDelete,
 }) {
+  const isCompact = useIsCompact(980);
   return (
     <div style={styles.panel}>
       <div style={styles.colHeader}>
@@ -991,14 +1095,14 @@ function TaskColumn({
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span style={dotStyle(color)} />
                 <div style={{ fontWeight: 800 }}>{t.title}</div>
-                {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
+                {areaLabel ? <AreaPill label={areaLabel} color={color} compact={isCompact} /> : null}
                 <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>
                   {t.due_at ? fmtDateTime(t.due_at) : ""}
                 </div>
               </div>
 
               <div style={{ marginTop: 6, fontSize: 12, color: "#666", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <span>Zuständig: {assigneeName}</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><AvatarChip name={t.assignee?.name} email={t.assignee?.email || assigneeName} size={26} /> <span>Zuständig: {assigneeName}</span></span>
                 <span>Unteraufgaben: {doneCount}/{subs.length}</span>
 
                 {Array.isArray(members) && members.length > 0 ? (
@@ -1037,7 +1141,7 @@ function TaskColumn({
 
               {/* Unteraufgaben */}
               <div style={{ marginTop: 12 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 70px 90px", gap: 8, alignItems: "center" }}>
+                <div style={{ display: "grid", gridTemplateColumns: isCompact ? "1fr" : "1fr 220px 70px 90px", gap: 8, alignItems: "center" }}>
                   <input
                     value={draft.title || ""}
                     onChange={(e) => setSubDraft?.(t.id, { title: e.target.value }, color)}
@@ -2431,6 +2535,7 @@ function AreasPanel({ isAdmin }) {
 /* ---------------- Kanboard (Placeholder) ---------------- */
 
 function KanboardPanel({ isAdmin = false }) {
+  const isCompact = useIsCompact(980);
   const [areas, setAreas] = useState([]);
   const [members, setMembers] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -2657,7 +2762,7 @@ function KanboardPanel({ isAdmin = false }) {
                     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                       <span style={dotStyle(color)} />
                       <div style={{ fontWeight: 800 }}>{t.title}</div>
-                      {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
+                      {areaLabel ? <AreaPill label={areaLabel} color={color} compact={isCompact} /> : null}
                       <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
                     </div>
                     <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>Zuständig: {assigneeName}</div>
@@ -2703,7 +2808,7 @@ const mineSorted = [...mine].sort((a, b) => {
               <div key={m.id} style={{ ...styles.kanCol, borderTop: `4px solid ${colColor}` }}>
                 <div style={styles.kanColHeader}>
                   <div style={styles.kanColTitleRow}>
-                    <div style={styles.kanColTitle}>{m.name || m.email || m.id}</div>
+                    <div style={{ ...styles.kanColTitle, display: "flex", alignItems: "center", gap: 8 }}><AvatarChip name={m.name} email={m.email || m.id} size={28} bg={colColor} /><span>{m.name || m.email || m.id}</span></div>
                     <input
                       type="color"
                       value={colColor}
@@ -2747,7 +2852,7 @@ const mineSorted = [...mine].sort((a, b) => {
                       >
                         <span style={dotStyle(color)} />
                         <div style={{ fontWeight: 800 }}>{t.title}</div>
-                        {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
+                        {areaLabel ? <AreaPill label={areaLabel} color={color} compact={isCompact} /> : null}
                         <span style={styles.pill}>Status: {stLabel}</span>
                         <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
                       
@@ -2821,6 +2926,7 @@ const mineSorted = [...mine].sort((a, b) => {
 
 /* ---------------- Calendar ---------------- */
 function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [], currentUser = null, isAdmin = false }) {
+  const isCompact = useIsCompact(1040);
   const [view, setView] = useState("month"); // "month" | "week"
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -3399,7 +3505,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
   };
 
   return (
-    <div style={styles.calendarOuter}>
+    <div style={{ ...styles.calendarOuter, gridTemplateColumns: isCompact ? "1fr" : styles.calendarOuter.gridTemplateColumns }}>
       <div style={styles.calendarPanelCard}>
         <div style={{ display: "grid", gap: 14 }}>
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
@@ -3435,7 +3541,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: isCompact ? "1fr" : "2fr 1fr", gap: 14, alignItems: "start" }}>
         <div style={{ display: "grid", gap: 10 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <select
@@ -3629,6 +3735,7 @@ function UserSettingsPanel({ userId, settings, onChange }) {
 
 /* ---------------- Main Component ---------------- */
 export default function Dashboard() {
+  const isCompact = useIsCompact(1080);
   const [activeTab, setActiveTab] = useState("board");
   const [auth, setAuth] = useState({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
   const [authLoading, setAuthLoading] = useState(true);
@@ -3790,10 +3897,10 @@ export default function Dashboard() {
 
   return (
     <div style={pageStyle}>
-      <div style={styles.topbar}>
+      <div style={{ ...styles.topbar, flexDirection: isCompact ? "column" : styles.topbar.flexDirection || "row", alignItems: isCompact ? "stretch" : styles.topbar.alignItems }}>
         <div style={styles.brand}>STENAU Dashboard</div>
 
-        <div style={styles.tabs}>
+        <div style={{ ...styles.tabs, width: isCompact ? "100%" : "auto" }}>
           <TabBtn active={activeTab === "board"} onClick={() => setActiveTab("board")}>
             Plan
           </TabBtn>
@@ -3827,7 +3934,7 @@ export default function Dashboard() {
           </button>
         </div>
 
-        <div style={styles.right}>
+        <div style={{ ...styles.right, justifyContent: isCompact ? "space-between" : "flex-start", flexWrap: "wrap" }}>
           <div style={{ display: "grid", gap: 2 }}>
             <div style={{ color: "#555", fontSize: 14 }}>{auth.profile?.email || auth.user.email}</div>
             <div style={{ color: "#777", fontSize: 12 }}>{new Date().toLocaleString("de-DE")} · Version {process.env.NEXT_PUBLIC_APP_VERSION || "dev"}</div>
