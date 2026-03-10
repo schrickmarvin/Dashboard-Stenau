@@ -42,16 +42,35 @@ function defaultUserColor(seed) {
   return palette[h % palette.length];
 }
 
+function getInitials(nameOrEmail) {
+  const source = String(nameOrEmail || "").trim();
+  if (!source) return "?";
+  const cleaned = source.includes('@') ? source.split('@')[0] : source;
+  const parts = cleaned.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
 
-function useIsCompact(breakpoint = 900) {
+function getAreaMeta(areaName) {
+  const name = String(areaName || "").trim().toLowerCase();
+  if (!name) return { icon: "📁", short: "Bereich" };
+  if (name.includes("lvp")) return { icon: "🟡", short: "LVP" };
+  if (name.includes("ppk") || name.includes("papier")) return { icon: "🔵", short: "PPK" };
+  if (name.includes("container")) return { icon: "🟠", short: "Container" };
+  if (name.includes("bio")) return { icon: "🟢", short: "Bio" };
+  if (name.includes("rest")) return { icon: "⚫", short: "Rest" };
+  if (name.includes("werkstatt")) return { icon: "🛠️", short: "Werkstatt" };
+  if (name.includes("verwaltung") || name.includes("office")) return { icon: "🏢", short: "Verwaltung" };
+  return { icon: "📁", short: areaName };
+}
+
+function useIsCompactLayout(breakpoint = 920) {
   const [isCompact, setIsCompact] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
-
     const apply = () => setIsCompact(window.innerWidth <= breakpoint);
     apply();
-
     window.addEventListener("resize", apply);
     return () => window.removeEventListener("resize", apply);
   }, [breakpoint]);
@@ -59,85 +78,16 @@ function useIsCompact(breakpoint = 900) {
   return isCompact;
 }
 
-function getInitials(value) {
-  const parts = String(value || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2);
-
-  if (parts.length === 0) return "—";
-  return parts.map((p) => p[0]?.toUpperCase() || "").join("");
-}
-
-function getAreaIcon(areaName) {
-  const key = safeLower(areaName);
-  if (!key) return "📌";
-  if (key.includes("lvp")) return "🟡";
-  if (key.includes("ppk") || key.includes("papier")) return "🔵";
-  if (key.includes("container")) return "🟠";
-  if (key.includes("bio")) return "🟢";
-  if (key.includes("rest")) return "⚫";
-  if (key.includes("glas")) return "🟣";
-  if (key.includes("werkstatt")) return "🛠️";
-  if (key.includes("verwaltung")) return "🏢";
-  if (key.includes("tour")) return "🚛";
-  return "📌";
-}
-
-function AvatarChip({ name, email, size = 28, bg }) {
-  const label = name || email || "Unzugeordnet";
-  const base = bg || defaultUserColor(label);
-  return (
-    <span
-      title={label}
-      style={{
-        width: size,
-        height: size,
-        minWidth: size,
-        borderRadius: 999,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: base,
-        color: "#fff",
-        fontSize: Math.max(11, Math.round(size * 0.38)),
-        fontWeight: 800,
-        boxShadow: "0 0 0 3px rgba(255,255,255,0.75)",
-      }}
-    >
-      {getInitials(label)}
-    </span>
-  );
-}
-
-function AreaPill({ label, color, compact = false }) {
-  if (!label) return null;
-  return (
-    <span
-      style={{
-        ...styles.pill,
-        padding: compact ? "4px 8px" : styles.pill.padding,
-        gap: compact ? 6 : 8,
-      }}
-      title={label}
-    >
-      <span>{getAreaIcon(label)}</span>
-      <span>{label}</span>
-    </span>
-  );
-}
-
 
 /* ---------------- Supabase --------------- */
 
 function TasksBoard({ isAdmin }) {
-  const isCompact = useIsCompact(980);
   const [areas, setAreas] = useState([]);
   const [guides, setGuides] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [series, setSeries] = useState([]);
   const [members, setMembers] = useState([]);
+  const isCompact = useIsCompactLayout(980);
 
   const [form, setForm] = useState({
     title: "",
@@ -703,7 +653,7 @@ function TasksBoard({ isAdmin }) {
 
         {err ? <div style={styles.error}>Fehler: {err}</div> : null}
 
-        <div style={{ ...styles.taskFormGrid, gridTemplateColumns: isCompact ? "1fr" : styles.taskFormGrid.gridTemplateColumns }}>
+        <div style={styles.taskFormGrid}>
           <input
             value={form.title}
             onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
@@ -781,7 +731,7 @@ function TasksBoard({ isAdmin }) {
 
       <div style={styles.card}>
         <div style={styles.h4}>Filter & Suche</div>
-        <div style={{ ...styles.filtersRow, gridTemplateColumns: isCompact ? "1fr" : styles.filtersRow.gridTemplateColumns }}>
+        <div style={styles.filtersRow}>
           <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={styles.select}>
             <option value="">Alle Bereiche</option>
             {areas.map((a) => (
@@ -848,7 +798,7 @@ function TasksBoard({ isAdmin }) {
       {/* Serienaufgaben als Unterpunkt im Aufgaben-Bereich */}
       <div style={{ marginTop: 16 }}>
         <details style={styles.details}>
-          <summary style={styles.detailsSummary}>Serienaufgaben (Aufgaben-Serie anlegen / verwalten)</summary>
+          <summary style={styles.detailsSummaryCompact}>🗂️ Serienaufgaben kompakt verwalten</summary>
 
           <div style={{ paddingTop: 12 }}>
             <div style={styles.h3}>Serie anlegen / bearbeiten</div>
@@ -976,35 +926,32 @@ function TasksBoard({ isAdmin }) {
             </div>
 
             <div style={{ marginTop: 16 }}>
-              <div style={styles.h3}>Serienübersicht</div>
+              <div style={styles.rowBetween}>
+                <div style={styles.h3}>Serienübersicht</div>
+                <div style={{ fontSize: 12, color: "#64748b" }}>{series.length} Serien</div>
+              </div>
               {seriesLoading ? <div style={{ color: "#666" }}>Lade…</div> : null}
-              <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
                 {(series || []).map((s) => {
-                  const areaObj = (s.area_id && areaById?.get?.(s.area_id)) || null;
-                  const seriesAreaLabel = areaObj?.name || s.area || "";
-                  const templateCount = Array.isArray(s.subtasks) ? s.subtasks.length : 0;
-
+                  const seriesAreaLabel = s.area || "";
+                  const areaMeta = getAreaMeta(seriesAreaLabel);
                   return (
-                    <div key={s.id} style={{ ...styles.card, padding: isCompact ? 12 : 14 }}>
-                      <div style={{ display: "flex", alignItems: isCompact ? "flex-start" : "center", gap: 10, flexWrap: "wrap" }}>
-                        <div style={{ display: "grid", gap: 6, minWidth: 0, flex: "1 1 280px" }}>
-                          <div style={{ ...styles.h4, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                            <span>{s.title}</span>
-                            <span style={styles.pillSmall}>{String(s.series_rule || "—").toUpperCase()}</span>
-                            {seriesAreaLabel ? <AreaPill label={seriesAreaLabel} compact /> : null}
-                          </div>
-
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <span style={styles.pillSmall}>Start: {s.due_at ? fmtDateTime(s.due_at) : "–"}</span>
-                            <span style={styles.pillSmall}>Intervall: {s.series_interval || 1}</span>
-                            <span style={styles.pillSmall}>Instanzen: {s.repeat_count || 0}</span>
-                            <span style={styles.pillSmall}>Vorlagen: {templateCount}</span>
-                          </div>
-                        </div>
-
-                        <button style={{ ...styles.btn, marginLeft: isCompact ? 0 : "auto" }} onClick={() => startEditSeries(s)}>
+                    <div key={s.id} style={styles.seriesCompactCard}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <div style={{ ...styles.seriesCompactTitle, ...clampTwoLines, minHeight: "2.6em" }}>{s.title}</div>
+                        <span style={styles.pill}>{s.series_rule || "—"}</span>
+                        {seriesAreaLabel ? <span style={styles.pill}>{areaMeta.icon} {seriesAreaLabel}</span> : null}
+                        <span style={{ color: "#666", fontSize: 13 }}>
+                          ab {s.due_at ? fmtDateTime(s.due_at) : "–"}
+                        </span>
+                        <button style={{ ...styles.btnSmall, marginLeft: "auto" }} onClick={() => startEditSeries(s)}>
                           Bearbeiten
                         </button>
+                      </div>
+                      <div style={styles.seriesCompactMeta}>
+                        <span>Intervall: jede {s.series_interval || 1} {s.series_rule || "Wiederholung"}</span>
+                        <span>Instanzen: {s.repeat_count || 0}</span>
+                        <span>Vorlagen: {(s.subtasks || []).length}</span>
                       </div>
                     </div>
                   );
@@ -1065,7 +1012,8 @@ function TaskColumn({
   onAssigneeChange,
   onTaskDelete,
 }) {
-  const isCompact = useIsCompact(980);
+  const isCompact = useIsCompactLayout(900);
+
   return (
     <div style={styles.panel}>
       <div style={styles.colHeader}>
@@ -1079,11 +1027,13 @@ function TaskColumn({
           const areaObj = (t.area_id && areaById?.get?.(t.area_id)) || null;
           const areaLabel = t.area_label || areaObj?.name || t.area || "";
           const color = t.area_color || areaObj?.color || "#94a3b8";
+          const areaMeta = getAreaMeta(areaLabel);
 
           const assigneeName =
             t.assignee?.name ||
             t.assignee?.email ||
             (t.assignee_id ? String(t.assignee_id) : "Unzugeordnet");
+          const assigneeInitials = getInitials(assigneeName);
 
           const subs = Array.isArray(t.subtasks) ? t.subtasks : [];
           const doneCount = subs.filter((s) => !!s.is_done).length;
@@ -1094,15 +1044,18 @@ function TaskColumn({
             <div key={t.id} style={styles.card}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span style={dotStyle(color)} />
-                <div style={{ fontWeight: 800 }}>{t.title}</div>
-                {areaLabel ? <AreaPill label={areaLabel} color={color} compact={isCompact} /> : null}
+                <div style={{ fontWeight: 800, flex: "1 1 220px", minWidth: 0, ...clampTwoLines }}>{t.title}</div>
+                {areaLabel ? <span style={styles.pill}>{areaMeta.icon} {areaLabel}</span> : null}
                 <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>
                   {t.due_at ? fmtDateTime(t.due_at) : ""}
                 </div>
               </div>
 
-              <div style={{ marginTop: 6, fontSize: 12, color: "#666", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><AvatarChip name={t.assignee?.name} email={t.assignee?.email || assigneeName} size={26} /> <span>Zuständig: {assigneeName}</span></span>
+              <div style={{ marginTop: 8, fontSize: 12, color: "#666", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <span style={styles.assigneeBadge}>
+                  <span style={{ ...styles.avatarBubble, background: color }}>{assigneeInitials}</span>
+                  <span>{assigneeName}</span>
+                </span>
                 <span>Unteraufgaben: {doneCount}/{subs.length}</span>
 
                 {Array.isArray(members) && members.length > 0 ? (
@@ -1190,7 +1143,7 @@ function TaskColumn({
                   ) : null}
 
                   {subs.map((s) => (
-                    <div key={s.id} style={{ ...styles.subRow, gridTemplateColumns: "24px 1fr 1fr 78px 56px 44px" }}>
+                    <div key={s.id} style={{ ...styles.subRow, gridTemplateColumns: isCompact ? "24px 1fr auto" : "24px 1fr 1fr 78px 56px 44px" }}>
                       <input
                         type="checkbox"
                         checked={!!s.is_done}
@@ -1199,7 +1152,7 @@ function TaskColumn({
                         title="Erledigt"
                       />
 
-                      <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <div style={{ fontSize: 13, minWidth: 0, ...clampTwoLines }}>
                         {s.title}
                       </div>
 
@@ -2502,7 +2455,7 @@ function AreasPanel({ isAdmin }) {
                   {isAdmin ? (
                     <input value={a.name || ""} onChange={(e) => updateArea(a.id, { name: e.target.value })} style={styles.input} />
                   ) : (
-                    a.name
+<span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><span>{getAreaMeta(a.name).icon}</span><span>{a.name}</span></span>
                   )}
                 </td>
                 <td style={styles.td}>
@@ -2535,10 +2488,10 @@ function AreasPanel({ isAdmin }) {
 /* ---------------- Kanboard (Placeholder) ---------------- */
 
 function KanboardPanel({ isAdmin = false }) {
-  const isCompact = useIsCompact(980);
   const [areas, setAreas] = useState([]);
   const [members, setMembers] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const isCompact = useIsCompactLayout(980);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -2737,7 +2690,7 @@ function KanboardPanel({ isAdmin = false }) {
       {loading ? <div style={{ color: "#666" }}>Lädt…</div> : null}
 
       {viewMode === "board" ? (
-      <div style={styles.kanbanGrid}>
+      <div style={{ ...styles.kanbanGrid, flexDirection: isCompact ? "column" : "row" }}>
         {[
           ["todo", "ToDo"],
           ["doing", "In Arbeit"],
@@ -2761,11 +2714,11 @@ function KanboardPanel({ isAdmin = false }) {
                   <div key={t.id} style={{ ...styles.card, cursor: "grab" }} draggable onDragStart={(e) => onDragStart(e, t.id)}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                       <span style={dotStyle(color)} />
-                      <div style={{ fontWeight: 800 }}>{t.title}</div>
-                      {areaLabel ? <AreaPill label={areaLabel} color={color} compact={isCompact} /> : null}
+                      <div style={{ fontWeight: 800, flex: "1 1 220px", minWidth: 0, ...clampTwoLines }}>{t.title}</div>
+                      {areaLabel ? <span style={styles.pill}>{getAreaMeta(areaLabel).icon} {areaLabel}</span> : null}
                       <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
                     </div>
-                    <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>Zuständig: {assigneeName}</div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: "#666", display: "flex", alignItems: "center", gap: 8 }}><span style={{ ...styles.avatarBubble, background: color }}>{getInitials(assigneeName)}</span><span>{assigneeName}</span></div>
                   </div>
                 );
               })}
@@ -2808,7 +2761,7 @@ const mineSorted = [...mine].sort((a, b) => {
               <div key={m.id} style={{ ...styles.kanCol, borderTop: `4px solid ${colColor}` }}>
                 <div style={styles.kanColHeader}>
                   <div style={styles.kanColTitleRow}>
-                    <div style={{ ...styles.kanColTitle, display: "flex", alignItems: "center", gap: 8 }}><AvatarChip name={m.name} email={m.email || m.id} size={28} bg={colColor} /><span>{m.name || m.email || m.id}</span></div>
+                    <div style={styles.kanColTitle}>{m.name || m.email || m.id}</div>
                     <input
                       type="color"
                       value={colColor}
@@ -2851,8 +2804,8 @@ const mineSorted = [...mine].sort((a, b) => {
                         title="Drag & Drop: Aufgabe in eine andere Spalte ziehen (Kanban-Ansicht)"
                       >
                         <span style={dotStyle(color)} />
-                        <div style={{ fontWeight: 800 }}>{t.title}</div>
-                        {areaLabel ? <AreaPill label={areaLabel} color={color} compact={isCompact} /> : null}
+                        <div style={{ fontWeight: 800, flex: "1 1 220px", minWidth: 0, ...clampTwoLines }}>{t.title}</div>
+                        {areaLabel ? <span style={styles.pill}>{getAreaMeta(areaLabel).icon} {areaLabel}</span> : null}
                         <span style={styles.pill}>Status: {stLabel}</span>
                         <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
                       
@@ -2926,7 +2879,6 @@ const mineSorted = [...mine].sort((a, b) => {
 
 /* ---------------- Calendar ---------------- */
 function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [], currentUser = null, isAdmin = false }) {
-  const isCompact = useIsCompact(1040);
   const [view, setView] = useState("month"); // "month" | "week"
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -3505,7 +3457,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
   };
 
   return (
-    <div style={{ ...styles.calendarOuter, gridTemplateColumns: isCompact ? "1fr" : styles.calendarOuter.gridTemplateColumns }}>
+    <div style={styles.calendarOuter}>
       <div style={styles.calendarPanelCard}>
         <div style={{ display: "grid", gap: 14 }}>
       {err ? <div style={styles.error}>Fehler: {err}</div> : null}
@@ -3541,7 +3493,7 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: isCompact ? "1fr" : "2fr 1fr", gap: 14, alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, alignItems: "start" }}>
         <div style={{ display: "grid", gap: 10 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <select
@@ -3735,8 +3687,8 @@ function UserSettingsPanel({ userId, settings, onChange }) {
 
 /* ---------------- Main Component ---------------- */
 export default function Dashboard() {
-  const isCompact = useIsCompact(1080);
   const [activeTab, setActiveTab] = useState("board");
+  const isCompact = useIsCompactLayout(980);
   const [auth, setAuth] = useState({ user: null, profile: null, role: null, isAdmin: false, inactive: false });
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
@@ -3807,6 +3759,7 @@ export default function Dashboard() {
   const bgImg = (userSettings?.background_image_url || "").trim();
   const pageStyle = {
     ...styles.page,
+    padding: isCompact ? 10 : styles.page.padding,
     // Dezent Corporate-Glass (lesbar): helle Glas-Karten + dunkle Schrift
     "--primary": primary,
     "--page-bg": pageBg,
@@ -3897,10 +3850,10 @@ export default function Dashboard() {
 
   return (
     <div style={pageStyle}>
-      <div style={{ ...styles.topbar, flexDirection: isCompact ? "column" : styles.topbar.flexDirection || "row", alignItems: isCompact ? "stretch" : styles.topbar.alignItems }}>
-        <div style={styles.brand}>STENAU Dashboard</div>
+      <div style={{ ...styles.topbar, flexDirection: isCompact ? "column" : "row", alignItems: isCompact ? "stretch" : styles.topbar.alignItems }}>
+        <div style={{ ...styles.brand, fontSize: isCompact ? 22 : styles.brand.fontSize }}>STENAU Dashboard</div>
 
-        <div style={{ ...styles.tabs, width: isCompact ? "100%" : "auto" }}>
+        <div style={styles.tabs}>
           <TabBtn active={activeTab === "board"} onClick={() => setActiveTab("board")}>
             Plan
           </TabBtn>
@@ -3983,6 +3936,15 @@ const USER_COLORS = [
 ];
 
 const dotStyle = (color = "#5b8cff") => ({ width: 10, height: 10, borderRadius: 99, background: color, boxShadow: `0 0 0 4px rgba(91,140,255,0.12)` });
+const clampTwoLines = {
+  overflow: "hidden",
+  display: "-webkit-box",
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: "vertical",
+  lineHeight: 1.35,
+  minHeight: "2.7em",
+  wordBreak: "break-word",
+};
 
 const styles = {
   /* ---------------- Layout / Theme ---------------- */
@@ -4072,7 +4034,7 @@ const styles = {
     borderRadius: 18,
     padding: 14,
     minHeight: 520,
-    flex: "1 0 380px",
+    flex: "1 0 320px",
     scrollSnapAlign: "start",
     boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
     backdropFilter: "blur(10px)",
@@ -4094,7 +4056,8 @@ const styles = {
     background: "rgba(255,255,255,0.96)",
     border: "1px solid rgba(15,23,42,0.10)",
     borderRadius: 14,
-    padding: 12,
+    padding: 14,
+    minHeight: 118,
     boxShadow: "0 6px 18px rgba(2,6,23,0.10)",
     cursor: "grab",
   },
@@ -4191,9 +4154,14 @@ const styles = {
     background: "var(--card-bg, rgba(255,255,255,0.78))",
     border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
     borderRadius: 16,
-    padding: 14,
+    padding: 16,
+    minHeight: 148,
     boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
     backdropFilter: "blur(10px)",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "space-between",
+    gap: 10,
   },
 
   /* ---------------- Inputs / Buttons ---------------- */
@@ -4404,6 +4372,61 @@ const styles = {
     whiteSpace: "nowrap",
   },
 
+  avatarBubble: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: 900,
+    boxShadow: "0 6px 16px rgba(15,23,42,0.16)",
+    flexShrink: 0,
+  },
+
+  assigneeBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "4px 10px 4px 4px",
+    borderRadius: 999,
+    border: "1px solid rgba(15,23,42,0.10)",
+    background: "rgba(255,255,255,0.72)",
+  },
+
+  detailsSummaryCompact: {
+    cursor: "pointer",
+    fontWeight: 850,
+    fontSize: 15,
+    color: "#0f172a",
+    listStyle: "none",
+  },
+
+  seriesCompactCard: {
+    background: "rgba(255,255,255,0.70)",
+    border: "1px solid rgba(15,23,42,0.10)",
+    borderRadius: 16,
+    padding: 12,
+    boxShadow: "0 8px 24px rgba(2,6,23,0.08)",
+  },
+
+  seriesCompactTitle: {
+    fontSize: 15,
+    fontWeight: 850,
+    color: "#0f172a",
+  },
+
+  seriesCompactMeta: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 12,
+    marginTop: 8,
+    fontSize: 12,
+    color: "#64748b",
+  },
+
   rowBetween: {
     display: "flex",
     justifyContent: "space-between",
@@ -4425,11 +4448,23 @@ const styles = {
     color: "#0f172a",
   },
 
+  equalCell: {
+    width: "100%",
+    minWidth: 0,
+  },
+
+  truncateOneLine: {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+
   columns: {
     display: "grid",
     gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: 12,
-    alignItems: "start",
+    gap: 16,
+    alignItems: "stretch",
+    gridAutoRows: "1fr",
     marginTop: 12,
   },
 
@@ -4456,8 +4491,8 @@ const styles = {
   filtersRow: {
     display: "grid",
     gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
-    gap: 10,
-    alignItems: "center",
+    gap: 12,
+    alignItems: "stretch",
     marginTop: 10,
   },
 
@@ -4465,11 +4500,12 @@ const styles = {
     width: "100%",
     borderCollapse: "separate",
     borderSpacing: 0,
+    tableLayout: "fixed",
   },
 
   th: {
     textAlign: "left",
-    padding: "10px 10px",
+    padding: "12px 12px",
     fontSize: 12,
     color: "#475569",
     borderBottom: "1px solid rgba(15,23,42,0.10)",
@@ -4479,9 +4515,10 @@ const styles = {
   },
 
   td: {
-    padding: "10px 10px",
+    padding: "12px 12px",
     verticalAlign: "top",
     borderBottom: "1px solid rgba(15,23,42,0.06)",
+    overflow: "hidden",
   },
 
   label: {
