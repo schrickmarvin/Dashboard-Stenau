@@ -433,12 +433,12 @@ function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
     loadAll();
   }
 
-  async function addSubtask(task, fallbackColor) {
+  async function addSubtask(task, fallbackColor, overrideDraft = null) {
     if (!canWrite) return;
     const taskId = task?.id;
     if (!taskId) return;
-    const d = getSubDraft(taskId, fallbackColor);
-    if (!d.title.trim()) return;
+    const d = overrideDraft || getSubDraft(taskId, fallbackColor);
+    if (!String(d.title || "").trim()) return;
 
     setErr(null);
     const payload = {
@@ -453,8 +453,10 @@ function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
       return;
     }
 
-    // clear draft
-    setSubDrafts((prev) => ({ ...prev, [taskId]: { title: "", guide_id: "", color: fallbackColor || "" } }));
+    // clear draft (only board draft; modal keeps its own local state)
+    if (!overrideDraft) {
+      setSubDrafts((prev) => ({ ...prev, [taskId]: { title: "", guide_id: "", color: fallbackColor || "" } }));
+    }
     await logActivity({ entityType: "task", entityId: taskId, action: "subtask_create", message: `Unteraufgabe hinzugefügt: ${payload.title}`, meta: payload });
 
     // optimistic update
@@ -1074,8 +1076,10 @@ function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
           onSaveTask={updateTaskFields}
           onToggleStatus={toggleStatus}
           onGuideOpen={openGuide}
+          onSubAdd={addSubtask}
           onSubUpdate={updateSubtask}
           onSubDelete={deleteSubtask}
+          onTaskFileUpload={uploadTaskFiles}
           onTaskFileDownload={downloadTaskFile}
           onTaskFileDelete={deleteTaskFile}
           onRefresh={loadAll}
@@ -4000,8 +4004,10 @@ function TaskDetailModal({
   onSaveTask,
   onToggleStatus,
   onGuideOpen,
+  onSubAdd,
   onSubUpdate,
   onSubDelete,
+  onTaskFileUpload,
   onTaskFileDownload,
   onTaskFileDelete,
   onRefresh,
@@ -4021,6 +4027,8 @@ function TaskDetailModal({
   const [info, setInfo] = useState(null);
   const [error, setError] = useState(null);
   const [commentsAvailable, setCommentsAvailable] = useState(true);
+  const [subtaskDraft, setSubtaskDraft] = useState({ title: "", guide_id: "", color: task?.area_color || "#6b7280" });
+  const [pendingFilesLocal, setPendingFilesLocal] = useState([]);
 
   useEffect(() => {
     setTitle(task?.title || "");
@@ -4031,6 +4039,8 @@ function TaskDetailModal({
     setDescription(task?.description || "");
     setInternalNote(task?.internal_note || "");
     setCommentDraft("");
+    setSubtaskDraft({ title: "", guide_id: "", color: task?.area_color || "#6b7280" });
+    setPendingFilesLocal([]);
     setInfo(null);
     setError(null);
   }, [task]);
@@ -4066,6 +4076,50 @@ function TaskDetailModal({
     loadMeta();
     return () => { active = false; };
   }, [task]);
+
+  const subtasks = Array.isArray(task?.subtasks) ? task.subtasks : [];
+  const doneCount = subtasks.filter((s) => !!s.is_done).length;
+  const progress = subtasks.length ? Math.round((doneCount / subtasks.length) * 100) : 0;
+
+  async function handleAddSubtask() {
+    const titleValue = String(subtaskDraft.title || "").trim();
+    if (!titleValue || !task?.id) return;
+    setError(null);
+    await onSubAdd?.(task, task?.area_color || "#6b7280", {
+      title: titleValue,
+      guide_id: subtaskDraft.guide_id || "",
+      color: subtaskDraft.color || task?.area_color || "#6b7280",
+    });
+    setSubtaskDraft({ title: "", guide_id: "", color: task?.area_color || "#6b7280" });
+    await onRefresh?.();
+  }
+
+  async function handleUploadFiles() {
+    if (!task?.id || !pendingFilesLocal.length) return;
+    setError(null);
+    await onTaskFileUpload?.(task.id, pendingFilesLocal);
+    setPendingFilesLocal([]);
+    await onRefresh?.();
+  }
+
+  async function handleDeleteSubtask(subId) {
+    await onSubDelete?.(subId);
+    await onRefresh?.();
+  }
+
+  async function handleToggleSubtask(subId, isDone) {
+    await onSubUpdate?.(subId, { is_done: !isDone });
+    await onRefresh?.();
+  }
+
+  async function handleDeleteFile(fileRow) {
+    await onTaskFileDelete?.(fileRow);
+    await onRefresh?.();
+  }
+
+  async function handleDownloadFile(fileRow) {
+    await onTaskFileDownload?.(fileRow);
+  }
 
   async function handleSave() {
     if (!task?.id) return;
@@ -4187,17 +4241,35 @@ function TaskDetailModal({
           <div style={styles.detailGrid}>
             <div style={styles.card}>
               <div style={styles.h4}>Unteraufgaben</div>
-              <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
-                {(task?.subtasks || []).length === 0 ? <div style={{ color: "#64748b", fontSize: 13 }}>Keine Unteraufgaben.</div> : (task.subtasks || []).map((s) => (
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+                <div style={{ color: "#475569", fontSize: 13 }}>Fortschritt: {doneCount}/{subtasks.length} · {progress}%</div>
+                <div style={{ ...styles.metaPill }}>{subtasks.length ? `${doneCount} erledigt` : 'Noch keine Unteraufgaben'}</div>
+              </div>
+              <div style={styles.progressTrack}>
+                <div style={{ ...styles.progressBar, width: `${progress}%`, background: task?.area_color || "#3b82f6" }} />
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 70px 100px", gap: 8, alignItems: "center", marginTop: 12 }}>
+                <input value={subtaskDraft.title} onChange={(e) => setSubtaskDraft((d) => ({ ...d, title: e.target.value }))} placeholder="Neue Unteraufgabe…" style={styles.input} />
+                <select value={subtaskDraft.guide_id} onChange={(e) => setSubtaskDraft((d) => ({ ...d, guide_id: e.target.value }))} style={styles.select}>
+                  <option value="">– Anleitung –</option>
+                  {(guides || []).map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
+                </select>
+                <input type="color" value={subtaskDraft.color || "#6b7280"} onChange={(e) => setSubtaskDraft((d) => ({ ...d, color: e.target.value }))} style={styles.colorInput} />
+                <button type="button" style={styles.btnSmallPrimary} onClick={handleAddSubtask}>Hinzufügen</button>
+              </div>
+
+              <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+                {subtasks.length === 0 ? <div style={{ color: "#64748b", fontSize: 13 }}>Keine Unteraufgaben.</div> : subtasks.map((s) => (
                   <div key={s.id} style={styles.subtaskRow}>
-                    <input type="checkbox" checked={!!s.is_done} onChange={() => onSubUpdate?.(s.id, { is_done: !s.is_done })} />
+                    <input type="checkbox" checked={!!s.is_done} onChange={() => handleToggleSubtask(s.id, !!s.is_done)} />
                     <div style={{ minWidth: 0 }}>
                       <div style={{ ...styles.ellipsisText, textDecoration: s.is_done ? "line-through" : "none" }}>{s.title}</div>
                       <div style={{ fontSize: 12, color: "#64748b" }}>{s.guide_id ? (s.guides?.title || (guides || []).find((g) => g.id === s.guide_id)?.title || "Anleitung") : "Ohne Anleitung"}</div>
                     </div>
                     <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                       {s.guide_id ? <button type="button" style={styles.btnSmall} onClick={() => onGuideOpen?.(s.guide_id)}>Anleitung</button> : null}
-                      <button type="button" style={styles.btnSmall} onClick={() => onSubDelete?.(s.id)}>Löschen</button>
+                      <button type="button" style={styles.btnSmall} onClick={() => handleDeleteSubtask(s.id)}>Löschen</button>
                     </div>
                   </div>
                 ))}
@@ -4206,7 +4278,15 @@ function TaskDetailModal({
 
             <div style={styles.card}>
               <div style={styles.h4}>Dateien</div>
-              <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
+                <label style={styles.fileBtn}>
+                  Dateien auswählen
+                  <input type="file" multiple style={{ display: "none" }} onChange={(e) => setPendingFilesLocal(Array.from(e.target.files || []))} />
+                </label>
+                <button type="button" style={styles.btnSmall} onClick={handleUploadFiles} disabled={!pendingFilesLocal.length}>Upload starten</button>
+                <span style={{ fontSize: 12, color: "#64748b" }}>{pendingFilesLocal.length ? `${pendingFilesLocal.length} Datei(en) ausgewählt` : 'Keine Dateien ausgewählt'}</span>
+              </div>
+              <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
                 {(files || []).length === 0 ? <div style={{ color: "#64748b", fontSize: 13 }}>Keine Dateien.</div> : (files || []).map((f) => (
                   <div key={f.id} style={styles.fileRow}>
                     <div style={{ minWidth: 0 }}>
@@ -4214,8 +4294,8 @@ function TaskDetailModal({
                       <div style={{ color: "#64748b", fontSize: 12 }}>{f.size ? `${Math.round(f.size / 1024)} KB` : "—"} · {fmtDateTime(f.created_at)}</div>
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
-                      <button type="button" style={styles.btnSmall} onClick={() => onTaskFileDownload?.(f)}>Download</button>
-                      <button type="button" style={styles.btnSmall} onClick={() => onTaskFileDelete?.(f)}>Löschen</button>
+                      <button type="button" style={styles.btnSmall} onClick={() => handleDownloadFile(f)}>Download</button>
+                      <button type="button" style={styles.btnSmall} onClick={() => handleDeleteFile(f)}>Löschen</button>
                     </div>
                   </div>
                 ))}
