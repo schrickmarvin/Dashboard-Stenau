@@ -65,7 +65,7 @@ function useIsCompactLayout(breakpoint = 1100) {
 
 /* ---------------- Supabase --------------- */
 
-function TasksBoard({ isAdmin }) {
+function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
   const [areas, setAreas] = useState([]);
   const [guides, setGuides] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -261,6 +261,20 @@ function TasksBoard({ isAdmin }) {
     }
     return { todo, done };
   }, [filteredTasks]);
+
+  useEffect(() => {
+    if (!focusTaskId) return;
+    const id = String(focusTaskId);
+    const run = () => {
+      const el = document.querySelector(`[data-task-id="${id}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        onFocusConsumed?.();
+      }
+    };
+    const timer = window.setTimeout(run, 120);
+    return () => window.clearTimeout(timer);
+  }, [focusTaskId, filteredTasks, onFocusConsumed]);
 
   function onGuideSelect(e) {
     const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
@@ -1115,7 +1129,7 @@ function TaskColumn({
           const draft = getSubDraft ? getSubDraft(t.id, color) : { title: "", guide_id: "", color };
 
           return (
-            <div key={t.id} style={{ ...styles.card, minHeight: 220 }}>
+            <div key={t.id} data-task-id={t.id} style={{ ...styles.card, minHeight: 220, ...(String(focusTaskId || "") === String(t.id) ? styles.focusTaskCard : {}) }}>
               <div style={styles.taskHeaderRow}>
                 <div style={styles.taskTitleWrap}>
                   <span style={dotStyle(color)} />
@@ -3789,27 +3803,49 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
 }
 
 /* ---------------- Activity Log Panel ---------------- */
-function ActivityLogPanel() {
+function ActivityLogPanel({ onOpenTask }) {
   const [entries, setEntries] = useState([]);
+  const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [filterAction, setFilterAction] = useState("");
+  const [filterUserId, setFilterUserId] = useState("");
   const [search, setSearch] = useState("");
 
   async function load() {
     setErr(null);
     setLoading(true);
-    const { data, error } = await supabase
-      .from("activity_log")
-      .select("id, created_at, user_id, entity_type, entity_id, action, message, meta")
-      .order("created_at", { ascending: false })
-      .limit(200);
-    if (error) {
-      setErr(error.message);
+    const [logRes, profileRes] = await Promise.all([
+      supabase
+        .from("activity_log")
+        .select("id, created_at, user_id, entity_type, entity_id, action, message, meta")
+        .order("created_at", { ascending: false })
+        .limit(200),
+      supabase
+        .from("profiles")
+        .select("id, name, email")
+        .order("name", { ascending: true }),
+    ]);
+
+    if (logRes.error) {
+      setErr(logRes.error.message);
       setLoading(false);
       return;
     }
-    setEntries(data || []);
+
+    if (profileRes.error) {
+      console.warn("profiles load for activity failed:", profileRes.error.message);
+    }
+
+    const memberList = profileRes.data || [];
+    const memberMap = new Map(memberList.map((m) => [String(m.id), m]));
+    const enriched = (logRes.data || []).map((entry) => ({
+      ...entry,
+      actor: memberMap.get(String(entry.user_id || "")) || null,
+    }));
+
+    setMembers(memberList);
+    setEntries(enriched);
     setLoading(false);
   }
 
@@ -3820,11 +3856,25 @@ function ActivityLogPanel() {
   const filtered = useMemo(() => {
     const needle = String(search || "").trim().toLowerCase();
     return (entries || []).filter((e) => {
+      const actorName = e.actor?.name || e.actor?.email || "system";
       if (filterAction && e.action !== filterAction) return false;
-      if (needle && !`${e.message || ""} ${e.entity_type || ""}`.toLowerCase().includes(needle)) return false;
+      if (filterUserId && String(e.user_id || "") !== String(filterUserId)) return false;
+      if (needle && !`${actorName} ${e.message || ""} ${e.entity_type || ""} ${e.action || ""}`.toLowerCase().includes(needle)) return false;
       return true;
     });
-  }, [entries, filterAction, search]);
+  }, [entries, filterAction, filterUserId, search]);
+
+  const actionLabel = (action) => {
+    const map = {
+      create: "Erstellt",
+      delete: "Gelöscht",
+      status_change: "Statusänderung",
+      subtask_create: "Unteraufgabe",
+      file_upload: "Datei-Upload",
+      file_delete: "Datei gelöscht",
+    };
+    return map[action] || action || "Aktion";
+  };
 
   return (
     <div style={styles.panel}>
@@ -3843,20 +3893,45 @@ function ActivityLogPanel() {
           <option value="file_upload">Datei-Upload</option>
           <option value="file_delete">Datei gelöscht</option>
         </select>
+        <select value={filterUserId} onChange={(e) => setFilterUserId(e.target.value)} style={styles.select}>
+          <option value="">Alle Nutzer</option>
+          {members.map((m) => (
+            <option key={m.id} value={m.id}>{m.name || m.email || m.id}</option>
+          ))}
+        </select>
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Suche in Aktivitäten…" style={styles.input} />
       </div>
       <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-        {filtered.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : filtered.map((e) => (
-          <div key={e.id} style={styles.activityRow}>
-            <div style={styles.activityIcon}>{e.entity_type === "guide" ? "📘" : "📝"}</div>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontWeight: 800, color: "#0f172a" }}>{e.message}</div>
-              <div style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>
-                {fmtDateTime(e.created_at)} · {e.entity_type} · {e.action}
+        {filtered.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : filtered.map((e) => {
+          const actorName = e.actor?.name || e.actor?.email || "System";
+          const taskTargetId = e.meta?.task_id || (e.entity_type === "task" ? e.entity_id : null);
+          return (
+            <div key={e.id} style={styles.activityRow}>
+              <div style={styles.activityIcon}>{e.entity_type === "guide" ? "📘" : e.entity_type === "task" ? "📝" : "📌"}</div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ ...styles.avatarBadge, background: "#3b82f6" }}>{getInitials(actorName)}</span>
+                  <div style={{ fontWeight: 800, color: "#0f172a", minWidth: 0, flex: 1 }}>
+                    <span style={{ fontWeight: 900 }}>{actorName}</span>
+                    {" "}hat {e.message ? e.message.charAt(0).toLowerCase() + e.message.slice(1) : "eine Aktion ausgeführt"}
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <span>{fmtDateTime(e.created_at)}</span>
+                  <span>·</span>
+                  <span>{e.entity_type}</span>
+                  <span>·</span>
+                  <span>{actionLabel(e.action)}</span>
+                </div>
               </div>
+              {taskTargetId ? (
+                <button style={styles.btnSmall} onClick={() => onOpenTask?.(taskTargetId)} title="Aufgabe öffnen">
+                  Öffnen
+                </button>
+              ) : null}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -3979,6 +4054,7 @@ export default function Dashboard() {
 
   const [userSettings, setUserSettings] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
+  const [focusTaskId, setFocusTaskId] = useState(null);
 
 
   async function refreshAuth() {
@@ -4186,7 +4262,7 @@ export default function Dashboard() {
 
       {authError ? <div style={{ ...styles.panel, ...styles.error }}>Fehler: {authError}</div> : null}
 
-      {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} /> : null}
+      {activeTab === "board" ? <TasksBoard isAdmin={auth.isAdmin} focusTaskId={focusTaskId} onFocusConsumed={() => setFocusTaskId(null)} /> : null}
 {activeTab === "kanboard" ? <KanboardPanel isAdmin={auth.isAdmin} /> : null}
       {activeTab === "calendar" ? <CalendarPanel currentUser={auth.user} isAdmin={auth.isAdmin} /> : null}
       {activeTab === "guides" ? <GuidesPanel isAdmin={auth.isAdmin} /> : null}
@@ -4194,7 +4270,7 @@ export default function Dashboard() {
       {activeTab === "settings" ? (
         <UserSettingsPanel userId={auth.profile?.id} settings={userSettings} onChange={(s) => setUserSettings((prev) => ({ ...(prev || {}), ...(s || {}) }))} />
       ) : null}
-      {activeTab === "activity" ? <ActivityLogPanel /> : null}
+      {activeTab === "activity" ? <ActivityLogPanel onOpenTask={(taskId) => { setFocusTaskId(taskId); setActiveTab("board"); }} /> : null}
       {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
       <div style={{ height: 24 }} />
@@ -4966,6 +5042,44 @@ const styles = {
     color: "#fff",
     fontWeight: 850,
     cursor: "pointer",
+  },
+
+
+  focusTaskCard: {
+    border: "1px solid rgba(59,130,246,0.55)",
+    boxShadow: "0 0 0 3px rgba(59,130,246,0.16), var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
+  },
+
+  activityRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 16,
+    border: "1px solid rgba(15,23,42,0.08)",
+    background: "rgba(255,255,255,0.72)",
+    boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
+  },
+
+  activityIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 999,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "rgba(59,130,246,0.10)",
+    border: "1px solid rgba(59,130,246,0.20)",
+    flex: "0 0 auto",
+    fontSize: 18,
+  },
+
+  filtersRowActivity: {
+    display: "grid",
+    gridTemplateColumns: "220px 220px minmax(260px, 1fr)",
+    gap: 10,
+    alignItems: "center",
+    marginTop: 10,
   },
 
   smallBtn: {
