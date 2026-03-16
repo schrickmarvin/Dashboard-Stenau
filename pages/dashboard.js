@@ -65,8 +65,7 @@ function useIsCompactLayout(breakpoint = 1100) {
 
 /* ---------------- Supabase --------------- */
 
-function TasksBoard(props) {
-  const { isAdmin, focusTaskId = null, onFocusConsumed = null } = props || {};
+function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
   const [areas, setAreas] = useState([]);
   const [guides, setGuides] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -868,8 +867,8 @@ function TasksBoard(props) {
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} filesForTask={filesForTask} pendingTaskFiles={pendingTaskFiles} setPendingTaskFiles={setPendingTaskFiles} onTaskFileUpload={uploadTaskFiles} onTaskFileDelete={deleteTaskFile} onTaskFileDownload={downloadTaskFile} uploadingTaskId={uploadingTaskId} />
-        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} filesForTask={filesForTask} pendingTaskFiles={pendingTaskFiles} setPendingTaskFiles={setPendingTaskFiles} onTaskFileUpload={uploadTaskFiles} onTaskFileDelete={deleteTaskFile} onTaskFileDownload={downloadTaskFile} uploadingTaskId={uploadingTaskId} />
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} filesForTask={filesForTask} pendingTaskFiles={pendingTaskFiles} setPendingTaskFiles={setPendingTaskFiles} onTaskFileUpload={uploadTaskFiles} onTaskFileDelete={deleteTaskFile} onTaskFileDownload={downloadTaskFile} uploadingTaskId={uploadingTaskId} focusTaskId={focusTaskId} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} filesForTask={filesForTask} pendingTaskFiles={pendingTaskFiles} setPendingTaskFiles={setPendingTaskFiles} onTaskFileUpload={uploadTaskFiles} onTaskFileDelete={deleteTaskFile} onTaskFileDownload={downloadTaskFile} uploadingTaskId={uploadingTaskId} focusTaskId={focusTaskId} />
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
@@ -1101,6 +1100,7 @@ function TaskColumn({
   onTaskFileDelete,
   onTaskFileDownload,
   uploadingTaskId,
+  focusTaskId = null,
 }) {
   const isCompact = useIsCompactLayout(860);
 
