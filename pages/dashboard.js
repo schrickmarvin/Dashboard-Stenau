@@ -3938,6 +3938,193 @@ function ActivityLogPanel({ onOpenTask }) {
   );
 }
 
+
+
+/* ---------------- Global Search ---------------- */
+function GlobalSearchBar({ onOpenTask, onOpenGuides, onOpenAreas, onOpenUsers }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState({ tasks: [], guides: [], areas: [], users: [] });
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const needle = String(query || "").trim();
+    if (needle.length < 2) {
+      setResults({ tasks: [], guides: [], areas: [], users: [] });
+      setOpen(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setLoading(true);
+      try {
+        const like = `%${needle}%`;
+        const [tasksRes, guidesRes, areasRes, usersRes] = await Promise.all([
+          supabase
+            .from("tasks")
+            .select("id, title, due_at, status")
+            .ilike("title", like)
+            .order("created_at", { ascending: false })
+            .limit(6),
+          supabase
+            .from("guides")
+            .select("id, title, created_at")
+            .ilike("title", like)
+            .order("created_at", { ascending: false })
+            .limit(6),
+          supabase
+            .from("areas")
+            .select("id, name, color")
+            .ilike("name", like)
+            .order("name", { ascending: true })
+            .limit(6),
+          supabase
+            .from("profiles")
+            .select("id, name, email")
+            .or(`name.ilike.${like},email.ilike.${like}`)
+            .order("name", { ascending: true })
+            .limit(6),
+        ]);
+
+        if (cancelled) return;
+        setResults({
+          tasks: tasksRes.data || [],
+          guides: guidesRes.data || [],
+          areas: areasRes.data || [],
+          users: usersRes.data || [],
+        });
+        setOpen(true);
+      } catch {
+        if (!cancelled) {
+          setResults({ tasks: [], guides: [], areas: [], users: [] });
+          setOpen(true);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 220);
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer);
+    };
+  }, [query]);
+
+  const total = (results.tasks?.length || 0) + (results.guides?.length || 0) + (results.areas?.length || 0) + (results.users?.length || 0);
+
+  function closeSearch() {
+    setOpen(false);
+  }
+
+  return (
+    <div style={styles.globalSearchWrap}>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onFocus={() => {
+          if (String(query || "").trim().length >= 2) setOpen(true);
+        }}
+        placeholder="Suche: Aufgaben, Anleitungen, Bereiche, Nutzer…"
+        style={styles.globalSearchInput}
+      />
+
+      {open ? (
+        <div style={styles.globalSearchDropdown}>
+          <div style={styles.globalSearchHeader}>
+            <span>Globale Suche</span>
+            <span style={{ color: "#64748b", fontSize: 12 }}>{loading ? "Suche…" : `${total} Treffer`}</span>
+          </div>
+
+          {total === 0 && !loading ? <div style={{ color: "#64748b", fontSize: 13 }}>Keine Treffer.</div> : null}
+
+          {results.tasks?.length ? (
+            <div style={styles.searchGroup}>
+              <div style={styles.searchGroupTitle}>Aufgaben</div>
+              {results.tasks.map((item) => (
+                <button
+                  key={`task-${item.id}`}
+                  style={styles.searchResultBtn}
+                  onClick={() => {
+                    onOpenTask?.(item.id);
+                    closeSearch();
+                  }}
+                >
+                  <div style={{ fontWeight: 800 }}>{item.title}</div>
+                  <div style={styles.searchMeta}>{item.due_at ? fmtDateTime(item.due_at) : "Ohne Termin"}</div>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {results.guides?.length ? (
+            <div style={styles.searchGroup}>
+              <div style={styles.searchGroupTitle}>Anleitungen</div>
+              {results.guides.map((item) => (
+                <button
+                  key={`guide-${item.id}`}
+                  style={styles.searchResultBtn}
+                  onClick={() => {
+                    onOpenGuides?.();
+                    closeSearch();
+                  }}
+                >
+                  <div style={{ fontWeight: 800 }}>{item.title}</div>
+                  <div style={styles.searchMeta}>Anleitung</div>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {results.areas?.length ? (
+            <div style={styles.searchGroup}>
+              <div style={styles.searchGroupTitle}>Bereiche</div>
+              {results.areas.map((item) => (
+                <button
+                  key={`area-${item.id}`}
+                  style={styles.searchResultBtn}
+                  onClick={() => {
+                    onOpenAreas?.();
+                    closeSearch();
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ ...styles.areaDot, background: item.color || "#94a3b8" }} />
+                    <span style={{ fontWeight: 800 }}>{item.name}</span>
+                  </div>
+                  <div style={styles.searchMeta}>Bereich</div>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {results.users?.length ? (
+            <div style={styles.searchGroup}>
+              <div style={styles.searchGroupTitle}>Nutzer</div>
+              {results.users.map((item) => (
+                <button
+                  key={`user-${item.id}`}
+                  style={styles.searchResultBtn}
+                  onClick={() => {
+                    onOpenUsers?.();
+                    closeSearch();
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ ...styles.avatarBadge, background: "#3b82f6" }}>{getInitials(item.name || item.email)}</span>
+                    <span style={{ fontWeight: 800 }}>{item.name || item.email}</span>
+                  </div>
+                  <div style={styles.searchMeta}>{item.email || "Nutzer"}</div>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /* ---------------- User Settings Panel ---------------- */
 function UserSettingsPanel({ userId, settings, onChange }) {
   const [draft, setDraft] = useState(() => ({
@@ -4213,6 +4400,13 @@ export default function Dashboard() {
       <div style={styles.topbar}>
         <div style={styles.brand}>STENAU Dashboard</div>
 
+        <GlobalSearchBar
+          onOpenTask={(taskId) => { setFocusTaskId(taskId); setActiveTab("board"); }}
+          onOpenGuides={() => setActiveTab("guides")}
+          onOpenAreas={() => setActiveTab("areas")}
+          onOpenUsers={() => setActiveTab(auth.isAdmin ? "users" : "settings")}
+        />
+
         <div style={styles.tabs}>
           <TabBtn active={activeTab === "board"} onClick={() => setActiveTab("board")}>
             Plan
@@ -4356,6 +4550,82 @@ const styles = {
   tabActive: {
     background: "rgba(59,130,246,0.18)",
     borderColor: "rgba(59,130,246,0.55)",
+  },
+
+  globalSearchWrap: {
+    position: "relative",
+    flex: "1 1 420px",
+    maxWidth: 620,
+  },
+
+  globalSearchInput: {
+    width: "100%",
+    height: 40,
+    padding: "9px 14px",
+    borderRadius: 14,
+    border: "1px solid rgba(15,23,42,0.14)",
+    background: "rgba(255,255,255,0.88)",
+    color: "#0f172a",
+    outline: "none",
+    fontSize: 14,
+    backdropFilter: "blur(8px)",
+  },
+
+  globalSearchDropdown: {
+    position: "absolute",
+    top: 46,
+    left: 0,
+    right: 0,
+    zIndex: 40,
+    padding: 12,
+    borderRadius: 18,
+    border: "1px solid rgba(15,23,42,0.12)",
+    background: "rgba(255,255,255,0.96)",
+    boxShadow: "0 18px 46px rgba(2,6,23,0.18)",
+    display: "grid",
+    gap: 10,
+    maxHeight: 70vh,
+    overflowY: "auto",
+  },
+
+  globalSearchHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    fontWeight: 800,
+    color: "#0f172a",
+  },
+
+  searchGroup: {
+    display: "grid",
+    gap: 6,
+  },
+
+  searchGroupTitle: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: "#64748b",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+
+  searchResultBtn: {
+    display: "grid",
+    gap: 3,
+    textAlign: "left",
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(15,23,42,0.08)",
+    background: "rgba(255,255,255,0.78)",
+    color: "#0f172a",
+    cursor: "pointer",
+  },
+
+  searchMeta: {
+    fontSize: 12,
+    color: "#64748b",
   },
 
   right: {
