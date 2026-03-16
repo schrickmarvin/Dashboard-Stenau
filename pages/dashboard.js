@@ -692,72 +692,52 @@ function TasksBoard({ isAdmin }) {
         <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>Mehrfachauswahl bei Anleitungen: Strg/Cmd + Klick</div>
       </div>
 
-      <div style={{ ...styles.card, ...styles.filterCard }}>
-        <div style={styles.rowBetween}>
-          <div>
-            <div style={styles.h4}>Filter & Suche</div>
-            <div style={styles.toolbarHint}>Bereich, Zuständigkeit und Status sauber in einer Leiste gefiltert.</div>
-          </div>
-        </div>
+      <div style={styles.card}>
+        <div style={styles.h4}>Filter & Suche</div>
         <div style={styles.filtersRow}>
-          <div style={styles.filterField}>
-            <div style={styles.filterLabel}>Bereich</div>
-            <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={styles.select}>
-              <option value="">Alle Bereiche</option>
-              {areas.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <select value={filterArea} onChange={(e) => setFilterArea(e.target.value)} style={styles.select}>
+            <option value="">Alle Bereiche</option>
+            {areas.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
 
-          <div style={styles.filterField}>
-            <div style={styles.filterLabel}>Mitarbeiter</div>
-            <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} style={styles.select}>
-              <option value="">Alle Mitarbeiter</option>
-              {members.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name || m.email || m.id}
-                </option>
-              ))}
-            </select>
-          </div>
+          <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} style={styles.select}>
+            <option value="">Alle Mitarbeiter</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name || m.email || m.id}
+              </option>
+            ))}
+          </select>
 
-          <div style={styles.filterField}>
-            <div style={styles.filterLabel}>Status</div>
-            <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} style={styles.select}>
-              <option value="">Alle Status</option>
-              <option value="todo">Zu erledigen</option>
-              <option value="done">Erledigt</option>
-            </select>
-          </div>
+          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} style={styles.select}>
+            <option value="">Alle Status</option>
+            <option value="todo">Zu erledigen</option>
+            <option value="done">Erledigt</option>
+          </select>
 
-          <div style={styles.filterField}>
-            <div style={styles.filterLabel}>Suche</div>
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Suche in Aufgaben / Unteraufgaben…"
-              style={styles.input}
-            />
-          </div>
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Suche in Aufgaben / Unteraufgaben…"
+            style={styles.input}
+          />
 
-          <div style={{ ...styles.filterField, justifyContent: "flex-end" }}>
-            <div style={styles.filterLabel}>Aktion</div>
-            <button
-              type="button"
-              style={{ ...styles.btn, width: "100%" }}
-              onClick={() => {
-                setFilterArea("");
-                setFilterUser("");
-                setFilterStatus("");
-                setSearchQuery("");
-              }}
-            >
-              Filter zurücksetzen
-            </button>
-          </div>
+          <button
+            type="button"
+            style={styles.btn}
+            onClick={() => {
+              setFilterArea("");
+              setFilterUser("");
+              setFilterStatus("");
+              setSearchQuery("");
+            }}
+          >
+            Filter zurücksetzen
+          </button>
         </div>
       </div>
 
@@ -913,16 +893,23 @@ function TasksBoard({ isAdmin }) {
               {seriesLoading ? <div style={{ color: "#666" }}>Lade…</div> : null}
               <div style={{ display: "grid", gap: 10 }}>
                 {(series || []).map((s) => (
-                  <div key={s.id} style={styles.card}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <div style={styles.h4}>{s.title}</div>
-                      <span style={styles.pill}>{s.series_rule || "—"}</span>
-                      <span style={{ color: "#666", fontSize: 13 }}>
-                        ab {s.due_at ? fmtDateTime(s.due_at) : "–"} · jede {s.series_interval || 1} · {s.repeat_count || 0} Instanzen
-                      </span>
-                      <button style={{ ...styles.btn, marginLeft: "auto" }} onClick={() => startEditSeries(s)}>
-                        Bearbeiten
-                      </button>
+                  <div key={s.id} style={{ ...styles.card, minHeight: 86 }}>
+                    <div style={styles.taskHeaderRow}>
+                      <div style={styles.taskTitleWrap}>
+                        <span style={styles.seriesBadge}>⟳</span>
+                        <div style={styles.taskTitleText}>{s.title}</div>
+                      </div>
+                      <div style={styles.taskHeaderMeta}>
+                        <span style={styles.metaPill}>{s.series_rule || "—"}</span>
+                        <span style={styles.metaPill}>jede {s.series_interval || 1}</span>
+                        <span style={styles.metaPill}>{s.repeat_count || 0} Instanzen</span>
+                        <button style={{ ...styles.btnSmall, marginLeft: "auto" }} onClick={() => startEditSeries(s)}>
+                          Bearbeiten
+                        </button>
+                      </div>
+                    </div>
+                    <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>
+                      Start: {s.due_at ? fmtDateTime(s.due_at) : "–"}
                     </div>
                   </div>
                 ))}
@@ -982,6 +969,8 @@ function TaskColumn({
   onAssigneeChange,
   onTaskDelete,
 }) {
+  const isCompact = useIsCompactLayout(860);
+
   return (
     <div style={styles.panel}>
       <div style={styles.colHeader}>
@@ -990,11 +979,12 @@ function TaskColumn({
         </div>
       </div>
 
-      <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ display: "grid", gap: 12 }}>
         {(tasks || []).map((t) => {
           const areaObj = (t.area_id && areaById?.get?.(t.area_id)) || null;
           const areaLabel = t.area_label || areaObj?.name || t.area || "";
           const color = t.area_color || areaObj?.color || "#94a3b8";
+          const statusMeta = getStatusMeta(t.status);
 
           const assigneeName =
             t.assignee?.name ||
@@ -1003,29 +993,44 @@ function TaskColumn({
 
           const subs = Array.isArray(t.subtasks) ? t.subtasks : [];
           const doneCount = subs.filter((s) => !!s.is_done).length;
-
+          const progress = subs.length > 0 ? Math.round((doneCount / subs.length) * 100) : 0;
           const draft = getSubDraft ? getSubDraft(t.id, color) : { title: "", guide_id: "", color };
 
           return (
-            <div key={t.id} style={styles.card}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <span style={dotStyle(color)} />
-                <div style={{ fontWeight: 800 }}>{t.title}</div>
-                {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
-                <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>
-                  {t.due_at ? fmtDateTime(t.due_at) : ""}
+            <div key={t.id} style={{ ...styles.card, minHeight: 220 }}>
+              <div style={styles.taskHeaderRow}>
+                <div style={styles.taskTitleWrap}>
+                  <span style={dotStyle(color)} />
+                  <div style={styles.taskTitleText} title={t.title}>{t.title}</div>
+                </div>
+
+                <div style={styles.taskHeaderMeta}>
+                  {areaLabel ? (
+                    <span style={{ ...styles.pill, maxWidth: 180 }} title={areaLabel}>
+                      <span>{getAreaIcon(areaLabel)}</span>
+                      <span style={styles.ellipsisText}>{areaLabel}</span>
+                    </span>
+                  ) : null}
+                  <span style={{ ...styles.statusPill, background: statusMeta.bg, borderColor: statusMeta.border, color: statusMeta.color }}>
+                    {statusMeta.label}
+                  </span>
+                  <div style={styles.taskDueText}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
                 </div>
               </div>
 
-              <div style={{ marginTop: 6, fontSize: 12, color: "#666", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <span>Zuständig: {assigneeName}</span>
-                <span>Unteraufgaben: {doneCount}/{subs.length}</span>
+              <div style={styles.taskMetaRow}>
+                <div style={styles.assigneeChip}>
+                  <span style={{ ...styles.avatarBadge, background: color }}>{getInitials(assigneeName)}</span>
+                  <span style={styles.ellipsisText}>Zuständig: {assigneeName}</span>
+                </div>
+                <span style={styles.metaPill}>Unteraufgaben: {doneCount}/{subs.length}</span>
+                <span style={styles.metaPill}>Fortschritt: {progress}%</span>
 
                 {Array.isArray(members) && members.length > 0 ? (
                   <select
                     value={t.assignee_id || ""}
                     onChange={(e) => onAssigneeChange?.(t.id, e.target.value || null)}
-                    style={{ ...styles.input, padding: "6px 10px", minWidth: 220 }}
+                    style={{ ...styles.select, padding: "6px 10px", minWidth: isCompact ? "100%" : 220, marginLeft: "auto" }}
                     title="Zuständig ändern"
                   >
                     <option value="">– Unzugeordnet –</option>
@@ -1038,11 +1043,14 @@ function TaskColumn({
                 ) : null}
               </div>
 
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+              <div style={styles.progressTrack}>
+                <div style={{ ...styles.progressBar, width: `${progress}%`, background: color }} />
+              </div>
+
+              <div style={styles.taskActionRow}>
                 <button style={styles.btnSmall} onClick={() => onToggle?.(t)} disabled={!canWrite}>
                   Status wechseln
                 </button>
-              
                 <button
                   style={{ ...styles.btnSmall, borderColor: "#ef4444", color: "#b91c1c" }}
                   onClick={() => {
@@ -1053,11 +1061,10 @@ function TaskColumn({
                 >
                   Löschen
                 </button>
-</div>
+              </div>
 
-              {/* Unteraufgaben */}
               <div style={{ marginTop: 12 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 70px 90px", gap: 8, alignItems: "center" }}>
+                <div style={{ display: "grid", gridTemplateColumns: isCompact ? "1fr" : "1fr 220px 70px 90px", gap: 8, alignItems: "center" }}>
                   <input
                     value={draft.title || ""}
                     onChange={(e) => setSubDraft?.(t.id, { title: e.target.value }, color)}
@@ -1069,7 +1076,7 @@ function TaskColumn({
                   <select
                     value={draft.guide_id || ""}
                     onChange={(e) => setSubDraft?.(t.id, { guide_id: e.target.value }, color)}
-                    style={{ ...styles.input, minWidth: 0 }}
+                    style={{ ...styles.select, minWidth: 0 }}
                     disabled={!canWrite}
                     title="Anleitung verknüpfen"
                   >
@@ -1106,7 +1113,7 @@ function TaskColumn({
                   ) : null}
 
                   {subs.map((s) => (
-                    <div key={s.id} style={{ ...styles.subRow, gridTemplateColumns: "24px 1fr 1fr 78px 56px 44px" }}>
+                    <div key={s.id} style={{ ...styles.subtaskRow, gridTemplateColumns: isCompact ? "24px 1fr auto" : "24px 1fr 1fr 78px 56px 44px" }}>
                       <input
                         type="checkbox"
                         checked={!!s.is_done}
@@ -1115,32 +1122,45 @@ function TaskColumn({
                         title="Erledigt"
                       />
 
-                      <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <div style={{ ...styles.ellipsisText, fontSize: 13, textDecoration: s.is_done ? "line-through" : "none", opacity: s.is_done ? 0.65 : 1 }}>
                         {s.title}
                       </div>
 
-                      <button
-                        type="button"
-                        style={{ ...styles.btnSmall, padding: "6px 10px", justifySelf: "start" }}
-                        onClick={() => (s.guide_id ? onGuideOpen?.(s.guide_id) : null)}
-                        disabled={!s.guide_id}
-                        title={s.guide_id ? "Anleitung öffnen" : "Keine Anleitung verknüpft"}
-                      >
-                        {s.guide_id ? `Anleitung: ${(s.guides?.title || (guides || []).find((g) => g.id === s.guide_id)?.title || "öffnen")}` : "Anleitung: —"}
-                      </button>
-
-                      <span style={{ width: 60 }} />
-
-                      <span style={{ ...styles.areaDot, background: s.color || color }} />
-
-                      <button
-                        style={styles.btnSmall}
-                        onClick={() => onSubDelete?.(s.id)}
-                        disabled={!canWrite}
-                        title="Unteraufgabe löschen"
-                      >
-                        ✕
-                      </button>
+                      {isCompact ? (
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", justifySelf: "end" }}>
+                          <span style={{ ...styles.areaDot, background: s.color || color }} />
+                          <button
+                            style={styles.btnSmall}
+                            onClick={() => onSubDelete?.(s.id)}
+                            disabled={!canWrite}
+                            title="Unteraufgabe löschen"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            style={{ ...styles.btnSmall, padding: "6px 10px", justifySelf: "start" }}
+                            onClick={() => (s.guide_id ? onGuideOpen?.(s.guide_id) : null)}
+                            disabled={!s.guide_id}
+                            title={s.guide_id ? "Anleitung öffnen" : "Keine Anleitung verknüpft"}
+                          >
+                            {s.guide_id ? `Anleitung: ${(s.guides?.title || (guides || []).find((g) => g.id === s.guide_id)?.title || "öffnen")}` : "Anleitung: —"}
+                          </button>
+                          <span style={{ width: 60 }} />
+                          <span style={{ ...styles.areaDot, background: s.color || color }} />
+                          <button
+                            style={styles.btnSmall}
+                            onClick={() => onSubDelete?.(s.id)}
+                            disabled={!canWrite}
+                            title="Unteraufgabe löschen"
+                          >
+                            ✕
+                          </button>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1215,6 +1235,32 @@ function endOfDayISO(dateStr) {
 
 function safeLower(v) {
   return String(v ?? "").trim().toLowerCase();
+}
+
+function getInitials(nameOrMail) {
+  const s = String(nameOrMail || "").trim();
+  if (!s) return "--";
+  const parts = s.replace(/@.*$/, "").split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+function getStatusMeta(status) {
+  const key = String(status || "todo").toLowerCase();
+  if (key === "done" || key === "erledigt") return { label: "Erledigt", bg: "rgba(34,197,94,0.14)", border: "rgba(34,197,94,0.28)", color: "#166534" };
+  if (key === "doing" || key === "in_progress" || key === "in bearbeitung") return { label: "In Arbeit", bg: "rgba(59,130,246,0.14)", border: "rgba(59,130,246,0.28)", color: "#1d4ed8" };
+  if (key === "blocked") return { label: "Blockiert", bg: "rgba(239,68,68,0.12)", border: "rgba(239,68,68,0.28)", color: "#b91c1c" };
+  return { label: "ToDo", bg: "rgba(245,158,11,0.14)", border: "rgba(245,158,11,0.28)", color: "#b45309" };
+}
+
+function getAreaIcon(areaLabel) {
+  const v = safeLower(areaLabel);
+  if (v.includes("lvp")) return "♻️";
+  if (v.includes("ppk") || v.includes("papier")) return "📦";
+  if (v.includes("container")) return "🗑️";
+  if (v.includes("werkstatt")) return "🛠️";
+  if (v.includes("verwaltung")) return "📋";
+  return "📍";
 }
 
 /* ---------------- Auth context ---------------- */
@@ -2621,42 +2667,30 @@ function KanboardPanel({ isAdmin = false }) {
     <div style={styles.panel}>
       <div style={styles.rowBetween}>
         <div style={styles.h3}>Kanboard</div>
-        <div style={styles.toolbarRow}>
-          <div style={styles.toolbarField}>
-            <div style={styles.filterLabel}>Bereich</div>
-            <select value={filterAreaId} onChange={(e) => setFilterAreaId(e.target.value)} style={styles.input}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={filterAreaId} onChange={(e) => setFilterAreaId(e.target.value)} style={styles.input}>
             <option value="all">Alle Bereiche</option>
             {(areas || []).map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
               </option>
             ))}
-            </select>
-          </div>
-          <div style={styles.toolbarField}>
-            <div style={styles.filterLabel}>Mitarbeiter</div>
-            <select value={filterUserId} onChange={(e) => setFilterUserId(e.target.value)} style={styles.input}>
+          </select>
+          <select value={filterUserId} onChange={(e) => setFilterUserId(e.target.value)} style={styles.input}>
             <option value="all">Alle Nutzer</option>
             {(members || []).map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name || m.email || m.id}
               </option>
             ))}
-            </select>
-          </div>
-          <div style={styles.toolbarField}>
-            <div style={styles.filterLabel}>Ansicht</div>
-            <select value={viewMode} onChange={(e) => setViewMode(e.target.value)} style={styles.input}>
+          </select>
+          <select value={viewMode} onChange={(e) => setViewMode(e.target.value)} style={styles.input}>
             <option value="board">Kanban</option>
             <option value="assignee">Nach Mitarbeiter</option>
-            </select>
-          </div>
-          <div style={{ ...styles.toolbarField, justifyContent: "flex-end" }}>
-            <div style={styles.filterLabel}>Aktion</div>
-            <button type="button" style={{ ...styles.btn, width: "100%" }} onClick={() => location.reload()}>
-              Neu laden
-            </button>
-          </div>
+          </select>
+          <button type="button" style={styles.btn} onClick={() => location.reload()}>
+            Neu laden
+          </button>
         </div>
       </div>
 
@@ -2692,7 +2726,13 @@ function KanboardPanel({ isAdmin = false }) {
                       {areaLabel ? <span style={styles.pill}>{areaLabel}</span> : null}
                       <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>{t.due_at ? fmtDateTime(t.due_at) : ""}</div>
                     </div>
-                    <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>Zuständig: {assigneeName}</div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: "#666", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ ...styles.avatarBadge, background: color }}>{getInitials(assigneeName)}</span>
+                      <span style={styles.ellipsisText}>Zuständig: {assigneeName}</span>
+                      <span style={{ ...styles.statusPill, background: getStatusMeta(t.status).bg, borderColor: getStatusMeta(t.status).border, color: getStatusMeta(t.status).color }}>
+                        {getStatusMeta(t.status).label}
+                      </span>
+                    </div>
                   </div>
                 );
               })}
@@ -3469,12 +3509,10 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
 
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, alignItems: "start" }}>
         <div style={{ display: "grid", gap: 10 }}>
-          <div style={styles.toolbarRow}>
-            <div style={styles.toolbarField}>
-              <div style={styles.filterLabel}>Bereich</div>
-              <select
-                style={styles.select}
-                value={filterAreaId}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <select
+              style={styles.select}
+              value={filterAreaId}
               onChange={(e) => setFilterAreaId(e.target.value)}
               title="Bereich-Filter"
             >
@@ -3484,14 +3522,11 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
                   {a.name}
                 </option>
               ))}
-              </select>
-            </div>
+            </select>
 
-            <div style={styles.toolbarField}>
-              <div style={styles.filterLabel}>Mitarbeiter</div>
-              <select
-                style={styles.select}
-                value={filterUserId}
+            <select
+              style={styles.select}
+              value={filterUserId}
               onChange={(e) => setFilterUserId(e.target.value)}
               title="Nutzer-Filter"
             >
@@ -3501,12 +3536,10 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
                   {u.name}
                 </option>
               ))}
-              </select>
-            </div>
+            </select>
 
-            <div style={{ ...styles.toolbarField, minWidth: 240, justifyContent: "flex-end" }}>
-              <div style={styles.filterLabel}>Hinweis</div>
-              <div style={styles.toolbarHint}>Tipp: Aufgaben per Drag & Drop auf ein anderes Datum ziehen.</div>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>
+              Tipp: Aufgaben per Drag & Drop auf ein anderes Datum ziehen.
             </div>
           </div>
 
@@ -3830,10 +3863,7 @@ export default function Dashboard() {
   return (
     <div style={pageStyle}>
       <div style={styles.topbar}>
-        <div style={styles.brandBlock}>
-          <div style={styles.brand}>STENAU Dashboard</div>
-          <div style={styles.brandSub}>Disposition · Aufgaben · Kalender</div>
-        </div>
+        <div style={styles.brand}>STENAU Dashboard</div>
 
         <div style={styles.tabs}>
           <TabBtn active={activeTab === "board"} onClick={() => setActiveTab("board")}>
@@ -3932,23 +3962,10 @@ const styles = {
 
   topbar: {
     display: "flex",
-    gap: 14,
+    gap: 12,
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 14,
-    padding: 14,
-    borderRadius: 22,
-    border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
-    background: "rgba(255,255,255,0.62)",
-    boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
-    backdropFilter: "blur(12px)",
-    flexWrap: "wrap",
-  },
-
-  brandBlock: {
-    display: "grid",
-    gap: 2,
-    minWidth: 220,
+    marginBottom: 12,
   },
 
   brand: {
@@ -3956,14 +3973,6 @@ const styles = {
     fontWeight: 850,
     letterSpacing: -0.6,
     color: "var(--brand, #0b1220)",
-    lineHeight: 1.05,
-  },
-
-  brandSub: {
-    fontSize: 12,
-    fontWeight: 700,
-    color: "rgba(71,85,105,0.92)",
-    letterSpacing: 0.2,
   },
 
   tabs: {
@@ -3971,7 +3980,6 @@ const styles = {
     gap: 8,
     alignItems: "center",
     flexWrap: "wrap",
-    flex: "1 1 520px",
   },
 
   tab: {
@@ -3979,7 +3987,7 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    minHeight: 40,
+    minHeight: 34,
     border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
     background: "var(--card-bg, rgba(255,255,255,0.78))",
     padding: "8px 12px",
@@ -4002,8 +4010,6 @@ const styles = {
     display: "flex",
     gap: 10,
     alignItems: "center",
-    marginLeft: "auto",
-    flexWrap: "wrap",
   },
 
   panel: {
@@ -4150,7 +4156,8 @@ const styles = {
     background: "var(--card-bg, rgba(255,255,255,0.78))",
     border: "1px solid var(--card-border, rgba(15,23,42,0.14))",
     borderRadius: 16,
-    padding: 14,
+    padding: 16,
+    minHeight: 96,
     boxShadow: "var(--card-shadow-soft, 0 10px 26px rgba(2,6,23,0.16))",
     backdropFilter: "blur(10px)",
   },
@@ -4158,7 +4165,7 @@ const styles = {
   /* ---------------- Inputs / Buttons ---------------- */
   input: {
     width: "100%",
-    height: 40,
+    height: 38,
     padding: "8px 12px",
     borderRadius: 12,
     border: "1px solid rgba(15,23,42,0.14)",
@@ -4186,7 +4193,7 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    minHeight: 40,
+    minHeight: 38,
     padding: "8px 14px",
     borderRadius: 12,
     border: "1px solid rgba(15,23,42,0.14)",
@@ -4206,7 +4213,7 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    minHeight: 40,
+    minHeight: 38,
     padding: "8px 14px",
     borderRadius: 12,
     border: "1px solid rgba(59,130,246,0.70)",
@@ -4225,7 +4232,7 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    minHeight: 40,
+    minHeight: 38,
     padding: "8px 14px",
     borderRadius: 12,
     border: "1px solid rgba(239,68,68,0.55)",
@@ -4369,7 +4376,6 @@ const styles = {
     alignItems: "center",
     gap: 12,
     flexWrap: "wrap",
-    minHeight: 44,
   },
 
   h3: {
@@ -4398,15 +4404,161 @@ const styles = {
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    marginBottom: 12,
-    paddingBottom: 10,
-    minHeight: 44,
-    borderBottom: "1px solid rgba(15,23,42,0.08)",
+    marginBottom: 10,
+  },
+  taskHeaderRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+  },
+
+  taskTitleWrap: {
+    display: "flex",
+    gap: 10,
+    alignItems: "center",
+    minWidth: 0,
+    flex: "1 1 260px",
+  },
+
+  taskTitleText: {
+    fontWeight: 850,
+    fontSize: 15,
+    color: "#0f172a",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+
+  taskHeaderMeta: {
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+    flexWrap: "wrap",
+    marginLeft: "auto",
+  },
+
+  taskMetaRow: {
+    marginTop: 10,
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+
+  taskDueText: {
+    fontSize: 12,
+    color: "#64748b",
+    whiteSpace: "nowrap",
+  },
+
+  assigneeChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "4px 10px 4px 4px",
+    borderRadius: 999,
+    border: "1px solid rgba(15,23,42,0.10)",
+    background: "rgba(255,255,255,0.72)",
+    maxWidth: "100%",
+  },
+
+  avatarBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: 900,
+    boxShadow: "0 4px 10px rgba(15,23,42,0.16)",
+    flex: "0 0 auto",
+  },
+
+  statusPill: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 28,
+    padding: "4px 10px",
+    borderRadius: 999,
+    border: "1px solid rgba(15,23,42,0.10)",
+    fontSize: 12,
+    fontWeight: 800,
+    whiteSpace: "nowrap",
+  },
+
+  metaPill: {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "5px 10px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 700,
+    color: "#334155",
+    background: "rgba(255,255,255,0.58)",
+    border: "1px solid rgba(15,23,42,0.08)",
+  },
+
+  progressTrack: {
+    width: "100%",
+    height: 8,
+    borderRadius: 999,
+    overflow: "hidden",
+    background: "rgba(148,163,184,0.22)",
+    marginTop: 10,
+  },
+
+  progressBar: {
+    height: "100%",
+    borderRadius: 999,
+    transition: "width 180ms ease",
+  },
+
+  taskActionRow: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    marginTop: 12,
+  },
+
+  subtaskRow: {
+    display: "grid",
+    gap: 10,
+    alignItems: "center",
+    padding: "8px 10px",
+    borderRadius: 12,
+    background: "rgba(255,255,255,0.58)",
+    border: "1px solid rgba(15,23,42,0.06)",
+  },
+
+  ellipsisText: {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  },
+
+  seriesBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "rgba(59,130,246,0.12)",
+    border: "1px solid rgba(59,130,246,0.22)",
+    color: "#1d4ed8",
+    fontWeight: 900,
+    flex: "0 0 auto",
   },
 
   select: {
     width: "100%",
-    minHeight: 40,
+    minHeight: 38,
     padding: "8px 12px",
     borderRadius: 12,
     border: "1px solid rgba(15,23,42,0.14)",
@@ -4418,66 +4570,21 @@ const styles = {
 
   filtersRow: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: 12,
-    alignItems: "stretch",
-    marginTop: 12,
-  },
-
-  filterCard: {
-    padding: 16,
-  },
-
-  filterField: {
-    display: "grid",
-    gap: 6,
-    alignContent: "start",
-  },
-
-  filterLabel: {
-    fontSize: 12,
-    fontWeight: 800,
-    color: "#475569",
-    paddingLeft: 2,
-  },
-
-  toolbarRow: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: 12,
-    alignItems: "end",
-    width: "100%",
-  },
-
-  toolbarField: {
-    display: "grid",
-    gap: 6,
-    minWidth: 0,
-  },
-
-  toolbarHint: {
-    minHeight: 40,
-    display: "flex",
+    gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+    gap: 10,
     alignItems: "center",
-    padding: "0 12px",
-    borderRadius: 12,
-    border: "1px dashed rgba(15,23,42,0.14)",
-    background: "rgba(255,255,255,0.55)",
-    color: "#475569",
-    fontSize: 12,
-    lineHeight: 1.35,
+    marginTop: 10,
   },
 
   table: {
     width: "100%",
     borderCollapse: "separate",
     borderSpacing: 0,
-    tableLayout: "fixed",
   },
 
   th: {
     textAlign: "left",
-    padding: "12px 10px",
+    padding: "10px 10px",
     fontSize: 12,
     color: "#475569",
     borderBottom: "1px solid rgba(15,23,42,0.10)",
@@ -4487,7 +4594,7 @@ const styles = {
   },
 
   td: {
-    padding: "12px 10px",
+    padding: "10px 10px",
     verticalAlign: "top",
     borderBottom: "1px solid rgba(15,23,42,0.06)",
   },
