@@ -65,7 +65,8 @@ function useIsCompactLayout(breakpoint = 1100) {
 
 /* ---------------- Supabase --------------- */
 
-function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
+function TasksBoard(props) {
+  const { isAdmin, focusTaskId = null, onFocusConsumed = null } = props || {};
   const [areas, setAreas] = useState([]);
   const [guides, setGuides] = useState([]);
   const [tasks, setTasks] = useState([]);
