@@ -71,6 +71,10 @@ function TasksBoard({ isAdmin }) {
   const [tasks, setTasks] = useState([]);
   const [series, setSeries] = useState([]);
   const [members, setMembers] = useState([]);
+  const [taskFiles, setTaskFiles] = useState([]);
+  const [taskSignedUrls, setTaskSignedUrls] = useState({});
+  const [pendingTaskFiles, setPendingTaskFiles] = useState({});
+  const [uploadingTaskId, setUploadingTaskId] = useState(null);
 
   const [form, setForm] = useState({
     title: "",
@@ -158,10 +162,11 @@ function TasksBoard({ isAdmin }) {
       return;
     }
 
-    const [areasList, guidesRes, membersRes] = await Promise.all([
+    const [areasList, guidesRes, membersRes, taskFilesRes] = await Promise.all([
       loadAreas(),
       supabase.from("guides").select("id, title").order("title", { ascending: true }),
       supabase.from("profiles").select("id, name, email, is_active").order("name", { ascending: true }),
+      supabase.from("task_files").select("id, task_id, bucket, path, filename, mime, size, created_at, created_by").order("created_at", { ascending: false }),
     ]);
 
     if (guidesRes.error) {
@@ -188,6 +193,7 @@ function TasksBoard({ isAdmin }) {
     setAreas(areasList || []);
     setGuides(guidesRes.data || []);
     setMembers((membersRes?.data || []).filter((m) => m.is_active !== false));
+    setTaskFiles(taskFilesRes?.error ? [] : (taskFilesRes?.data || []));
     setLoading(false);
   }
 
@@ -293,6 +299,85 @@ function TasksBoard({ isAdmin }) {
     return dates;
   }
 
+  function filesForTask(taskId) {
+    return (taskFiles || []).filter((f) => f.task_id === taskId);
+  }
+
+  async function ensureTaskFileSignedUrl(path, bucket = "task-files") {
+    if (!path) return null;
+    if (taskSignedUrls[path]) return taskSignedUrls[path];
+    const { data, error } = await supabase.storage.from(bucket || "task-files").createSignedUrl(path, 60 * 60);
+    if (error) {
+      setErr(error.message);
+      return null;
+    }
+    const url = data?.signedUrl || null;
+    if (url) setTaskSignedUrls((prev) => ({ ...prev, [path]: url }));
+    return url;
+  }
+
+  async function downloadTaskFile(fileRow) {
+    const url = await ensureTaskFileSignedUrl(fileRow?.path, fileRow?.bucket || "task-files");
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  async function uploadTaskFiles(taskId, fileListOrArray) {
+    const arr = Array.isArray(fileListOrArray) ? fileListOrArray : Array.from(fileListOrArray || []);
+    if (!taskId || arr.length === 0) return;
+    setErr(null);
+    setUploadingTaskId(taskId);
+    try {
+      const userId = await getCurrentUserId();
+      const insertedRows = [];
+      for (const file of arr) {
+        const safeName = String(file.name || "datei").replace(/[^\w.\-]+/g, "_");
+        const key = `${taskId}/${Date.now()}_${safeName}`;
+        const up = await supabase.storage.from("task-files").upload(key, file, {
+          cacheControl: "3600",
+          upsert: false,
+          contentType: file.type || undefined,
+        });
+        if (up.error) throw up.error;
+        const ins = await supabase.from("task_files").insert({
+          task_id: taskId,
+          bucket: "task-files",
+          path: key,
+          filename: file.name,
+          mime: file.type || null,
+          size: file.size ?? null,
+          created_by: userId,
+        }).select("id, task_id, bucket, path, filename, mime, size, created_at, created_by").single();
+        if (ins.error) throw ins.error;
+        insertedRows.push(ins.data);
+      }
+      setTaskFiles((prev) => [...insertedRows, ...(prev || [])]);
+      setPendingTaskFiles((prev) => ({ ...prev, [taskId]: [] }));
+      await logActivity({ entityType: "task", entityId: taskId, action: "file_upload", message: `${arr.length} Datei(en) zu Aufgabe hochgeladen`, meta: { task_id: taskId, files: insertedRows.map((r) => r.filename) } });
+    } catch (e) {
+      setErr(e?.message || String(e));
+    } finally {
+      setUploadingTaskId(null);
+    }
+  }
+
+  async function deleteTaskFile(fileRow) {
+    if (!fileRow?.id || !fileRow?.path) return;
+    if (!window.confirm(`Datei wirklich löschen?\n\n${fileRow.filename}`)) return;
+    setErr(null);
+    const rm = await supabase.storage.from(fileRow.bucket || "task-files").remove([fileRow.path]);
+    if (rm.error) {
+      setErr(rm.error.message);
+      return;
+    }
+    const del = await supabase.from("task_files").delete().eq("id", fileRow.id);
+    if (del.error) {
+      setErr(del.error.message);
+      return;
+    }
+    setTaskFiles((prev) => (prev || []).filter((f) => f.id !== fileRow.id));
+    await logActivity({ entityType: "task", entityId: fileRow.task_id, action: "file_delete", message: `Datei gelöscht: ${fileRow.filename}`, meta: { task_id: fileRow.task_id, filename: fileRow.filename } });
+  }
+
   async function createTask() {
     if (!form.title.trim()) return;
     setErr(null);
@@ -327,6 +412,7 @@ function TasksBoard({ isAdmin }) {
     }
 
     setForm({ title: "", area: "", due_at: "", status: "todo", guideIds: [], assignee_id: "" });
+    await logActivity({ entityType: "task", entityId: taskId, action: "create", message: `Aufgabe erstellt: ${payload.title}`, meta: payload });
     loadAll();
   }
 
@@ -352,6 +438,7 @@ function TasksBoard({ isAdmin }) {
 
     // clear draft
     setSubDrafts((prev) => ({ ...prev, [taskId]: { title: "", guide_id: "", color: fallbackColor || "" } }));
+    await logActivity({ entityType: "task", entityId: taskId, action: "subtask_create", message: `Unteraufgabe hinzugefügt: ${payload.title}`, meta: payload });
 
     // optimistic update
     setTasks((prev) =>
@@ -409,6 +496,7 @@ function TasksBoard({ isAdmin }) {
       return;
     }
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: next } : t)));
+    await logActivity({ entityType: "task", entityId: task.id, action: "status_change", message: `Status geändert: ${task.title} → ${next}`, meta: { from: task.status ?? "todo", to: next } });
   }
 
 
@@ -423,6 +511,7 @@ function TasksBoard({ isAdmin }) {
       return;
     }
 
+    const title = (tasks || []).find((t) => t.id === taskId)?.title || "Aufgabe";
     const { error } = await supabase.from("tasks").delete().eq("id", taskId);
     if (error) {
       setErr(error.message);
@@ -430,6 +519,8 @@ function TasksBoard({ isAdmin }) {
     }
 
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    setTaskFiles((prev) => (prev || []).filter((f) => f.task_id !== taskId));
+    await logActivity({ entityType: "task", entityId: taskId, action: "delete", message: `Aufgabe gelöscht: ${title}`, meta: { task_id: taskId, title } });
   }
 
   async function createSeries() {
@@ -762,8 +853,8 @@ function TasksBoard({ isAdmin }) {
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
-        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} />
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} filesForTask={filesForTask} pendingTaskFiles={pendingTaskFiles} setPendingTaskFiles={setPendingTaskFiles} onTaskFileUpload={uploadTaskFiles} onTaskFileDelete={deleteTaskFile} onTaskFileDownload={downloadTaskFile} uploadingTaskId={uploadingTaskId} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} filesForTask={filesForTask} pendingTaskFiles={pendingTaskFiles} setPendingTaskFiles={setPendingTaskFiles} onTaskFileUpload={uploadTaskFiles} onTaskFileDelete={deleteTaskFile} onTaskFileDownload={downloadTaskFile} uploadingTaskId={uploadingTaskId} />
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
@@ -988,6 +1079,13 @@ function TaskColumn({
   members,
   onAssigneeChange,
   onTaskDelete,
+  filesForTask,
+  pendingTaskFiles,
+  setPendingTaskFiles,
+  onTaskFileUpload,
+  onTaskFileDelete,
+  onTaskFileDownload,
+  uploadingTaskId,
 }) {
   const isCompact = useIsCompactLayout(860);
 
@@ -1185,6 +1283,59 @@ function TaskColumn({
                   ))}
                 </div>
               </div>
+
+              <div style={{ marginTop: 14 }}>
+                <div style={styles.sectionMiniHeader}>Dateien</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+                  <label style={styles.fileBtn}>
+                    Dateien auswählen
+                    <input
+                      type="file"
+                      multiple
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const picked = Array.from(e.target.files || []);
+                        setPendingTaskFiles?.((prev) => ({ ...prev, [t.id]: picked }));
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    style={styles.btnSmall}
+                    onClick={() => onTaskFileUpload?.(t.id, pendingTaskFiles?.[t.id] || [])}
+                    disabled={uploadingTaskId === t.id || !Array.isArray(pendingTaskFiles?.[t.id]) || pendingTaskFiles[t.id].length === 0}
+                  >
+                    {uploadingTaskId === t.id ? "Upload läuft…" : "Upload starten"}
+                  </button>
+                  <span style={{ fontSize: 12, color: "#666" }}>
+                    {Array.isArray(pendingTaskFiles?.[t.id]) && pendingTaskFiles[t.id].length > 0
+                      ? `${pendingTaskFiles[t.id].length} Datei(en) ausgewählt`
+                      : "Keine Dateien ausgewählt"}
+                  </span>
+                </div>
+
+                <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                  {(filesForTask?.(t.id) || []).length === 0 ? (
+                    <div style={{ fontSize: 13, color: "#666" }}>Keine Dateien</div>
+                  ) : (
+                    (filesForTask?.(t.id) || []).map((f) => (
+                      <div key={f.id} style={styles.fileRow}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 800, ...styles.ellipsisText }}>{f.filename}</div>
+                          <div style={{ color: "#666", fontSize: 12 }}>
+                            {f.size ? `${Math.round(f.size / 1024)} KB` : "—"} · {fmtDateTime(f.created_at)}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                          <button style={styles.btnSmall} onClick={() => onTaskFileDownload?.(f)}>Download</button>
+                          <button style={{ ...styles.btnSmall, borderColor: "#ef4444", color: "#b91c1c" }} onClick={() => onTaskFileDelete?.(f)}>Löschen</button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
           );
         })}
@@ -1281,6 +1432,31 @@ function getAreaIcon(areaLabel) {
   if (v.includes("werkstatt")) return "🛠️";
   if (v.includes("verwaltung")) return "📋";
   return "📍";
+}
+
+async function getCurrentUserId() {
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.user?.id || null;
+  } catch {
+    return null;
+  }
+}
+
+async function logActivity({ entityType, entityId = null, action, message, meta = null }) {
+  try {
+    const userId = await getCurrentUserId();
+    await supabase.from("activity_log").insert({
+      user_id: userId,
+      entity_type: entityType,
+      entity_id: entityId,
+      action,
+      message,
+      meta,
+    });
+  } catch (e) {
+    console.warn("activity_log insert failed:", e?.message || e);
+  }
 }
 
 /* ---------------- Auth context ---------------- */
@@ -2162,6 +2338,7 @@ function GuidesPanel({ isAdmin }) {
 
     setTitle("");
     setContent("");
+    await logActivity({ entityType: "guide", entityId: null, action: "create", message: `Anleitung erstellt: ${title.trim()}`, meta: { title: title.trim() } });
     load();
   }
 
@@ -3611,6 +3788,80 @@ function CalendarPanel({ areaList: areaListProp = [], userList: userListProp = [
   );
 }
 
+/* ---------------- Activity Log Panel ---------------- */
+function ActivityLogPanel() {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [filterAction, setFilterAction] = useState("");
+  const [search, setSearch] = useState("");
+
+  async function load() {
+    setErr(null);
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("activity_log")
+      .select("id, created_at, user_id, entity_type, entity_id, action, message, meta")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) {
+      setErr(error.message);
+      setLoading(false);
+      return;
+    }
+    setEntries(data || []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const filtered = useMemo(() => {
+    const needle = String(search || "").trim().toLowerCase();
+    return (entries || []).filter((e) => {
+      if (filterAction && e.action !== filterAction) return false;
+      if (needle && !`${e.message || ""} ${e.entity_type || ""}`.toLowerCase().includes(needle)) return false;
+      return true;
+    });
+  }, [entries, filterAction, search]);
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.rowBetween}>
+        <div style={styles.h3}>Aktivität</div>
+        <button style={styles.btn} onClick={load} disabled={loading}>{loading ? "Lade…" : "Neu laden"}</button>
+      </div>
+      {err ? <div style={styles.error}>Fehler: {err}</div> : null}
+      <div style={styles.filtersRowActivity}>
+        <select value={filterAction} onChange={(e) => setFilterAction(e.target.value)} style={styles.select}>
+          <option value="">Alle Aktionen</option>
+          <option value="create">Erstellt</option>
+          <option value="delete">Gelöscht</option>
+          <option value="status_change">Statusänderung</option>
+          <option value="subtask_create">Unteraufgabe</option>
+          <option value="file_upload">Datei-Upload</option>
+          <option value="file_delete">Datei gelöscht</option>
+        </select>
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Suche in Aktivitäten…" style={styles.input} />
+      </div>
+      <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+        {filtered.length === 0 ? <div style={{ color: "#666" }}>Keine Einträge.</div> : filtered.map((e) => (
+          <div key={e.id} style={styles.activityRow}>
+            <div style={styles.activityIcon}>{e.entity_type === "guide" ? "📘" : "📝"}</div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 800, color: "#0f172a" }}>{e.message}</div>
+              <div style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>
+                {fmtDateTime(e.created_at)} · {e.entity_type} · {e.action}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- User Settings Panel ---------------- */
 function UserSettingsPanel({ userId, settings, onChange }) {
   const [draft, setDraft] = useState(() => ({
@@ -3907,6 +4158,9 @@ export default function Dashboard() {
           <TabBtn active={activeTab === "settings"} onClick={() => setActiveTab("settings")}>
             Einstellungen
           </TabBtn>
+          <TabBtn active={activeTab === "activity"} onClick={() => setActiveTab("activity")}>
+            Aktivität
+          </TabBtn>
 
           {auth.isAdmin ? (
             <TabBtn active={activeTab === "users"} onClick={() => setActiveTab("users")}>
@@ -3940,6 +4194,7 @@ export default function Dashboard() {
       {activeTab === "settings" ? (
         <UserSettingsPanel userId={auth.profile?.id} settings={userSettings} onChange={(s) => setUserSettings((prev) => ({ ...(prev || {}), ...(s || {}) }))} />
       ) : null}
+      {activeTab === "activity" ? <ActivityLogPanel /> : null}
       {activeTab === "users" ? <UsersAdminPanel isAdmin={auth.isAdmin} /> : null}
 
       <div style={{ height: 24 }} />
@@ -4725,6 +4980,53 @@ const styles = {
     color: "#0f172a",
     fontWeight: 700,
     cursor: "pointer",
+  },
+  fileRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(15,23,42,0.08)",
+    background: "rgba(255,255,255,0.62)",
+  },
+
+  sectionMiniHeader: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#334155",
+  },
+
+  filtersRowActivity: {
+    display: "grid",
+    gridTemplateColumns: "220px 1fr",
+    gap: 10,
+    alignItems: "center",
+    marginTop: 12,
+  },
+
+  activityRow: {
+    display: "grid",
+    gridTemplateColumns: "40px 1fr",
+    gap: 12,
+    alignItems: "start",
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "rgba(255,255,255,0.62)",
+    border: "1px solid rgba(15,23,42,0.08)",
+  },
+
+  activityIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "rgba(59,130,246,0.12)",
+    border: "1px solid rgba(59,130,246,0.18)",
+    fontSize: 18,
   },
 };
 
