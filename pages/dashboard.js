@@ -43,6 +43,26 @@ function defaultUserColor(seed) {
 }
 
 
+
+
+function useIsCompactLayout(breakpoint = 1100) {
+  const [isCompact, setIsCompact] = React.useState(false);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const update = () => {
+      setIsCompact(window.innerWidth <= breakpoint);
+    };
+
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [breakpoint]);
+
+  return isCompact;
+}
+
 /* ---------------- Supabase --------------- */
 
 function TasksBoard({ isAdmin }) {
