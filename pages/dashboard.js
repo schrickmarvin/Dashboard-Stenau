@@ -4584,7 +4584,7 @@ const styles = {
     boxShadow: "0 18px 46px rgba(2,6,23,0.18)",
     display: "grid",
     gap: 10,
-    maxHeight: 70vh,
+    maxHeight: "70vh",
     overflowY: "auto",
   },
 
