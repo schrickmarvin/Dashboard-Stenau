@@ -99,6 +99,7 @@ function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
   const [seriesSubDraft, setSeriesSubDraft] = useState({ title: "", guide_id: "", color: "#6b7280" });
   const [seriesSubtasks, setSeriesSubtasks] = useState([]);
   const [seriesLoading, setSeriesLoading] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState(null);
 
   async function openGuide(gid) {
     if (!gid) return;
@@ -261,6 +262,8 @@ function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
     }
     return { todo, done };
   }, [filteredTasks]);
+
+  const selectedTask = useMemo(() => (tasks || []).find((t) => String(t.id) === String(selectedTaskId || "")) || null, [tasks, selectedTaskId]);
 
   useEffect(() => {
     if (!focusTaskId) return;
@@ -500,6 +503,21 @@ function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
     }
     const assigneeObj = (members || []).find((m) => m.id === assigneeId) || null;
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, assignee_id: assigneeId || null, assignee: assigneeObj ? { id: assigneeObj.id, name: assigneeObj.name, email: assigneeObj.email } : null } : t)));
+  }
+
+  async function updateTaskFields(taskId, patch) {
+    if (!taskId || !patch || typeof patch !== "object") return { ok: false, message: "Ungültige Daten" };
+    setErr(null);
+    const { error } = await supabase.from("tasks").update(patch).eq("id", taskId);
+    if (error) {
+      setErr(error.message);
+      return { ok: false, message: error.message };
+    }
+    const assigneeObj = Object.prototype.hasOwnProperty.call(patch, "assignee_id")
+      ? ((members || []).find((m) => m.id === patch.assignee_id) || null)
+      : undefined;
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch, ...(assigneeObj !== undefined ? { assignee: assigneeObj ? { id: assigneeObj.id, name: assigneeObj.name, email: assigneeObj.email } : null } : {}) } : t)));
+    return { ok: true };
   }
 
   async function toggleStatus(task) {
@@ -867,8 +885,8 @@ function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
       </div>
 
       <div style={styles.columns}>
-        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} filesForTask={filesForTask} pendingTaskFiles={pendingTaskFiles} setPendingTaskFiles={setPendingTaskFiles} onTaskFileUpload={uploadTaskFiles} onTaskFileDelete={deleteTaskFile} onTaskFileDownload={downloadTaskFile} uploadingTaskId={uploadingTaskId} focusTaskId={focusTaskId} />
-        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} filesForTask={filesForTask} pendingTaskFiles={pendingTaskFiles} setPendingTaskFiles={setPendingTaskFiles} onTaskFileUpload={uploadTaskFiles} onTaskFileDelete={deleteTaskFile} onTaskFileDownload={downloadTaskFile} uploadingTaskId={uploadingTaskId} focusTaskId={focusTaskId} />
+        <TaskColumn title="Zu erledigen" count={columns.todo.length} tasks={columns.todo} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} filesForTask={filesForTask} pendingTaskFiles={pendingTaskFiles} setPendingTaskFiles={setPendingTaskFiles} onTaskFileUpload={uploadTaskFiles} onTaskFileDelete={deleteTaskFile} onTaskFileDownload={downloadTaskFile} uploadingTaskId={uploadingTaskId} focusTaskId={focusTaskId} onOpenDetail={(task) => setSelectedTaskId(task?.id || null)} />
+        <TaskColumn title="Erledigt" count={columns.done.length} tasks={columns.done} onToggle={toggleStatus} areaById={areaById} guides={guides} canWrite={canWrite} getSubDraft={getSubDraft} setSubDraft={setSubDraft} onSubAdd={addSubtask} onSubUpdate={updateSubtask} onSubDelete={deleteSubtask} onGuideOpen={openGuide} members={members} onAssigneeChange={setTaskAssignee} onTaskDelete={deleteTask} filesForTask={filesForTask} pendingTaskFiles={pendingTaskFiles} setPendingTaskFiles={setPendingTaskFiles} onTaskFileUpload={uploadTaskFiles} onTaskFileDelete={deleteTaskFile} onTaskFileDownload={downloadTaskFile} uploadingTaskId={uploadingTaskId} focusTaskId={focusTaskId} onOpenDetail={(task) => setSelectedTaskId(task?.id || null)} />
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
@@ -1045,6 +1063,25 @@ function TasksBoard({ isAdmin, focusTaskId = null, onFocusConsumed = null }) {
         </details>
       </div>
 
+      {selectedTask ? (
+        <TaskDetailModal
+          task={selectedTask}
+          areas={areas}
+          members={members}
+          guides={guides}
+          files={(taskFiles || []).filter((f) => f.task_id === selectedTask.id)}
+          onClose={() => setSelectedTaskId(null)}
+          onSaveTask={updateTaskFields}
+          onToggleStatus={toggleStatus}
+          onGuideOpen={openGuide}
+          onSubUpdate={updateSubtask}
+          onSubDelete={deleteSubtask}
+          onTaskFileDownload={downloadTaskFile}
+          onTaskFileDelete={deleteTaskFile}
+          onRefresh={loadAll}
+        />
+      ) : null}
+
       {guideModal.open ? (
         <div style={styles.modalBackdrop} onMouseDown={closeGuide}>
           <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
@@ -1101,6 +1138,7 @@ function TaskColumn({
   onTaskFileDownload,
   uploadingTaskId,
   focusTaskId = null,
+  onOpenDetail,
 }) {
   const isCompact = useIsCompactLayout(860);
 
@@ -1181,6 +1219,9 @@ function TaskColumn({
               </div>
 
               <div style={styles.taskActionRow}>
+                <button style={styles.btnSmall} onClick={(e) => { e.stopPropagation(); onOpenDetail?.(t); }}>
+                  Details
+                </button>
                 <button style={styles.btnSmall} onClick={() => onToggle?.(t)} disabled={!canWrite}>
                   Status wechseln
                 </button>
@@ -1394,6 +1435,14 @@ function fmtDateTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function toLocalDatetimeValue(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function fmtDate(value) {
@@ -3940,6 +3989,284 @@ function ActivityLogPanel({ onOpenTask }) {
 
 
 
+
+function TaskDetailModal({
+  task,
+  areas,
+  members,
+  guides,
+  files,
+  onClose,
+  onSaveTask,
+  onToggleStatus,
+  onGuideOpen,
+  onSubUpdate,
+  onSubDelete,
+  onTaskFileDownload,
+  onTaskFileDelete,
+  onRefresh,
+}) {
+  const [title, setTitle] = useState(task?.title || "");
+  const [status, setStatus] = useState(task?.status || "todo");
+  const [dueAt, setDueAt] = useState(task?.due_at ? toLocalDatetimeValue(task.due_at) : "");
+  const [assigneeId, setAssigneeId] = useState(task?.assignee_id || "");
+  const [areaText, setAreaText] = useState(task?.area_label || task?.area || "");
+  const [description, setDescription] = useState(task?.description || "");
+  const [internalNote, setInternalNote] = useState(task?.internal_note || "");
+  const [comments, setComments] = useState([]);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [activity, setActivity] = useState([]);
+  const [loadingMeta, setLoadingMeta] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [info, setInfo] = useState(null);
+  const [error, setError] = useState(null);
+  const [commentsAvailable, setCommentsAvailable] = useState(true);
+
+  useEffect(() => {
+    setTitle(task?.title || "");
+    setStatus(task?.status || "todo");
+    setDueAt(task?.due_at ? toLocalDatetimeValue(task.due_at) : "");
+    setAssigneeId(task?.assignee_id || "");
+    setAreaText(task?.area_label || task?.area || "");
+    setDescription(task?.description || "");
+    setInternalNote(task?.internal_note || "");
+    setCommentDraft("");
+    setInfo(null);
+    setError(null);
+  }, [task]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadMeta() {
+      if (!task?.id) return;
+      setLoadingMeta(true);
+      try {
+        const [logRes, commentsRes, profilesRes] = await Promise.all([
+          supabase.from("activity_log").select("id, created_at, user_id, entity_type, entity_id, action, message, meta").eq("entity_type", "task").order("created_at", { ascending: false }).limit(200),
+          supabase.from("task_comments").select("id, task_id, message, created_at, created_by").eq("task_id", task.id).order("created_at", { ascending: false }),
+          supabase.from("profiles").select("id, name, email"),
+        ]);
+        const profileMap = new Map((profilesRes.data || []).map((p) => [String(p.id), p]));
+        const taskLogs = (logRes.data || []).filter((row) => String(row.entity_id || row.meta?.task_id || "") === String(task.id)).map((row) => ({ ...row, actor: profileMap.get(String(row.user_id || "")) || null }));
+        if (!active) return;
+        setActivity(taskLogs);
+        if (commentsRes.error) {
+          setCommentsAvailable(false);
+          setComments([]);
+        } else {
+          setCommentsAvailable(true);
+          setComments((commentsRes.data || []).map((row) => ({ ...row, actor: profileMap.get(String(row.created_by || "")) || null })));
+        }
+      } catch (e) {
+        if (active) setError(e?.message || String(e));
+      } finally {
+        if (active) setLoadingMeta(false);
+      }
+    }
+    loadMeta();
+    return () => { active = false; };
+  }, [task]);
+
+  async function handleSave() {
+    if (!task?.id) return;
+    setSaving(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const matched = (areas || []).find((a) => String(a.name || "").toLowerCase() === String(areaText || "").trim().toLowerCase());
+      const basePatch = {
+        title: String(title || "").trim() || task.title,
+        status: status || "todo",
+        due_at: dueAt ? new Date(dueAt).toISOString() : null,
+        assignee_id: assigneeId || null,
+        area: String(areaText || "").trim() || null,
+        area_id: matched ? matched.id : null,
+      };
+      let res = await onSaveTask?.(task.id, { ...basePatch, description: description || null, internal_note: internalNote || null });
+      if (!res?.ok && /description|internal_note|column/i.test(String(res?.message || ""))) {
+        res = await onSaveTask?.(task.id, basePatch);
+        setInfo("Grunddaten gespeichert. Beschreibung/Interne Notiz sind in der Datenbank noch nicht angelegt.");
+      } else {
+        setInfo("Aufgabe gespeichert.");
+      }
+      await onRefresh?.();
+    } catch (e) {
+      setError(e?.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addComment() {
+    const message = String(commentDraft || "").trim();
+    if (!message || !task?.id) return;
+    setError(null);
+    setInfo(null);
+    const createdBy = await getCurrentUserId();
+    const res = await supabase.from("task_comments").insert({ task_id: task.id, message, created_by: createdBy }).select("id, task_id, message, created_at, created_by").single();
+    if (res.error) {
+      setCommentsAvailable(false);
+      setError("Kommentare konnten nicht gespeichert werden. Prüfe, ob die Tabelle task_comments existiert.");
+      return;
+    }
+    const actor = (members || []).find((m) => String(m.id) === String(createdBy)) || null;
+    setComments((prev) => [{ ...res.data, actor }, ...prev]);
+    setCommentDraft("");
+    await logActivity({ entityType: "task", entityId: task.id, action: "comment_create", message: `Kommentar hinzugefügt`, meta: { task_id: task.id } });
+  }
+
+  return (
+    <div style={styles.modalBackdrop} onMouseDown={onClose}>
+      <div style={{ ...styles.modal, width: "min(1100px, 100%)", maxHeight: "90vh", display: "grid", gridTemplateRows: "auto 1fr" }} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div>
+            <div style={styles.h3}>Aufgabendetails</div>
+            <div style={{ color: "#64748b", fontSize: 13 }}>{task?.id}</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="button" style={styles.btn} onClick={() => onToggleStatus?.(task)}>Status wechseln</button>
+            <button type="button" style={styles.btnPrimary} onClick={handleSave} disabled={saving}>{saving ? "Speichert…" : "Speichern"}</button>
+            <button type="button" style={styles.btnSmall} onClick={onClose}>Schließen</button>
+          </div>
+        </div>
+
+        <div style={{ padding: 16, overflowY: "auto", display: "grid", gap: 14 }}>
+          {error ? <div style={styles.error}>Fehler: {error}</div> : null}
+          {info ? <div style={styles.infoBox}>{info}</div> : null}
+
+          <div style={styles.detailGrid}>
+            <div style={styles.card}>
+              <div style={styles.h4}>Stammdaten</div>
+              <div style={styles.detailFormGrid}>
+                <div>
+                  <div style={styles.label}>Titel</div>
+                  <input value={title} onChange={(e) => setTitle(e.target.value)} style={styles.input} />
+                </div>
+                <div>
+                  <div style={styles.label}>Status</div>
+                  <select value={status} onChange={(e) => setStatus(e.target.value)} style={styles.select}>
+                    <option value="todo">Zu erledigen</option>
+                    <option value="done">Erledigt</option>
+                    <option value="doing">In Arbeit</option>
+                    <option value="blocked">Blockiert</option>
+                  </select>
+                </div>
+                <div>
+                  <div style={styles.label}>Fällig</div>
+                  <input type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} style={styles.input} />
+                </div>
+                <div>
+                  <div style={styles.label}>Zuständig</div>
+                  <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} style={styles.select}>
+                    <option value="">– Unzugeordnet –</option>
+                    {(members || []).map((m) => <option key={m.id} value={m.id}>{m.name || m.email || m.id}</option>)}
+                  </select>
+                </div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <div style={styles.label}>Bereich</div>
+                  <input value={areaText} onChange={(e) => setAreaText(e.target.value)} list="areas-list" style={styles.input} />
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.card}>
+              <div style={styles.h4}>Beschreibung & interne Notiz</div>
+              <div style={{ display: "grid", gap: 10 }}>
+                <div>
+                  <div style={styles.label}>Beschreibung</div>
+                  <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={5} style={styles.textarea} placeholder="Beschreibung der Aufgabe" />
+                </div>
+                <div>
+                  <div style={styles.label}>Interne Notiz</div>
+                  <textarea value={internalNote} onChange={(e) => setInternalNote(e.target.value)} rows={4} style={styles.textarea} placeholder="Interne Hinweise / Notizen" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style={styles.detailGrid}>
+            <div style={styles.card}>
+              <div style={styles.h4}>Unteraufgaben</div>
+              <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                {(task?.subtasks || []).length === 0 ? <div style={{ color: "#64748b", fontSize: 13 }}>Keine Unteraufgaben.</div> : (task.subtasks || []).map((s) => (
+                  <div key={s.id} style={styles.subtaskRow}>
+                    <input type="checkbox" checked={!!s.is_done} onChange={() => onSubUpdate?.(s.id, { is_done: !s.is_done })} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ ...styles.ellipsisText, textDecoration: s.is_done ? "line-through" : "none" }}>{s.title}</div>
+                      <div style={{ fontSize: 12, color: "#64748b" }}>{s.guide_id ? (s.guides?.title || (guides || []).find((g) => g.id === s.guide_id)?.title || "Anleitung") : "Ohne Anleitung"}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                      {s.guide_id ? <button type="button" style={styles.btnSmall} onClick={() => onGuideOpen?.(s.guide_id)}>Anleitung</button> : null}
+                      <button type="button" style={styles.btnSmall} onClick={() => onSubDelete?.(s.id)}>Löschen</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={styles.card}>
+              <div style={styles.h4}>Dateien</div>
+              <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                {(files || []).length === 0 ? <div style={{ color: "#64748b", fontSize: 13 }}>Keine Dateien.</div> : (files || []).map((f) => (
+                  <div key={f.id} style={styles.fileRow}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 800, ...styles.ellipsisText }}>{f.filename}</div>
+                      <div style={{ color: "#64748b", fontSize: 12 }}>{f.size ? `${Math.round(f.size / 1024)} KB` : "—"} · {fmtDateTime(f.created_at)}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button type="button" style={styles.btnSmall} onClick={() => onTaskFileDownload?.(f)}>Download</button>
+                      <button type="button" style={styles.btnSmall} onClick={() => onTaskFileDelete?.(f)}>Löschen</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div style={styles.detailGrid}>
+            <div style={styles.card}>
+              <div style={styles.h4}>Kommentare</div>
+              {!commentsAvailable ? <div style={{ color: "#b45309", fontSize: 13, marginTop: 8 }}>Kommentare sind vorbereitet. Bitte lege die Tabelle <code>task_comments</code> in Supabase an.</div> : null}
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <input value={commentDraft} onChange={(e) => setCommentDraft(e.target.value)} placeholder="Kommentar hinzufügen…" style={styles.input} />
+                <button type="button" style={styles.btnPrimary} onClick={addComment}>Speichern</button>
+              </div>
+              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                {(comments || []).length === 0 ? <div style={{ color: "#64748b", fontSize: 13 }}>Noch keine Kommentare.</div> : comments.map((c) => (
+                  <div key={c.id} style={styles.commentRow}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <div style={{ fontWeight: 800 }}>{c.actor?.name || c.actor?.email || "Unbekannt"}</div>
+                      <div style={{ fontSize: 12, color: "#64748b" }}>{fmtDateTime(c.created_at)}</div>
+                    </div>
+                    <div style={{ whiteSpace: "pre-wrap" }}>{c.message}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={styles.card}>
+              <div style={styles.h4}>Aktivitätsverlauf</div>
+              {loadingMeta ? <div style={{ color: "#64748b", fontSize: 13, marginTop: 8 }}>Lade Verlauf…</div> : null}
+              <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                {(activity || []).length === 0 ? <div style={{ color: "#64748b", fontSize: 13 }}>Keine Aktivität gefunden.</div> : (activity || []).map((a) => (
+                  <div key={a.id} style={styles.timelineRow}>
+                    <div style={styles.timelineDot} />
+                    <div>
+                      <div style={{ fontWeight: 800 }}>{a.actor?.name || a.actor?.email || "System"}</div>
+                      <div>{a.message}</div>
+                      <div style={{ fontSize: 12, color: "#64748b" }}>{fmtDateTime(a.created_at)} · {a.action}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Global Search ---------------- */
 function GlobalSearchBar({ onOpenTask, onOpenGuides, onOpenAreas, onOpenUsers }) {
   const [query, setQuery] = useState("");
@@ -5412,6 +5739,54 @@ const styles = {
     background: "rgba(59,130,246,0.12)",
     border: "1px solid rgba(59,130,246,0.18)",
     fontSize: 18,
+  },
+
+  infoBox: {
+    padding: 12,
+    borderRadius: 14,
+    border: "1px solid rgba(59,130,246,0.25)",
+    background: "rgba(59,130,246,0.10)",
+    color: "#1d4ed8",
+    fontWeight: 700,
+  },
+
+  detailGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: 14,
+    alignItems: "start",
+  },
+
+  detailFormGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: 10,
+    marginTop: 10,
+  },
+
+  commentRow: {
+    display: "grid",
+    gap: 6,
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(15,23,42,0.08)",
+    background: "rgba(255,255,255,0.72)",
+  },
+
+  timelineRow: {
+    display: "grid",
+    gridTemplateColumns: "18px 1fr",
+    gap: 10,
+    alignItems: "start",
+    padding: "8px 0",
+  },
+
+  timelineDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    background: "#3b82f6",
+    marginTop: 6,
   },
 };
 
